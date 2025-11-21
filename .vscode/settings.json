@@ -9,6 +9,9 @@
     "chat.tools.terminal.autoApprove": {
         ".specify/scripts/bash/": true,
         ".specify/scripts/powershell/": true
-    }
+    }, 
+  "editor.wordWrap": "on",
+    "python.terminal.activateEnvironment": true,
+    "python.defaultInterpreterPath": "~/miniconda3/envs/fct/bin/python"
 }
 
