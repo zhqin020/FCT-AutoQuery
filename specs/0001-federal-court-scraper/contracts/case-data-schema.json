@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Federal Court Case Data Schema",
+  "description": "JSON schema for scraped federal court case data",
+  "type": "object",
+  "properties": {
+    "case_id": {
+      "type": "string",
+      "description": "Unique identifier for the case"
+    },
+    "case_number": {
+      "type": "string",
+      "pattern": ".*IMM-.*",
+      "description": "Case number containing IMM-"
+    },
+    "title": {
+      "type": "string",
+      "description": "Case title"
+    },
+    "court": {
+      "type": "string",
+      "description": "Court name"
+    },
+    "date": {
+      "type": "string",
+      "format": "date",
+      "description": "Case date"
+    },
+    "html_content": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Full HTML content of the case"
+    },
+    "scraped_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Data collection timestamp"
+    }
+  },
+  "required": [
+    "case_id",
+    "case_number",
+    "title",
+    "court",
+    "date",
+    "html_content",
+    "scraped_at"
+  ]
+}

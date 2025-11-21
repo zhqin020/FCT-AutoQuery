@@ -31,4 +31,5 @@
 
 ## Notes
 
+- Specification updated to focus on public judgment scraping with strict legal compliance
 - All items pass; spec is ready for planning phase
