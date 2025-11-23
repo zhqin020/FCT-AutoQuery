@@ -14,17 +14,17 @@ Example:
     python main.py "https://www.fct-cf.ca/en/court-files-and-decisions/IMM-12345-22"
 """
 
-import sys
 import argparse
+import sys
 from datetime import datetime
 from pathlib import Path
 
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
+from src.lib.logging_config import setup_logging
 from src.services.case_scraper_service import CaseScraperService
 from src.services.export_service import ExportService
-from src.lib.logging_config import setup_logging
 
 # Setup logging
 setup_logging()
@@ -52,61 +52,65 @@ def main():
 - 所有操作都会记录到日志中
 - 程序会自动验证URL的有效性
 - 如遇连续错误会触发紧急停止机制
-        """
+        """,
     )
 
     parser.add_argument(
-        "url",
-        nargs="?",
-        help="联邦法院案件URL / Federal Court case URL"
+        "url", nargs="?", help="联邦法院案件URL / Federal Court case URL"
     )
 
     parser.add_argument(
         "--batch",
         type=str,
-        help="包含多个URL的文件路径 / File containing multiple URLs (one per line)"
+        help="包含多个URL的文件路径 / File containing multiple URLs (one per line)",
     )
 
     parser.add_argument(
         "--output",
         type=str,
         default="./output",
-        help="输出目录 / Output directory (default: ./output)"
+        help="输出目录 / Output directory (default: ./output)",
     )
 
     parser.add_argument(
         "--format",
         choices=["json", "csv", "both"],
         default="both",
-        help="导出格式 / Export format (default: both)"
+        help="导出格式 / Export format (default: both)",
     )
 
     parser.add_argument(
         "--headless",
         action="store_true",
         default=True,
-        help="无头模式运行浏览器 / Run browser in headless mode (default: True)"
+        help="无头模式运行浏览器 / Run browser in headless mode (default: True)",
     )
 
     parser.add_argument(
         "--no-headless",
         action="store_false",
         dest="headless",
-        help="显示浏览器窗口 / Show browser window"
+        help="显示浏览器窗口 / Show browser window",
     )
 
     args = parser.parse_args()
 
     # Validate arguments
     if not args.url and not args.batch:
-        parser.error("必须提供案件URL或批量文件 / Must provide either a case URL or batch file")
+        parser.error(
+            "必须提供案件URL或批量文件 / Must provide either a case URL or batch file"
+        )
 
     if args.url and args.batch:
-        parser.error("不能同时指定URL和批量文件 / Cannot specify both URL and batch file")
+        parser.error(
+            "不能同时指定URL和批量文件 / Cannot specify both URL and batch file"
+        )
 
     try:
         # Initialize services
-        print("🚀 初始化联邦法院案件抓取器... / Initializing Federal Court Case Scraper...")
+        print(
+            "🚀 初始化联邦法院案件抓取器... / Initializing Federal Court Case Scraper..."
+        )
         scraper = CaseScraperService(headless=args.headless)
         exporter = ExportService(output_dir=args.output)
 
@@ -139,8 +143,12 @@ def main():
             print(f"📋 正在读取批量文件: {args.batch}")
             print(f"📋 Reading batch file: {args.batch}")
 
-            with open(batch_file, 'r', encoding='utf-8') as f:
-                urls = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+            with open(batch_file, "r", encoding="utf-8") as f:
+                urls = [
+                    line.strip()
+                    for line in f
+                    if line.strip() and not line.startswith("#")
+                ]
 
             print(f"📄 发现 {len(urls)} 个URL / Found {len(urls)} URLs")
 
@@ -161,7 +169,9 @@ def main():
 
                     # Check for emergency stop
                     if scraper.is_emergency_stop_active():
-                        print("🚨 紧急停止已激活，停止所有操作 / Emergency stop activated, halting all operations")
+                        print(
+                            "🚨 紧急停止已激活，停止所有操作 / Emergency stop activated, halting all operations"
+                        )
                         break
 
         # Export results
@@ -169,7 +179,9 @@ def main():
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             base_filename = f"federal_court_cases_{timestamp}"
 
-            print(f"\n📊 正在导出 {len(cases)} 个案件... / Exporting {len(cases)} cases...")
+            print(
+                f"\n📊 正在导出 {len(cases)} 个案件... / Exporting {len(cases)} cases..."
+            )
 
             if args.format == "json":
                 json_file = exporter.export_to_json(cases, f"{base_filename}.json")

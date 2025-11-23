@@ -1,22 +1,23 @@
 """Case scraping service for Federal Court cases using search form."""
 
+import time
+from datetime import date
+from typing import Optional, Tuple
+
 from selenium import webdriver
+from selenium.common.exceptions import NoSuchElementException, TimeoutException
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.webdriver.support.ui import WebDriverWait
 from webdriver_manager.chrome import ChromeDriverManager
-from typing import Optional, Tuple
-from datetime import date
-import time
 
+from src.lib.logging_config import get_logger
+from src.lib.rate_limiter import EthicalRateLimiter
+from src.lib.url_validator import URLValidator
 from src.models.case import Case
 from src.models.docket_entry import DocketEntry
-from src.lib.url_validator import URLValidator
-from src.lib.rate_limiter import EthicalRateLimiter
-from src.lib.logging_config import get_logger
 
 logger = get_logger()
 
@@ -108,7 +109,9 @@ class CaseScraperService:
 
             # Wait for options and select Federal Court
             federal_option = WebDriverWait(driver, 10).until(
-                EC.element_to_be_clickable((By.XPATH, "//option[@value='Federal Court']"))
+                EC.element_to_be_clickable(
+                    (By.XPATH, "//option[@value='Federal Court']")
+                )
             )
             federal_option.click()
 
@@ -156,7 +159,9 @@ class CaseScraperService:
 
             # Check for "No data available"
             try:
-                no_data = driver.find_element(By.XPATH, "//td[contains(text(), 'No data available')]")
+                no_data = driver.find_element(
+                    By.XPATH, "//td[contains(text(), 'No data available')]"
+                )
                 logger.info(f"No results found for case: {case_number}")
                 return False
             except NoSuchElementException:
@@ -177,7 +182,9 @@ class CaseScraperService:
             logger.error(f"Error searching case {case_number}: {e}")
             return False
 
-    def scrape_case_data(self, case_number: str) -> Tuple[Optional[Case], list[DocketEntry]]:
+    def scrape_case_data(
+        self, case_number: str
+    ) -> Tuple[Optional[Case], list[DocketEntry]]:
         """Scrape case data from the modal after clicking More.
 
         Args:
@@ -208,10 +215,7 @@ class CaseScraperService:
             docket_entries = self._extract_docket_entries(modal)
 
             # Create Case object
-            case = Case(
-                case_id=case_number,
-                **case_data
-            )
+            case = Case(case_id=case_number, **case_data)
 
             # Close modal
             self._close_modal()
@@ -254,7 +258,9 @@ class CaseScraperService:
         for label_text, field_name in field_mappings.items():
             try:
                 # Find label and get following element
-                label = modal_element.find_element(By.XPATH, f".//label[contains(text(), '{label_text}')]")
+                label = modal_element.find_element(
+                    By.XPATH, f".//label[contains(text(), '{label_text}')]"
+                )
                 # Get the next sibling or associated input/value
                 value_element = label.find_element(By.XPATH, "following-sibling::*[1]")
                 value = value_element.text.strip() if value_element.text else ""

@@ -1,12 +1,13 @@
 """Export service for structured data export in CSV, JSON, and database formats."""
 
-import json
 import csv
+import json
+from datetime import datetime
+from pathlib import Path
+from typing import List, Optional, Tuple
+
 import psycopg2
 from psycopg2.extras import execute_values
-from typing import List, Optional, Tuple
-from pathlib import Path
-from datetime import datetime
 
 from src.lib.config import Config
 from src.lib.logging_config import get_logger
@@ -130,17 +131,19 @@ class ExportService:
 
                 # Write data rows
                 for case in cases:
-                    writer.writerow([
-                        case.court_file_no,
-                        getattr(case, 'case_type', ''),
-                        getattr(case, 'action_type', ''),
-                        getattr(case, 'nature_of_proceeding', ''),
-                        getattr(case, 'filing_date', ''),
-                        getattr(case, 'office', ''),
-                        getattr(case, 'style_of_cause', ''),
-                        getattr(case, 'language', ''),
-                        datetime.now().isoformat(),
-                    ])
+                    writer.writerow(
+                        [
+                            case.court_file_no,
+                            getattr(case, "case_type", ""),
+                            getattr(case, "action_type", ""),
+                            getattr(case, "nature_of_proceeding", ""),
+                            getattr(case, "filing_date", ""),
+                            getattr(case, "office", ""),
+                            getattr(case, "style_of_cause", ""),
+                            getattr(case, "language", ""),
+                            datetime.now().isoformat(),
+                        ]
+                    )
 
             logger.info(f"Successfully exported {len(cases)} cases to CSV: {file_path}")
             return str(file_path)
@@ -204,7 +207,10 @@ class ExportService:
                 raise ValueError(f"Case at index {i} has empty case_id")
 
             # Validate case_id format (should be IMM-XXXXX-YY)
-            if not case.court_file_no.startswith("IMM-") or len(case.court_file_no.split('-')) != 3:
+            if (
+                not case.court_file_no.startswith("IMM-")
+                or len(case.court_file_no.split("-")) != 3
+            ):
                 logger.warning(
                     f"Case at index {i} has non-standard court_file_no format: {case.court_file_no}"
                 )
@@ -271,7 +277,8 @@ class ExportService:
             cursor = conn.cursor()
 
             # UPSERT case data
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT INTO cases (
                     case_id, case_type, action_type, nature_of_proceeding,
                     filing_date, office, style_of_cause, language, scraped_at
@@ -285,21 +292,25 @@ class ExportService:
                     style_of_cause = EXCLUDED.style_of_cause,
                     language = EXCLUDED.language,
                     scraped_at = EXCLUDED.scraped_at
-            """, (
-                case.court_file_no,
-                getattr(case, 'case_type', None),
-                getattr(case, 'action_type', None),
-                getattr(case, 'nature_of_proceeding', None),
-                getattr(case, 'filing_date', None),
-                getattr(case, 'office', None),
-                getattr(case, 'style_of_cause', None),
-                getattr(case, 'language', None),
-                datetime.now()
-            ))
+            """,
+                (
+                    case.court_file_no,
+                    getattr(case, "case_type", None),
+                    getattr(case, "action_type", None),
+                    getattr(case, "nature_of_proceeding", None),
+                    getattr(case, "filing_date", None),
+                    getattr(case, "office", None),
+                    getattr(case, "style_of_cause", None),
+                    getattr(case, "language", None),
+                    datetime.now(),
+                ),
+            )
 
             # Save docket entries if they exist
-            if hasattr(case, 'docket_entries') and case.docket_entries:
-                self._save_docket_entries(cursor, case.court_file_no, case.docket_entries)
+            if hasattr(case, "docket_entries") and case.docket_entries:
+                self._save_docket_entries(
+                    cursor, case.court_file_no, case.docket_entries
+                )
 
             conn.commit()
             cursor.close()
@@ -334,7 +345,9 @@ class ExportService:
         logger.info(f"Database save complete: {successful} successful, {failed} failed")
         return successful, failed
 
-    def _save_docket_entries(self, cursor, case_id: str, docket_entries: List[DocketEntry]) -> None:
+    def _save_docket_entries(
+        self, cursor, case_id: str, docket_entries: List[DocketEntry]
+    ) -> None:
         """
         Save docket entries for a case.
 
@@ -349,24 +362,32 @@ class ExportService:
         # Prepare data for batch insert
         entries_data = []
         for entry in docket_entries:
-            entries_data.append((
-                case_id,
-                entry.doc_id,
-                entry.entry_date,
-                entry.entry_office,
-                entry.summary
-            ))
+            entries_data.append(
+                (
+                    case_id,
+                    entry.doc_id,
+                    entry.entry_date,
+                    entry.entry_office,
+                    entry.summary,
+                )
+            )
 
         # Batch insert with ON CONFLICT DO NOTHING (since docket entries are immutable)
-        execute_values(cursor, """
+        execute_values(
+            cursor,
+            """
             INSERT INTO docket_entries (case_id, doc_id, entry_date, entry_office, summary)
             VALUES %s
             ON CONFLICT (case_id, doc_id) DO NOTHING
-        """, entries_data)
+        """,
+            entries_data,
+        )
 
         logger.debug(f"Saved {len(docket_entries)} docket entries for case {case_id}")
 
-    def export_and_save(self, cases: List[Case], base_filename: Optional[str] = None) -> dict:
+    def export_and_save(
+        self, cases: List[Case], base_filename: Optional[str] = None
+    ) -> dict:
         """
         Export cases to files and save to database.
 
@@ -386,17 +407,14 @@ class ExportService:
 
             # Save to database
             successful, failed = self.save_cases_to_database(cases)
-            results['database'] = {
-                'successful': successful,
-                'failed': failed
-            }
+            results["database"] = {"successful": successful, "failed": failed}
 
             logger.info(f"Export and save complete for {len(cases)} cases")
             return results
 
         except Exception as e:
             logger.error(f"Failed to export and save cases: {e}")
-            results['error'] = str(e)
+            results["error"] = str(e)
             return results
 
     def get_case_count_from_database(self) -> int:
@@ -436,11 +454,14 @@ class ExportService:
             conn = psycopg2.connect(**self.db_config.__dict__)
             cursor = conn.cursor()
 
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT * FROM cases
                 WHERE case_id LIKE %s
                 ORDER BY case_id
-            """, (f'IMM-%-{year % 100:02d}',))
+            """,
+                (f"IMM-%-{year % 100:02d}",),
+            )
 
             columns = [desc[0] for desc in cursor.description]
             cases = [dict(zip(columns, row)) for row in cursor.fetchall()]

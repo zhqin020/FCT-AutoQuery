@@ -1,7 +1,7 @@
 """Case data model for Federal Court scraper."""
 
 from dataclasses import dataclass, field
-from datetime import datetime, date
+from datetime import date, datetime
 from typing import Optional
 
 
@@ -48,7 +48,9 @@ class Case:
             raise ValueError("Court file number cannot be empty")
 
         if "IMM-" not in self.court_file_no:
-            raise ValueError(f"Court file number must contain 'IMM-', got: {self.court_file_no}")
+            raise ValueError(
+                f"Court file number must contain 'IMM-', got: {self.court_file_no}"
+            )
 
         if not self.html_content or not self.html_content.strip():
             raise ValueError("HTML content cannot be empty")
@@ -58,7 +60,15 @@ class Case:
             raise ValueError("HTML content cannot be empty")
 
     @classmethod
-    def from_url(cls, url: str, case_number: str, title: str, court: str, case_date: date, html_content: str) -> 'Case':
+    def from_url(
+        cls,
+        url: str,
+        case_number: str,
+        title: str,
+        court: str,
+        case_date: date,
+        html_content: str,
+    ) -> "Case":
         """Create a Case instance from URL and data.
 
         Args:

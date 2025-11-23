@@ -1,9 +1,10 @@
 """Case number generation service for Federal Court case scraping."""
 
+from datetime import datetime
+from typing import List, Optional, Tuple
+
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from typing import List, Optional, Tuple
-from datetime import datetime
 
 from src.lib.config import Config
 from src.lib.logging_config import get_logger
@@ -37,20 +38,23 @@ class UrlDiscoveryService:
             cursor = conn.cursor(cursor_factory=RealDictCursor)
 
             # Query for the highest case number in the given year
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT case_id
                 FROM cases
                 WHERE case_id LIKE %s
                 ORDER BY case_id DESC
                 LIMIT 1
-            """, (f'IMM-%-{year % 100:02d}',))
+            """,
+                (f"IMM-%-{year % 100:02d}",),
+            )
 
             result = cursor.fetchone()
             cursor.close()
             conn.close()
 
             if result:
-                return result['case_id']
+                return result["case_id"]
             return None
 
         except Exception as e:
@@ -75,15 +79,17 @@ class UrlDiscoveryService:
             # Parse the last case number
             try:
                 # Format: IMM-XXXXX-YY
-                parts = last_case.split('-')
-                if len(parts) == 3 and parts[0] == 'IMM':
+                parts = last_case.split("-")
+                if len(parts) == 3 and parts[0] == "IMM":
                     last_num = int(parts[1])
                     start_num = last_num + 1
                     logger.info(f"Resuming from case number {last_num} for year {year}")
                 else:
                     raise ValueError(f"Invalid case format: {last_case}")
             except (ValueError, IndexError) as e:
-                logger.warning(f"Could not parse last case {last_case}: {e}. Starting from 1.")
+                logger.warning(
+                    f"Could not parse last case {last_case}: {e}. Starting from 1."
+                )
                 start_num = 1
         else:
             start_num = 1
@@ -100,7 +106,9 @@ class UrlDiscoveryService:
             if max_cases and len(case_numbers) >= max_cases:
                 break
 
-        logger.info(f"Generated {len(case_numbers)} case numbers starting from {case_numbers[0]}")
+        logger.info(
+            f"Generated {len(case_numbers)} case numbers starting from {case_numbers[0]}"
+        )
         return case_numbers
 
     def generate_case_numbers_for_year(
@@ -141,7 +149,9 @@ class UrlDiscoveryService:
         """
         # Skip if more than 100 consecutive failures (likely no more cases in this year)
         if consecutive_failures >= 100:
-            logger.info(f"Skipping year {year} due to {consecutive_failures} consecutive failures")
+            logger.info(
+                f"Skipping year {year} due to {consecutive_failures} consecutive failures"
+            )
             return True
         return False
 
@@ -171,28 +181,31 @@ class UrlDiscoveryService:
             cursor = conn.cursor(cursor_factory=RealDictCursor)
 
             # Count cases for this year
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT COUNT(*) as total_cases,
                        MAX(scraped_at) as last_scraped
                 FROM cases
                 WHERE case_id LIKE %s
-            """, (f'IMM-%-{year % 100:02d}',))
+            """,
+                (f"IMM-%-{year % 100:02d}",),
+            )
 
             result = cursor.fetchone()
             cursor.close()
             conn.close()
 
             return {
-                'year': year,
-                'total_cases': result['total_cases'] if result else 0,
-                'last_scraped': result['last_scraped'] if result else None
+                "year": year,
+                "total_cases": result["total_cases"] if result else 0,
+                "last_scraped": result["last_scraped"] if result else None,
             }
 
         except Exception as e:
             logger.error(f"Error getting processing stats for year {year}: {e}")
             return {
-                'year': year,
-                'total_cases': 0,
-                'last_scraped': None,
-                'error': str(e)
+                "year": year,
+                "total_cases": 0,
+                "last_scraped": None,
+                "error": str(e),
             }

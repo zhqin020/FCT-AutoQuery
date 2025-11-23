@@ -1,9 +1,10 @@
 """Integration tests for rate limiting functionality."""
 
 import time
-from unittest.mock import patch, MagicMock
-from src.services.case_scraper_service import CaseScraperService
+from unittest.mock import MagicMock, patch
+
 from src.lib.rate_limiter import EthicalRateLimiter
+from src.services.case_scraper_service import CaseScraperService
 
 
 class TestRateLimiting:

@@ -2,15 +2,15 @@
 
 import argparse
 import sys
-from typing import List, Optional
 from datetime import datetime
+from typing import List, Optional
 
 from src.lib.config import Config
 from src.lib.logging_config import get_logger, setup_logging
-from src.services.case_scraper_service import CaseScraperService
-from src.services.url_discovery_service import UrlDiscoveryService
-from src.services.export_service import ExportService
 from src.models.case import Case
+from src.services.case_scraper_service import CaseScraperService
+from src.services.export_service import ExportService
+from src.services.url_discovery_service import UrlDiscoveryService
 
 logger = get_logger()
 
@@ -22,7 +22,7 @@ class FederalCourtScraperCLI:
         """Initialize the CLI."""
         # Setup logging to console and file
         setup_logging(log_level="INFO", log_file="logs/scraper.log")
-        
+
         self.config = Config()
         self.scraper = CaseScraperService(self.config)
         self.discovery = UrlDiscoveryService(self.config)
@@ -79,10 +79,14 @@ class FederalCourtScraperCLI:
 
             # Check for emergency stop
             if self.consecutive_failures >= self.max_consecutive_failures:
-                logger.error(f"Emergency stop triggered after {self.consecutive_failures} consecutive failures")
+                logger.error(
+                    f"Emergency stop triggered after {self.consecutive_failures} consecutive failures"
+                )
                 self.emergency_stop = True
 
-    def scrape_batch_cases(self, year: int, max_cases: Optional[int] = None) -> List[Case]:
+    def scrape_batch_cases(
+        self, year: int, max_cases: Optional[int] = None
+    ) -> List[Case]:
         """
         Scrape multiple cases for a given year.
 
@@ -110,7 +114,9 @@ class FederalCourtScraperCLI:
 
             for i, case_number in enumerate(case_numbers, 1):
                 if self.emergency_stop:
-                    logger.warning("Emergency stop triggered - halting batch processing")
+                    logger.warning(
+                        "Emergency stop triggered - halting batch processing"
+                    )
                     break
 
                 print(f"Processing case {i}/{total_to_process}: {case_number}")
@@ -129,11 +135,15 @@ class FederalCourtScraperCLI:
                 # Progress update every 10 cases
                 if processed % 10 == 0:
                     success_rate = len(cases) / processed * 100
-                    print(f"Progress: {processed}/{total_to_process} processed, {len(cases)} successful ({success_rate:.1f}%)")
+                    print(
+                        f"Progress: {processed}/{total_to_process} processed, {len(cases)} successful ({success_rate:.1f}%)"
+                    )
 
                 # Check if we should skip this year
                 if self.discovery.should_skip_year(year, consecutive_failures):
-                    logger.info(f"Skipping remaining cases for year {year} due to consecutive failures")
+                    logger.info(
+                        f"Skipping remaining cases for year {year} due to consecutive failures"
+                    )
                     break
 
                 # Stop if we reached the limit
@@ -143,10 +153,14 @@ class FederalCourtScraperCLI:
         finally:
             self.scraper.close()
 
-        logger.info(f"Batch scrape complete: {len(cases)} cases scraped for year {year}")
+        logger.info(
+            f"Batch scrape complete: {len(cases)} cases scraped for year {year}"
+        )
         return cases
 
-    def export_cases(self, cases: List[Case], base_filename: Optional[str] = None) -> dict:
+    def export_cases(
+        self, cases: List[Case], base_filename: Optional[str] = None
+    ) -> dict:
         """
         Export cases to files.
 
@@ -194,23 +208,33 @@ Examples:
 
   # Show statistics
   python -m src.cli.main stats --year 2025
-            """
+            """,
         )
 
-        subparsers = parser.add_subparsers(dest='command', help='Available commands')
+        subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
         # Single case command
-        single_parser = subparsers.add_parser('single', help='Scrape a single case')
-        single_parser.add_argument('case_number', help='Case number (e.g., IMM-12345-25)')
+        single_parser = subparsers.add_parser("single", help="Scrape a single case")
+        single_parser.add_argument(
+            "case_number", help="Case number (e.g., IMM-12345-25)"
+        )
 
         # Batch command
-        batch_parser = subparsers.add_parser('batch', help='Scrape multiple cases for a year')
-        batch_parser.add_argument('year', type=int, help='Year to scrape cases for')
-        batch_parser.add_argument('--max-cases', type=int, help='Maximum number of cases to scrape')
+        batch_parser = subparsers.add_parser(
+            "batch", help="Scrape multiple cases for a year"
+        )
+        batch_parser.add_argument("year", type=int, help="Year to scrape cases for")
+        batch_parser.add_argument(
+            "--max-cases", type=int, help="Maximum number of cases to scrape"
+        )
 
         # Stats command
-        stats_parser = subparsers.add_parser('stats', help='Show scraping statistics')
-        stats_parser.add_argument('--year', type=int, help='Year to show stats for (shows total if not specified)')
+        stats_parser = subparsers.add_parser("stats", help="Show scraping statistics")
+        stats_parser.add_argument(
+            "--year",
+            type=int,
+            help="Year to show stats for (shows total if not specified)",
+        )
 
         args = parser.parse_args()
 
@@ -219,7 +243,7 @@ Examples:
             return
 
         try:
-            if args.command == 'single':
+            if args.command == "single":
                 case = self.scrape_single_case(args.case_number)
                 if case:
                     # Export the case
@@ -230,10 +254,12 @@ Examples:
                 else:
                     print(f"\nCase {args.case_number} not found or failed to scrape")
                     if self.emergency_stop:
-                        print("Emergency stop was triggered due to consecutive failures")
+                        print(
+                            "Emergency stop was triggered due to consecutive failures"
+                        )
                     sys.exit(1)
 
-            elif args.command == 'batch':
+            elif args.command == "batch":
                 if self.emergency_stop:
                     print("Cannot start batch processing - emergency stop is active")
                     sys.exit(1)
@@ -252,7 +278,7 @@ Examples:
                         print("Emergency stop was triggered during processing")
                     sys.exit(1)
 
-            elif args.command == 'stats':
+            elif args.command == "stats":
                 self.show_stats(args.year)
 
         except KeyboardInterrupt:
@@ -271,5 +297,5 @@ def main():
     cli.run()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

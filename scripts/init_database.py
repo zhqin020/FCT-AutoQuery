@@ -2,8 +2,9 @@
 """Database initialization script for Federal Court Case Scraper."""
 
 import sys
-import psycopg2
 from pathlib import Path
+
+import psycopg2
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -28,8 +29,10 @@ def init_database():
         logger.info("Connected to database, initializing schema...")
 
         # Read schema file
-        schema_path = Path(__file__).parent.parent / "src" / "lib" / "database_schema.sql"
-        with open(schema_path, 'r') as f:
+        schema_path = (
+            Path(__file__).parent.parent / "src" / "lib" / "database_schema.sql"
+        )
+        with open(schema_path, "r") as f:
             schema_sql = f.read()
 
         # Execute schema
@@ -38,18 +41,20 @@ def init_database():
         logger.info("Database schema initialized successfully")
 
         # Verify tables exist
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT table_name
             FROM information_schema.tables
             WHERE table_schema = 'public'
             AND table_name IN ('cases', 'docket_entries')
             ORDER BY table_name
-        """)
+        """
+        )
 
         tables = cursor.fetchall()
         table_names = [row[0] for row in tables]
 
-        if 'cases' in table_names and 'docket_entries' in table_names:
+        if "cases" in table_names and "docket_entries" in table_names:
             logger.info("✓ All required tables created: cases, docket_entries")
         else:
             logger.error(f"✗ Missing tables. Found: {table_names}")
