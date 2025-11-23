@@ -215,6 +215,7 @@ phantomjs
 webdriver/
 selenium/
 *.log
+logs/
 
 # Web scraping data
 data/
