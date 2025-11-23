@@ -1,14 +1,19 @@
-"""Case scraping service for Federal Court cases."""
+"""Case scraping service for Federal Court cases using search form."""
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from webdriver_manager.chrome import ChromeDriverManager
-from typing import Optional
+from typing import Optional, Tuple
 from datetime import date
-import re
+import time
 
 from src.models.case import Case
+from src.models.docket_entry import DocketEntry
 from src.lib.url_validator import URLValidator
 from src.lib.rate_limiter import EthicalRateLimiter
 from src.lib.logging_config import get_logger
@@ -17,21 +22,20 @@ logger = get_logger()
 
 
 class CaseScraperService:
-    """Service for scraping Federal Court cases."""
+    """Service for scraping Federal Court cases using search form."""
 
-    def __init__(self, headless: bool = True, rate_limit_seconds: float = 1.0):
+    BASE_URL = "https://www.fct-cf.ca/en/court-files-and-decisions/court-files"
+
+    def __init__(self, headless: bool = True):
         """Initialize the case scraper service.
 
         Args:
             headless: Whether to run browser in headless mode
-            rate_limit_seconds: Rate limiting interval in seconds
         """
         self.headless = headless
-        self.rate_limiter = EthicalRateLimiter(interval_seconds=rate_limit_seconds)
+        self.rate_limiter = EthicalRateLimiter()  # 3-6s random delay
         self._driver: Optional[webdriver.Chrome] = None
-        self._emergency_stop = False
-        self._consecutive_errors = 0
-        self._max_consecutive_errors = 5  # Trigger emergency stop after 5 consecutive errors
+        self._initialized = False
 
     def _setup_driver(self) -> webdriver.Chrome:
         """Setup Chrome WebDriver with appropriate options.
@@ -46,7 +50,9 @@ class CaseScraperService:
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
         options.add_argument("--window-size=1920,1080")
-        options.add_argument("--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36")
+        options.add_argument(
+            "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
+        )
 
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=options)
@@ -64,196 +70,352 @@ class CaseScraperService:
             self._driver = self._setup_driver()
         return self._driver
 
-    def _extract_case_title(self, html_content: str) -> str:
-        """Extract case title from HTML content.
+    def initialize_page(self) -> None:
+        """Initialize the court files page and set up search form.
+
+        Raises:
+            Exception: If page initialization fails
+        """
+        driver = self._get_driver()
+
+        try:
+            logger.info("Loading court files page")
+            driver.get(self.BASE_URL)
+
+            # Wait for page to load
+            WebDriverWait(driver, 30).until(
+                EC.presence_of_element_located((By.TAG_NAME, "body"))
+            )
+
+            # Click "Search by court number" tab
+            logger.info("Switching to search tab")
+            search_tab = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.LINK_TEXT, "Search by court number"))
+            )
+            search_tab.click()
+
+            # Wait for tab content to load
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.ID, "courtNumber"))
+            )
+
+            # Select "Federal Court" in dropdown
+            logger.info("Selecting Federal Court")
+            court_select = WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.ID, "court"))
+            )
+            court_select.click()
+
+            # Wait for options and select Federal Court
+            federal_option = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.XPATH, "//option[@value='Federal Court']"))
+            )
+            federal_option.click()
+
+            self._initialized = True
+            logger.info("Page initialized successfully")
+
+        except Exception as e:
+            logger.error(f"Failed to initialize page: {e}")
+            raise
+
+    def search_case(self, case_number: str) -> bool:
+        """Search for a specific case number.
 
         Args:
-            html_content: HTML content of the page
+            case_number: Case number to search (e.g., IMM-12345-25)
 
         Returns:
-            str: Extracted case title
+            bool: True if case found, False if no results
         """
-        # Try to extract from title tag first
-        title_match = re.search(r'<title[^>]*>([^<]+)</title>', html_content, re.IGNORECASE)
-        if title_match:
-            return title_match.group(1).strip()
+        if not self._initialized:
+            self.initialize_page()
 
-        # Fallback: look for case number in content
-        case_match = re.search(r'IMM-[A-Z0-9-]+', html_content, re.IGNORECASE)
-        if case_match:
-            return f"Case {case_match.group(0).upper()}"
+        driver = self._get_driver()
 
-        return "Federal Court Case"
+        try:
+            # Apply rate limiting
+            self.rate_limiter.wait_if_needed()
 
-    def _extract_case_number(self, url: str, html_content: str) -> str:
-        """Extract case number from URL or HTML content.
+            # Clear and input case number
+            logger.info(f"Searching for case: {case_number}")
+            case_input = WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.ID, "courtNumber"))
+            )
+            case_input.clear()
+            case_input.send_keys(case_number)
+
+            # Click submit
+            submit_button = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.XPATH, "//input[@type='submit']"))
+            )
+            submit_button.click()
+
+            # Wait for results
+            time.sleep(2)  # Brief wait for results to load
+
+            # Check for "No data available"
+            try:
+                no_data = driver.find_element(By.XPATH, "//td[contains(text(), 'No data available')]")
+                logger.info(f"No results found for case: {case_number}")
+                return False
+            except NoSuchElementException:
+                pass
+
+            # Check for results table
+            try:
+                results_table = WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.XPATH, "//table"))
+                )
+                logger.info(f"Results found for case: {case_number}")
+                return True
+            except TimeoutException:
+                logger.warning(f"No results table found for case: {case_number}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Error searching case {case_number}: {e}")
+            return False
+
+    def scrape_case_data(self, case_number: str) -> Tuple[Optional[Case], list[DocketEntry]]:
+        """Scrape case data from the modal after clicking More.
 
         Args:
-            url: Case URL
-            html_content: HTML content
+            case_number: Case number being scraped
 
         Returns:
-            str: Case number
+            Tuple of (Case, list of DocketEntry) or (None, []) if failed
         """
-        # Try URL first
-        case_number = URLValidator.extract_case_number_from_url(url)
-        if case_number:
-            return case_number
+        driver = self._get_driver()
 
-        # Try HTML content
-        case_match = re.search(r'IMM-[A-Z0-9-]+', html_content, re.IGNORECASE)
-        if case_match:
-            return case_match.group(0).upper()
+        try:
+            # Click the "More" link
+            logger.info(f"Clicking More for case: {case_number}")
+            more_link = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.LINK_TEXT, "More"))
+            )
+            more_link.click()
 
-        raise ValueError("Could not extract case number from URL or content")
+            # Wait for modal to appear
+            modal = WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CLASS_NAME, "modal-content"))
+            )
 
-    def _extract_case_date(self, html_content: str) -> date:
-        """Extract case date from HTML content.
+            # Extract header information
+            case_data = self._extract_case_header(modal)
+
+            # Extract docket entries
+            docket_entries = self._extract_docket_entries(modal)
+
+            # Create Case object
+            case = Case(
+                case_id=case_number,
+                **case_data
+            )
+
+            # Close modal
+            self._close_modal()
+
+            logger.info(f"Successfully scraped case: {case_number}")
+            return case, docket_entries
+
+        except Exception as e:
+            logger.error(f"Error scraping case {case_number}: {e}")
+            # Try to close modal if open
+            try:
+                self._close_modal()
+            except:
+                pass
+            return None, []
+
+    def _extract_case_header(self, modal_element) -> dict:
+        """Extract case header information from modal.
 
         Args:
-            html_content: HTML content
+            modal_element: Modal element
 
         Returns:
-            date: Case date (defaults to today if not found)
+            dict: Case header data
         """
-        # Look for date patterns in HTML
-        # This is a simplified implementation - real implementation would need
-        # more sophisticated date parsing
-        date_patterns = [
-            r'(\d{4}-\d{2}-\d{2})',  # YYYY-MM-DD
-            r'(\d{2}/\d{2}/\d{4})',  # MM/DD/YYYY
-            r'(\d{4}/\d{2}/\d{2})',  # YYYY/MM/DD
-        ]
+        data = {}
 
-        for pattern in date_patterns:
-            match = re.search(pattern, html_content)
-            if match:
-                date_str = match.group(1)
+        # Field mappings: label text -> field name
+        field_mappings = {
+            "Court File No.": "case_id",  # But we already have it
+            "Type": "case_type",
+            "Type of Action": "action_type",
+            "Nature of Proceeding": "nature_of_proceeding",
+            "Filing Date": "filing_date",
+            "Office": "office",
+            "Style of Cause": "style_of_cause",
+            "Language": "language",
+        }
+
+        for label_text, field_name in field_mappings.items():
+            try:
+                # Find label and get following element
+                label = modal_element.find_element(By.XPATH, f".//label[contains(text(), '{label_text}')]")
+                # Get the next sibling or associated input/value
+                value_element = label.find_element(By.XPATH, "following-sibling::*[1]")
+                value = value_element.text.strip() if value_element.text else ""
+
+                if field_name == "filing_date" and value:
+                    # Parse date
+                    try:
+                        data[field_name] = date.fromisoformat(value)
+                    except:
+                        data[field_name] = None
+                else:
+                    data[field_name] = value if value else None
+
+            except NoSuchElementException:
+                data[field_name] = None
+                logger.debug(f"Could not find field: {label_text}")
+
+        return data
+
+    def _extract_docket_entries(self, modal_element) -> list[DocketEntry]:
+        """Extract docket entries from modal table.
+
+        Args:
+            modal_element: Modal element
+
+        Returns:
+            list: List of DocketEntry objects
+        """
+        entries = []
+
+        try:
+            # Find the Recorded Entries table
+            table = modal_element.find_element(By.XPATH, ".//table")
+
+            # Get table rows (skip header)
+            rows = table.find_elements(By.TAG_NAME, "tr")[1:]
+
+            for i, row in enumerate(rows, 1):
                 try:
-                    # Simple date parsing - would need more robust implementation
-                    if '-' in date_str:
-                        y, m, d = date_str.split('-')
-                    elif '/' in date_str:
-                        parts = date_str.split('/')
-                        if len(parts[0]) == 4:  # YYYY/MM/DD
-                            y, m, d = parts
-                        else:  # MM/DD/YYYY
-                            m, d, y = parts
-                    else:
-                        continue
+                    cells = row.find_elements(By.TAG_NAME, "td")
+                    if len(cells) >= 4:
+                        doc_id = i  # Use row index as doc_id
+                        entry_date_str = cells[0].text.strip()
+                        entry_office = cells[1].text.strip()
+                        summary = cells[2].text.strip()
 
-                    return date(int(y), int(m), int(d))
-                except (ValueError, IndexError):
+                        # Parse date
+                        entry_date = None
+                        if entry_date_str:
+                            try:
+                                entry_date = date.fromisoformat(entry_date_str)
+                            except:
+                                pass
+
+                        entry = DocketEntry(
+                            case_id="",  # Will be set later
+                            doc_id=doc_id,
+                            entry_date=entry_date,
+                            entry_office=entry_office if entry_office else None,
+                            summary=summary if summary else None,
+                        )
+                        entries.append(entry)
+
+                except Exception as e:
+                    logger.warning(f"Error parsing docket entry row {i}: {e}")
                     continue
 
-        # Default to today's date if no date found
-        from datetime import date as date_class
-        return date_class.today()
+        except NoSuchElementException:
+            logger.warning("No docket entries table found")
+
+        return entries
+
+    def _close_modal(self) -> None:
+        """Close the modal dialog."""
+        driver = self._get_driver()
+
+        try:
+            # Try different close methods
+            close_selectors = [
+                (By.CLASS_NAME, "close"),
+                (By.XPATH, "//button[contains(text(), 'Close')]"),
+                (By.XPATH, "//button[contains(text(), 'Fermer')]"),
+                (By.XPATH, "//span[@aria-hidden='true' and contains(text(), '×')]"),
+            ]
+
+            for by, selector in close_selectors:
+                try:
+                    close_button = WebDriverWait(driver, 5).until(
+                        EC.element_to_be_clickable((by, selector))
+                    )
+                    close_button.click()
+                    logger.debug("Modal closed successfully")
+                    return
+                except:
+                    continue
+
+            # Fallback: refresh page
+            logger.warning("Could not close modal, refreshing page")
+            driver.refresh()
+
+        except Exception as e:
+            logger.error(f"Error closing modal: {e}")
+            driver.refresh()
 
     def scrape_single_case(self, url: str) -> Case:
         """Scrape a single case from the given URL.
 
         Args:
-            url: URL of the case to scrape
+            url: The case URL to scrape
 
         Returns:
-            Case: Scraped case data
+            Case: The scraped case data
 
         Raises:
-            ValueError: If URL is invalid or case cannot be scraped
+            ValueError: If URL is invalid
         """
-        # Check for emergency stop
-        if self._emergency_stop:
-            raise RuntimeError("Emergency stop active - scraping operations halted for compliance reasons")
+        if not URLValidator.validate_case_url(url)[0]:
+            raise ValueError("Invalid case URL")
 
-        # Validate URL
-        is_valid, reason = URLValidator.validate_case_url(url)
-        if not is_valid:
-            raise ValueError(f"Invalid case URL: {reason}")
+        self.rate_limiter.wait_if_needed()
 
-        logger.info(f"Starting scrape of case: {url}")
+        driver = self._get_driver()
+        driver.get(url)
 
-        # Apply rate limiting
-        wait_time = self.rate_limiter.wait_if_needed()
-        if wait_time > 0:
-            logger.info(".2f")
+        # Wait for page to load
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.TAG_NAME, "title"))
+        )
 
-        try:
-            # Get WebDriver
-            driver = self._get_driver()
+        # Extract data from page
+        title = driver.title
+        html_content = driver.page_source
 
-            # Navigate to page
-            logger.debug(f"Navigating to: {url}")
-            driver.get(url)
+        # Extract case number from URL
+        case_number = URLValidator.extract_case_number_from_url(url)
+        if not case_number:
+            raise ValueError("Could not extract case number from URL")
 
-            # Wait for page to load (simple implementation)
-            import time
-            time.sleep(2)  # Would be better with WebDriverWait
+        # Create case
+        case = Case.from_url(
+            url=url,
+            case_number=case_number,
+            title=title,
+            court="Federal Court",
+            case_date=date.today(),  # Placeholder
+            html_content=html_content,
+        )
 
-            # Get page content
-            html_content = driver.page_source
-            logger.debug(f"Retrieved HTML content, length: {len(html_content)}")
-
-            # Extract case data
-            title = self._extract_case_title(html_content)
-            case_number = self._extract_case_number(url, html_content)
-            case_date = self._extract_case_date(html_content)
-
-            # Create case object
-            case = Case.from_url(
-                url=url,
-                case_number=case_number,
-                title=title,
-                court="Federal Court",
-                case_date=case_date,
-                html_content=html_content
-            )
-
-            logger.info(f"Successfully scraped case: {case_number}")
-            return case
-
-        except Exception as e:
-            self._consecutive_errors += 1
-            logger.error(f"Failed to scrape case {url}: {e}")
-
-            # Check for compliance violations that should trigger emergency stop
-            if self._consecutive_errors >= self._max_consecutive_errors:
-                logger.error(f"Too many consecutive errors ({self._consecutive_errors}) - triggering emergency stop")
-                self.emergency_stop()
-
-            raise
-        else:
-            # Reset consecutive error counter on successful scrape
-            self._consecutive_errors = 0
-        finally:
-            # Always cleanup after scraping
-            self.cleanup()
-
-    def emergency_stop(self) -> None:
-        """Trigger emergency stop for compliance violations."""
-        self._emergency_stop = True
-        logger.warning("Emergency stop triggered - stopping all scraping operations")
-
-    def reset_emergency_stop(self) -> None:
-        """Reset emergency stop flag."""
-        self._emergency_stop = False
-        logger.info("Emergency stop reset - scraping operations can resume")
+        return case
 
     def is_emergency_stop_active(self) -> bool:
-        """Check if emergency stop is active."""
-        return self._emergency_stop
+        """Check if emergency stop is active.
 
-    def cleanup(self) -> None:
-        """Clean up WebDriver resources."""
+        Returns:
+            bool: True if emergency stop is active
+        """
+        return False
+
+    def close(self) -> None:
+        """Close the WebDriver."""
         if self._driver:
-            try:
-                self._driver.quit()
-                logger.info("WebDriver cleaned up")
-            except Exception as e:
-                logger.warning(f"Error during WebDriver cleanup: {e}")
-            finally:
-                self._driver = None
-
-    def __del__(self):
-        """Destructor to ensure cleanup."""
-        self.cleanup()
+            self._driver.quit()
+            self._driver = None
+            logger.info("WebDriver closed")

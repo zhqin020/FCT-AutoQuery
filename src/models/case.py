@@ -3,30 +3,37 @@
 from dataclasses import dataclass, field
 from datetime import datetime, date
 from typing import Optional
-import uuid
 
 
 @dataclass
 class Case:
-    """Represents a scraped public case with metadata and HTML content.
+    """Represents a scraped public case.
 
     Attributes:
-        case_id: Unique identifier for the case (URL or generated ID)
-        case_number: Case number containing "IMM-"
-        title: Case title
-        court: Court name (Federal Court)
-        date: Case date
-        html_content: Full HTML content of the case
+        url: URL of the case
+        court_file_no: Court File No. (e.g., IMM-12345-25)
+        case_type: Type (e.g., Immigration Matters)
+        type_of_action: Type of Action
+        nature_of_proceeding: Nature of Proceeding (long text)
+        filing_date: Filing Date
+        office: Office (e.g., Toronto)
+        style_of_cause: Style of Cause (long text, parties)
+        language: Language
+        html_content: Full HTML content
         scraped_at: When data was collected
     """
 
-    case_id: str
-    case_number: str
-    title: str
-    court: str
-    date: date
-    html_content: str
-    scraped_at: datetime = field(default_factory=datetime.now)
+    url: str
+    court_file_no: str
+    case_type: Optional[str] = None
+    type_of_action: Optional[str] = None
+    nature_of_proceeding: Optional[str] = None
+    filing_date: Optional[date] = None
+    office: Optional[str] = None
+    style_of_cause: Optional[str] = None
+    language: Optional[str] = None
+    html_content: str = ""
+    scraped_at: datetime = field(default_factory=lambda: datetime.now())
 
     def __post_init__(self) -> None:
         """Validate the case data after initialization."""
@@ -34,54 +41,59 @@ class Case:
 
     def _validate(self) -> None:
         """Validate case data according to business rules."""
-        if not self.case_number or "IMM-" not in self.case_number:
-            raise ValueError(f"Case number must contain 'IMM-', got: {self.case_number}")
+        if not self.url or not self.url.strip():
+            raise ValueError("URL cannot be empty")
+
+        if not self.court_file_no or not self.court_file_no.strip():
+            raise ValueError("Court file number cannot be empty")
+
+        if "IMM-" not in self.court_file_no:
+            raise ValueError(f"Court file number must contain 'IMM-', got: {self.court_file_no}")
 
         if not self.html_content or not self.html_content.strip():
             raise ValueError("HTML content cannot be empty")
 
-        if not self.case_id or not self.case_id.strip():
-            raise ValueError("Case ID cannot be empty")
-
-        # Note: Date validation for 2023-2025/ongoing is handled at scraping level
+        # HTML content cannot be whitespace only
+        if not self.html_content.strip():
+            raise ValueError("HTML content cannot be empty")
 
     @classmethod
-    def from_url(cls, url: str, case_number: str, title: str, court: str,
-                 case_date: date, html_content: str):
-        """Create a Case instance from URL and scraped data.
+    def from_url(cls, url: str, case_number: str, title: str, court: str, case_date: date, html_content: str) -> 'Case':
+        """Create a Case instance from URL and data.
 
         Args:
-            url: The case URL (used as case_id)
-            case_number: Case number containing "IMM-"
+            url: The case URL
+            case_number: The court file number
             title: Case title
             court: Court name
             case_date: Case date
-            html_content: Full HTML content
+            html_content: HTML content
 
         Returns:
             Case: A validated Case instance
         """
         return cls(
-            case_id=url,
-            case_number=case_number,
-            title=title,
-            court=court,
-            date=case_date,
+            url=url,
+            court_file_no=case_number,
+            case_title=title,
+            court_name=court,
+            case_date=case_date,
             html_content=html_content,
         )
 
     @classmethod
     def generate_id(cls, case_number: str, title: str) -> str:
-        """Generate a unique case ID from case number and title.
+        """Generate a unique ID for the case.
 
         Args:
-            case_number: Case number
+            case_number: The court file number
             title: Case title
 
         Returns:
-            str: Generated unique ID
+            str: Generated ID
         """
-        return str(uuid.uuid4())
+        # Simple ID generation based on case number and title
+        return f"{case_number}-{hash(title) % 10000}"
 
     def to_dict(self) -> dict:
         """Convert case to dictionary for JSON export.
@@ -90,11 +102,11 @@ class Case:
             dict: Case data as dictionary
         """
         return {
-            "case_id": self.case_id,
-            "case_number": self.case_number,
-            "title": self.title,
-            "court": self.court,
-            "date": self.date.isoformat(),
+            "case_id": self.url,
+            "court_file_no": self.court_file_no,
+            "case_title": self.case_title,
+            "court_name": self.court_name,
+            "case_date": self.case_date.isoformat(),
             "html_content": self.html_content,
             "scraped_at": self.scraped_at.isoformat(),
         }
@@ -106,11 +118,11 @@ class Case:
             list: Case data as CSV row
         """
         return [
-            self.case_id,
-            self.case_number,
-            self.title,
-            self.court,
-            self.date.isoformat(),
+            self.url,
+            self.court_file_no,
+            self.case_title,
+            self.court_name,
+            self.case_date.isoformat(),
             self.html_content,
             self.scraped_at.isoformat(),
         ]

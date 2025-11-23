@@ -17,9 +17,9 @@
 
 **Purpose**: Database and configuration setup
 
-- [ ] T001 Setup PostgreSQL database schema for cases and docket_entries tables
-- [ ] T002 Configure database connection in src/lib/config.py
-- [ ] T003 Setup logging configuration in src/lib/logging_config.py
+- [X] T001 Setup PostgreSQL database schema for cases and docket_entries tables
+- [X] T002 Configure database connection in src/lib/config.py
+- [X] T003 Setup logging configuration in src/lib/logging_config.py
 
 ## Phase 2: Foundational (Blocking Prerequisites)
 
@@ -27,9 +27,9 @@
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T004 [P] Implement rate limiter in src/lib/rate_limiter.py
-- [ ] T005 [P] Implement URL validator in src/lib/url_validator.py
-- [ ] T006 [P] Setup testing framework (pytest) and coverage tools
+- [X] T004 [P] Implement rate limiter in src/lib/rate_limiter.py
+- [X] T005 [P] Implement URL validator in src/lib/url_validator.py
+- [X] T006 [P] Setup testing framework (pytest) and coverage tools
 
 **Checkpoint**: Foundation ready - user story implementation can now begin in parallel
 
@@ -39,11 +39,11 @@
 
 **Independent Test**: Can be fully tested by running the scraper on a single known case number and verifying that data is extracted and stored correctly via the search form process.
 
-- [ ] T007 [P] [US1] Create Case model in src/models/case.py
-- [ ] T008 [P] [US1] Create DocketEntry model in src/models/docket_entry.py
-- [ ] T009 [US1] Implement CaseScraperService in src/services/case_scraper_service.py for page navigation and form interaction
-- [ ] T010 [US1] Add modal detection and data extraction logic in case_scraper_service.py
-- [ ] T011 [US1] Implement error handling and retry logic for network failures in case_scraper_service.py
+- [X] T007 [P] [US1] Create Case model in src/models/case.py
+- [X] T008 [P] [US1] Create DocketEntry model in src/models/docket_entry.py
+- [X] T009 [US1] Implement CaseScraperService in src/services/case_scraper_service.py for page navigation and form interaction
+- [X] T010 [US1] Add modal detection and data extraction logic in case_scraper_service.py
+- [X] T011 [US1] Implement error handling and retry logic for network failures in case_scraper_service.py
 
 ## Phase 4: User Story 2 - Handle Batch Case Number Generation and Resume (Priority: P2)
 
@@ -51,9 +51,9 @@
 
 **Independent Test**: Can be tested by starting the scraper and verifying it resumes from the correct case number after interruption.
 
-- [ ] T012 [US2] Implement UrlDiscoveryService in src/services/url_discovery_service.py for case number generation
-- [ ] T013 [US2] Add resume logic to query last processed case from database in url_discovery_service.py
-- [ ] T014 [US2] Implement year skipping for consecutive no-results in url_discovery_service.py
+- [X] T012 [US2] Implement UrlDiscoveryService in src/services/url_discovery_service.py for case number generation
+- [X] T013 [US2] Add resume logic to query last processed case from database in url_discovery_service.py
+- [X] T014 [US2] Implement year skipping for consecutive no-results in url_discovery_service.py
 
 ## Phase 5: User Story 3 - Data Storage and Export (Priority: P3)
 
@@ -61,24 +61,24 @@
 
 **Independent Test**: Can be tested by scraping one case and verifying database insertion and JSON file creation.
 
-- [ ] T015 [US3] Implement ExportService in src/services/export_service.py for JSON/CSV export
-- [ ] T016 [US3] Add PostgreSQL UPSERT operations for cases and docket_entries in export_service.py
-- [ ] T017 [US3] Implement file organization by year in export_service.py
+- [X] T015 [US3] Implement ExportService in src/services/export_service.py for JSON/CSV export
+- [X] T016 [US3] Add PostgreSQL UPSERT operations for cases and docket_entries in export_service.py
+- [X] T017 [US3] Implement file organization by year in export_service.py
 
 ## Final Phase: Polish & Cross-Cutting Concerns
 
 **Purpose**: Integration, documentation, and final validation
 
-- [ ] T018 Integrate all services in src/cli/main.py
-- [ ] T019 Add command-line argument parsing for batch processing in main.py
-- [ ] T020 Implement progress tracking and logging in main.py
-- [ ] T021 Add emergency stop mechanism for continuous failures
-- [ ] T022 Update requirements.txt with all dependencies
-- [ ] T023 Update README.md with corrected usage instructions
-- [ ] T024 Create database initialization scripts
-- [ ] T025 Add troubleshooting guide for common issues
-- [ ] T026 Validate all success criteria are met
-- [ ] T027 Final code review and constitution compliance check
+- [X] T018 Integrate all services in src/cli/main.py
+- [X] T019 Add command-line argument parsing for batch processing in main.py
+- [X] T020 Implement progress tracking and logging in main.py
+- [X] T021 Add emergency stop mechanism for continuous failures
+- [X] T022 Update requirements.txt with all dependencies
+- [X] T023 Update README.md with corrected usage instructions
+- [X] T024 Create database initialization scripts
+- [X] T025 Add troubleshooting guide for common issues
+- [X] T026 Validate all success criteria are met
+- [X] T027 Final code review and constitution compliance check
 
 ## Dependencies
 

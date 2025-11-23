@@ -26,8 +26,12 @@ def get_current_branch() -> str:
 
 def validate_branch_name(branch: str) -> bool:
     """Validate branch name follows convention."""
-    valid_prefixes = ["feat/", "fix/", "test/"]
-    return any(branch.startswith(prefix) for prefix in valid_prefixes)
+    # Standard prefixes
+    valid_prefixes = ["feat/", "fix/", "test/", "chore/"]
+    if any(branch.startswith(prefix) for prefix in valid_prefixes):
+        return True
+    # Also allow numeric feature branch format (e.g., 0001-feature-name)
+    return branch.split('-')[0].isdigit() and len(branch.split('-')[0]) == 4
 
 
 def run_tests() -> bool:

@@ -36,6 +36,7 @@
 - Coding standards are followed (type hinting, ethical scraping)
 - Issue management strategy is adhered to (mandatory issues, lifecycle)
 - Git workflow steps are integrated (test-first, branch naming conventions)
+- Environment activation is required (conda activate fct before commands)
 
 ## Project Structure
 

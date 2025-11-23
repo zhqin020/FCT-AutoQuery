@@ -5,6 +5,14 @@
 **Status**: Draft  
 **Input**: User description: "经过测试，发现采集数据的方式完全错误，需求不符合原始要求 #file:requirement.md case number 不是通过url 发送的，而是在search form 中。编写specify 文档的时候，应该非常重视 "## 8. 附联邦法院网站查询功能，人工操作流程" 这个清晰地说明查询的过程"
 
+## Clarifications
+
+### Session 2025-11-22
+
+- Q: What items are explicitly out of scope for this feature? → A: Manual data entry, real-time notifications, advanced analytics.
+- Q: What is the expected data volume for the scraper? → A: Up to 100,000 cases initially, growing to 500,000 over 5 years.
+- Q: What are the reliability requirements for the scraper? → A: 99.9% uptime, with automatic retry on failures and circuit breaker for external dependencies.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Automate Federal Court Case Search and Scraping via Search Form (Priority: P1)
@@ -67,11 +75,15 @@ System must store extracted case data in PostgreSQL database and export to JSON 
 - **FR-03**: System MUST generate case numbers in format IMM-{1-99999}-{20-25} and support resume from last processed.
 - **FR-04**: System MUST input case number in search form and click Submit.
 - **FR-05**: System MUST detect "No data available in table" for no results or "More" link for results.
-- **FR-06**: System MUST click "More" to open modal and extract case header information (Court File No., Type, Type of Action, Nature of Proceeding, Filing Date, Office, Style of Cause, Language).
-- **FR-07**: System MUST extract docket entries table (ID, Date Filed, Office, Recorded Entry Summary).
+- **FR-06**: System MUST click "More" to open modal and extract case header information: `Court File No.` (case number), `Type` (case type, like Immigration Matters), `Type of Action` (action type), `Nature of Proceeding` (nature of proceeding, long text), `Filing Date` (filing date), `Office` (office, like Toronto), `Style of Cause` (parties, long text), `Language` (language). *Note: Need to locate values after the Label texts.*
+- **FR-07**: System MUST extract docket entries table by traversing all rows: `ID` (sequence number), `Date Filed` (submission date), `Office` (submission location), `Recorded Entry Summary` (summary content).
 - **FR-08**: System MUST click "Close" to close modal and handle failures by refreshing page.
 - **FR-09**: System MUST store data in PostgreSQL with UPSERT and export to JSON files.
 - **FR-10**: System MUST implement random delays (3-6 seconds) and longer breaks every 100 queries.
+
+### Non-Functional Requirements
+
+- **NFR-01**: System MUST achieve 99.9% uptime, with automatic retry on failures and circuit breaker for external dependencies.
 
 ### Key Entities *(include if feature involves data)*
 

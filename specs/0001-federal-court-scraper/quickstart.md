@@ -1,105 +1,170 @@
-# Quick Start: Federal Court Case Scraper
+# Quickstart: Federal Court Case Scraper
 
-**Date**: 2025-11-20
-**Purpose**: Get the case scraper running quickly for development and testing
+**Date**: 2025-11-22  
+**Phase**: 1 (Design & Contracts)  
+**Status**: Complete
+
+## Overview
+
+This guide provides step-by-step instructions to set up and run the Federal Court case scraper. The scraper automates searching for cases using the website's search form and extracts case information and docket entries.
 
 ## Prerequisites
 
 - Python 3.11+
-- Chrome browser
-- Linux/WSL environment
+- PostgreSQL database
+- Chrome browser installed
+- Conda environment `fct` activated
 
-## Installation
+## Setup
 
-1. **Clone and setup**:
+1. **Activate environment**:
    ```bash
-   git clone <repo>
-   cd FCT-AutoQuery
-   git checkout 0001-federal-court-scraper
+   conda activate fct
    ```
 
-2. **Create virtual environment**:
+2. **Install dependencies**:
    ```bash
-   python -m venv venv
-   source venv/bin/activate  # Linux/WSL
+   pip install -r requirements.txt
    ```
 
-3. **Install dependencies**:
+3. **Set up database**:
    ```bash
-   pip install selenium pandas loguru
+   python scripts/init_database.py
    ```
+
+4. **Configure database connection**:
+   Update `src/lib/config.py` with your PostgreSQL credentials.
 
 ## Running the Scraper
 
 ### Basic Usage
+
+Run the scraper from the project root:
+
 ```bash
-python -m src.cli.scraper --year 2023 --output-dir ./output
+python -m src.cli.main
 ```
 
-### Multiple Years
+This will:
+- Start from case IMM-1-20
+- Process cases sequentially
+- Store data in PostgreSQL
+- Export to JSON files in `./data/`
+
+### Command Line Options
+
 ```bash
-python -m src.cli.scraper --years 2023 2024 2025 --output-dir ./output
+python -m src.cli.main --help
 ```
 
-### Test Mode (Limited)
+Available options:
+- `--start-year`: Starting year (default: 20)
+- `--end-year`: Ending year (default: 25)
+- `--start-number`: Starting case number (default: 1)
+- `--end-number`: Ending case number (default: 99999)
+- `--output-dir`: Output directory for JSON files (default: ./data)
+- `--resume`: Resume from last processed case (default: true)
+
+### Examples
+
+**Scrape specific year range**:
 ```bash
-python -m src.cli.scraper --year 2023 --max-judgments 5 --output-dir ./output
+python -m src.cli.main --start-year 22 --end-year 23
 ```
 
-## Parameters
+**Resume from specific case**:
+```bash
+python -m src.cli.main --start-number 5000 --start-year 22
+```
 
-- `--year`, `--years`: Specific year(s) to scrape (2023-2025 and ongoing)
-- `--output-dir`: Directory for CSV/JSON output
-- `--max-cases`: Limit number of cases for testing
-- `--headless`: Run in headless mode (default: true)
+**Custom output directory**:
+```bash
+python -m src.cli.main --output-dir /path/to/output
+```
 
-## Expected Output
+## Monitoring Progress
 
-- `cases.csv`: All scraped cases in CSV format
-- `cases.json`: All scraped cases in JSON format
-- Logs showing progress and any errors
+The scraper provides real-time logging:
+- Access attempts and results
+- Extraction success/failure
+- Database operations
+- Rate limiting status
 
-## Important Notes
+Logs are written to console and `logs/scraper.log`.
 
-**Ethical Scraping**:
-- Exactly 1-second delay between page accesses
-- Only accesses public case pages
-- Never accesses E-Filing or non-public content
-- Only processes IMM- case numbers
+## Output
 
-**Legal Compliance**:
-- All data is public court information
-- No access to restricted systems
-- Maintains audit trail of all accesses
+### Database Tables
+
+- `cases`: Case header information
+- `docket_entries`: Process history records
+
+### JSON Files
+
+Files are created in `./data/{YEAR}/{CASE_ID}.json` format:
+
+```json
+{
+  "url": "https://www.fct-cf.ca/...",
+  "court_file_no": "IMM-12345-25",
+  "case_type": "Immigration Matters",
+  "type_of_action": "Application for Judicial Review",
+  "nature_of_proceeding": "Long description...",
+  "filing_date": "2025-01-15",
+  "office": "Toronto",
+  "style_of_cause": "Applicant v Respondent",
+  "language": "English",
+  "html_content": "<div>...</div>",
+  "scraped_at": "2025-11-22T10:00:00Z",
+  "docket_entries": [
+    {
+      "id_from_table": 1,
+      "date_filed": "2025-01-20",
+      "office": "Toronto",
+      "recorded_entry_summary": "Entry summary..."
+    }
+  ]
+}
+```
 
 ## Troubleshooting
 
-**ChromeDriver issues**:
+### Common Issues
+
+**Chrome WebDriver not found**:
+- Ensure Chrome browser is installed
+- WebDriver is managed automatically by selenium-manager
+
+**Database connection failed**:
+- Check PostgreSQL is running
+- Verify credentials in `config.py`
+
+**No cases found**:
+- Check network connectivity
+- Verify website is accessible
+- Review logs for error details
+
+**Rate limiting errors**:
+- The scraper implements automatic delays
+- If blocked, wait and retry later
+
+### Logs and Debugging
+
+Check `logs/scraper.log` for detailed error information. Enable debug logging by setting environment variable:
+
 ```bash
-# Install ChromeDriver
-wget https://chromedriver.storage.googleapis.com/114.0.5735.90/chromedriver_linux64.zip
-unzip chromedriver_linux64.zip
-sudo mv chromedriver /usr/local/bin/
+LOG_LEVEL=DEBUG python -m src.cli.main
 ```
 
-**Network issues**:
-- Check internet connectivity
-- Verify case URLs are accessible
-- Scraper will log and continue on individual failures
+## Performance
 
-**Data issues**:
-- Ensure output directory is writable
-- Check logs for validation errors
-- Verify CSV/JSON files are properly formatted
+- Processes ~100 cases per hour with implemented delays
+- Handles up to 100,000+ cases with resume capability
+- Stores data efficiently with UPSERT operations
 
-## Development
+## Safety
 
-Run tests:
-```bash
-pytest tests/
-```
-
-Check coverage:
-```bash
-pytest --cov=src tests/
-```
+- Respects website terms and robots.txt
+- Implements ethical scraping delays
+- Only accesses public case information
+- Includes circuit breaker for reliability

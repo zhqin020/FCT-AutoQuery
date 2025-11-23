@@ -1,144 +1,198 @@
-"""URL discovery service for finding Federal Court case URLs."""
+"""Case number generation service for Federal Court case scraping."""
 
-import requests
-from typing import List, Optional
-from urllib.parse import urljoin, urlparse
-import re
-from bs4 import BeautifulSoup
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from typing import List, Optional, Tuple
+from datetime import datetime
 
-from src.lib.url_validator import URLValidator
+from src.lib.config import Config
 from src.lib.logging_config import get_logger
 
 logger = get_logger()
 
 
-class CaseURLDiscoverer:
-    """Service for discovering Federal Court case URLs."""
+class UrlDiscoveryService:
+    """Service for generating case numbers and managing scraping progress."""
 
-    # Base URLs for case searches
-    BASE_SEARCH_URLS = [
-        "https://cas-cdc-www02.cas-satj.gc.ca/portal/page/portal/fc_cf_en",
-        "https://www.cas-satj.gc.ca/portal/page/portal/fc_cf_en",
-    ]
-
-    def __init__(self, timeout: int = 30):
-        """Initialize the URL discoverer.
+    def __init__(self, config: Config):
+        """Initialize the discovery service.
 
         Args:
-            timeout: Request timeout in seconds
+            config: Application configuration
         """
-        self.timeout = timeout
-        self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'
-        })
+        self.config = config
+        self.db_config = Config.get_db_config()
 
-    def discover_case_urls_for_year(self, year: int, max_cases: Optional[int] = None) -> List[str]:
-        """Discover case URLs for a specific year.
+    def get_last_processed_case(self, year: int) -> Optional[str]:
+        """Get the last processed case number for a given year.
 
         Args:
-            year: Year to search for cases
-            max_cases: Maximum number of cases to return (None for all)
+            year: Year to check
 
         Returns:
-            List[str]: List of valid case URLs
+            Optional[str]: Last processed case number, or None if none found
         """
-        logger.info(f"Discovering case URLs for year {year}")
+        try:
+            conn = psycopg2.connect(**self.db_config.__dict__)
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        case_urls = []
+            # Query for the highest case number in the given year
+            cursor.execute("""
+                SELECT case_id
+                FROM cases
+                WHERE case_id LIKE %s
+                ORDER BY case_id DESC
+                LIMIT 1
+            """, (f'IMM-%-{year % 100:02d}',))
 
-        for base_url in self.BASE_SEARCH_URLS:
+            result = cursor.fetchone()
+            cursor.close()
+            conn.close()
+
+            if result:
+                return result['case_id']
+            return None
+
+        except Exception as e:
+            logger.error(f"Error querying last processed case for year {year}: {e}")
+            return None
+
+    def generate_case_numbers_from_last(
+        self, year: int, max_cases: Optional[int] = None
+    ) -> List[str]:
+        """Generate case numbers starting from the last processed one.
+
+        Args:
+            year: Year to generate cases for
+            max_cases: Maximum number of case numbers to generate
+
+        Returns:
+            List[str]: List of case numbers to process
+        """
+        last_case = self.get_last_processed_case(year)
+
+        if last_case:
+            # Parse the last case number
             try:
-                urls = self._search_year_at_base_url(base_url, year, max_cases)
-                case_urls.extend(urls)
+                # Format: IMM-XXXXX-YY
+                parts = last_case.split('-')
+                if len(parts) == 3 and parts[0] == 'IMM':
+                    last_num = int(parts[1])
+                    start_num = last_num + 1
+                    logger.info(f"Resuming from case number {last_num} for year {year}")
+                else:
+                    raise ValueError(f"Invalid case format: {last_case}")
+            except (ValueError, IndexError) as e:
+                logger.warning(f"Could not parse last case {last_case}: {e}. Starting from 1.")
+                start_num = 1
+        else:
+            start_num = 1
+            logger.info(f"No previous cases found for year {year}, starting from 1")
 
-                if max_cases and len(case_urls) >= max_cases:
-                    break
+        # Generate case numbers
+        case_numbers = []
+        year_suffix = f"{year % 100:02d}"
 
-            except Exception as e:
-                logger.warning(f"Failed to search at {base_url}: {e}")
-                continue
+        for num in range(start_num, start_num + (max_cases or 1000)):
+            case_num = f"IMM-{num:05d}-{year_suffix}"
+            case_numbers.append(case_num)
 
-        # Remove duplicates and validate
-        unique_urls = list(set(case_urls))
-        valid_urls = [url for url in unique_urls if URLValidator.is_case_url(url)]
+            if max_cases and len(case_numbers) >= max_cases:
+                break
 
-        if max_cases:
-            valid_urls = valid_urls[:max_cases]
+        logger.info(f"Generated {len(case_numbers)} case numbers starting from {case_numbers[0]}")
+        return case_numbers
 
-        logger.info(f"Discovered {len(valid_urls)} valid case URLs for year {year}")
-        return valid_urls
-
-    def _search_year_at_base_url(self, base_url: str, year: int, max_cases: Optional[int]) -> List[str]:
-        """Search for cases at a specific base URL.
-
-        Args:
-            base_url: Base search URL
-            year: Year to search
-            max_cases: Maximum cases to return
-
-        Returns:
-            List[str]: Case URLs found
-        """
-        # This is a simplified implementation
-        # Real implementation would need to:
-        # 1. Navigate to search page
-        # 2. Fill search form with year criteria
-        # 3. Submit search
-        # 4. Parse results page for case links
-        # 5. Handle pagination
-
-        # For now, return mock URLs for testing
-        # In real implementation, this would scrape actual search results
-
-        mock_urls = []
-        for i in range(min(max_cases or 10, 10)):  # Mock up to 10 cases
-            case_number = "02d"
-            mock_url = f"{base_url}/case/IMM-{case_number}-{year % 100:02d}"
-            mock_urls.append(mock_url)
-
-        return mock_urls
-
-    def discover_case_urls_for_years(self, years: List[int], max_cases_per_year: Optional[int] = None) -> List[str]:
-        """Discover case URLs for multiple years.
+    def generate_case_numbers_for_year(
+        self, year: int, start_num: int = 1, max_cases: Optional[int] = None
+    ) -> List[str]:
+        """Generate case numbers for a specific year.
 
         Args:
-            years: List of years to search
-            max_cases_per_year: Maximum cases per year
+            year: Year to generate cases for
+            start_num: Starting case number
+            max_cases: Maximum number of cases to generate
 
         Returns:
-            List[str]: Combined list of case URLs
+            List[str]: List of case numbers
         """
-        all_urls = []
+        case_numbers = []
+        year_suffix = f"{year % 100:02d}"
 
-        for year in years:
-            year_urls = self.discover_case_urls_for_year(year, max_cases_per_year)
-            all_urls.extend(year_urls)
+        for num in range(start_num, start_num + (max_cases or 10000)):
+            case_num = f"IMM-{num:05d}-{year_suffix}"
+            case_numbers.append(case_num)
 
-        # Remove duplicates
-        unique_urls = list(set(all_urls))
+            if max_cases and len(case_numbers) >= max_cases:
+                break
 
-        logger.info(f"Total unique case URLs discovered: {len(unique_urls)}")
-        return unique_urls
+        logger.info(f"Generated {len(case_numbers)} case numbers for year {year}")
+        return case_numbers
 
-    def validate_discovered_urls(self, urls: List[str]) -> tuple[List[str], List[str]]:
-        """Validate a list of discovered URLs.
+    def should_skip_year(self, year: int, consecutive_failures: int) -> bool:
+        """Determine if a year should be skipped due to consecutive failures.
 
         Args:
-            urls: URLs to validate
+            year: Year to check
+            consecutive_failures: Number of consecutive cases with no results
 
         Returns:
-            tuple: (valid_urls, invalid_urls)
+            bool: True if year should be skipped
         """
-        valid_urls = []
-        invalid_urls = []
+        # Skip if more than 100 consecutive failures (likely no more cases in this year)
+        if consecutive_failures >= 100:
+            logger.info(f"Skipping year {year} due to {consecutive_failures} consecutive failures")
+            return True
+        return False
 
-        for url in urls:
-            is_valid, _ = URLValidator.validate_case_url(url)
-            if is_valid:
-                valid_urls.append(url)
-            else:
-                invalid_urls.append(url)
+    def mark_case_processed(self, case_id: str) -> None:
+        """Mark a case as processed (for resume functionality).
 
-        logger.info(f"URL validation: {len(valid_urls)} valid, {len(invalid_urls)} invalid")
-        return valid_urls, invalid_urls
+        Note: This is handled by the ExportService when cases are saved,
+        but this method can be used for tracking progress.
+
+        Args:
+            case_id: Case ID that was processed
+        """
+        # This could be used to maintain a separate progress table if needed
+        logger.debug(f"Case {case_id} marked as processed")
+
+    def get_processing_stats(self, year: int) -> dict:
+        """Get processing statistics for a year.
+
+        Args:
+            year: Year to get stats for
+
+        Returns:
+            dict: Statistics about processed cases
+        """
+        try:
+            conn = psycopg2.connect(**self.db_config.__dict__)
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+            # Count cases for this year
+            cursor.execute("""
+                SELECT COUNT(*) as total_cases,
+                       MAX(scraped_at) as last_scraped
+                FROM cases
+                WHERE case_id LIKE %s
+            """, (f'IMM-%-{year % 100:02d}',))
+
+            result = cursor.fetchone()
+            cursor.close()
+            conn.close()
+
+            return {
+                'year': year,
+                'total_cases': result['total_cases'] if result else 0,
+                'last_scraped': result['last_scraped'] if result else None
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting processing stats for year {year}: {e}")
+            return {
+                'year': year,
+                'total_cases': 0,
+                'last_scraped': None,
+                'error': str(e)
+            }

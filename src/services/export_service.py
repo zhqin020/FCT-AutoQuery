@@ -1,28 +1,39 @@
-"""Export service for structured data export in CSV and JSON formats."""
+"""Export service for structured data export in CSV, JSON, and database formats."""
 
 import json
 import csv
-import os
-from typing import List, Optional
+import psycopg2
+from psycopg2.extras import execute_values
+from typing import List, Optional, Tuple
 from pathlib import Path
-from loguru import logger
+from datetime import datetime
 
+from src.lib.config import Config
+from src.lib.logging_config import get_logger
 from src.models.case import Case
+from src.models.docket_entry import DocketEntry
+
+logger = get_logger()
 
 
 class ExportService:
-    """Service for exporting case data to CSV and JSON formats."""
+    """Service for exporting case data to CSV, JSON, and database formats."""
 
-    def __init__(self, output_dir: str = "output"):
+    def __init__(self, config: Config, output_dir: str = "output"):
         """
         Initialize the export service.
 
         Args:
+            config: Application configuration
             output_dir: Directory to save exported files (default: "output")
         """
+        self.config = config
+        self.db_config = Config.get_db_config()
         self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(exist_ok=True)
-        logger.info(f"ExportService initialized with output directory: {self.output_dir}")
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(
+            f"ExportService initialized with output directory: {self.output_dir}"
+        )
 
     def export_to_json(self, cases: List[Case], filename: Optional[str] = None) -> str:
         """
@@ -46,6 +57,7 @@ class ExportService:
 
         if filename is None:
             from datetime import datetime
+
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"cases_export_{timestamp}.json"
 
@@ -56,10 +68,12 @@ class ExportService:
             case_dicts = [case.to_dict() for case in cases]
 
             # Write to JSON file
-            with open(file_path, 'w', encoding='utf-8') as f:
+            with open(file_path, "w", encoding="utf-8") as f:
                 json.dump(case_dicts, f, indent=2, ensure_ascii=False, default=str)
 
-            logger.info(f"Successfully exported {len(cases)} cases to JSON: {file_path}")
+            logger.info(
+                f"Successfully exported {len(cases)} cases to JSON: {file_path}"
+            )
             return str(file_path)
 
         except Exception as e:
@@ -88,6 +102,7 @@ class ExportService:
 
         if filename is None:
             from datetime import datetime
+
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"cases_export_{timestamp}.csv"
 
@@ -95,18 +110,37 @@ class ExportService:
 
         try:
             # Write to CSV file
-            with open(file_path, 'w', newline='', encoding='utf-8') as f:
+            with open(file_path, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
 
                 # Write header
-                writer.writerow([
-                    "case_id", "case_number", "title", "court",
-                    "date", "html_content", "scraped_at"
-                ])
+                writer.writerow(
+                    [
+                        "case_id",
+                        "case_type",
+                        "action_type",
+                        "nature_of_proceeding",
+                        "filing_date",
+                        "office",
+                        "style_of_cause",
+                        "language",
+                        "scraped_at",
+                    ]
+                )
 
                 # Write data rows
                 for case in cases:
-                    writer.writerow(case.to_csv_row())
+                    writer.writerow([
+                        case.court_file_no,
+                        getattr(case, 'case_type', ''),
+                        getattr(case, 'action_type', ''),
+                        getattr(case, 'nature_of_proceeding', ''),
+                        getattr(case, 'filing_date', ''),
+                        getattr(case, 'office', ''),
+                        getattr(case, 'style_of_cause', ''),
+                        getattr(case, 'language', ''),
+                        datetime.now().isoformat(),
+                    ])
 
             logger.info(f"Successfully exported {len(cases)} cases to CSV: {file_path}")
             return str(file_path)
@@ -115,7 +149,9 @@ class ExportService:
             logger.error(f"Failed to export cases to CSV: {e}")
             raise
 
-    def export_all_formats(self, cases: List[Case], base_filename: Optional[str] = None) -> dict:
+    def export_all_formats(
+        self, cases: List[Case], base_filename: Optional[str] = None
+    ) -> dict:
         """
         Export cases to both JSON and CSV formats.
 
@@ -135,6 +171,7 @@ class ExportService:
 
         if base_filename is None:
             from datetime import datetime
+
             base_filename = f"cases_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
         try:
@@ -163,18 +200,14 @@ class ExportService:
                 raise ValueError(f"Case at index {i} is not a Case instance")
 
             # Check required fields
-            if not case.case_id:
+            if not case.court_file_no:
                 raise ValueError(f"Case at index {i} has empty case_id")
 
-            if not case.case_number:
-                raise ValueError(f"Case at index {i} has empty case_number")
-
-            if not case.title:
-                raise ValueError(f"Case at index {i} has empty title")
-
-            # Validate URL format
-            if not case.case_id.startswith("https://www.fct-cf.ca/"):
-                logger.warning(f"Case {case.case_number} has non-standard case_id: {case.case_id}")
+            # Validate case_id format (should be IMM-XXXXX-YY)
+            if not case.court_file_no.startswith("IMM-") or len(case.court_file_no.split('-')) != 3:
+                logger.warning(
+                    f"Case at index {i} has non-standard court_file_no format: {case.court_file_no}"
+                )
 
     def get_export_history(self) -> List[str]:
         """
@@ -184,7 +217,7 @@ class ExportService:
             List of exported file paths (JSON and CSV files)
         """
         export_files = []
-        for ext in ['*.json', '*.csv']:
+        for ext in ["*.json", "*.csv"]:
             export_files.extend([str(f) for f in self.output_dir.glob(ext)])
 
         return sorted(export_files)
@@ -200,7 +233,7 @@ class ExportService:
             Number of files deleted
         """
         export_files = []
-        for ext in ['*.json', '*.csv']:
+        for ext in ["*.json", "*.csv"]:
             export_files.extend(list(self.output_dir.glob(ext)))
 
         # Sort by modification time (newest first)
@@ -222,3 +255,202 @@ class ExportService:
             logger.info(f"Cleaned up {deleted_count} old export files")
 
         return deleted_count
+
+    def save_case_to_database(self, case: Case) -> bool:
+        """
+        Save a single case to the database using UPSERT.
+
+        Args:
+            case: Case object to save
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            conn = psycopg2.connect(**self.db_config.__dict__)
+            cursor = conn.cursor()
+
+            # UPSERT case data
+            cursor.execute("""
+                INSERT INTO cases (
+                    case_id, case_type, action_type, nature_of_proceeding,
+                    filing_date, office, style_of_cause, language, scraped_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (case_id) DO UPDATE SET
+                    case_type = EXCLUDED.case_type,
+                    action_type = EXCLUDED.action_type,
+                    nature_of_proceeding = EXCLUDED.nature_of_proceeding,
+                    filing_date = EXCLUDED.filing_date,
+                    office = EXCLUDED.office,
+                    style_of_cause = EXCLUDED.style_of_cause,
+                    language = EXCLUDED.language,
+                    scraped_at = EXCLUDED.scraped_at
+            """, (
+                case.court_file_no,
+                getattr(case, 'case_type', None),
+                getattr(case, 'action_type', None),
+                getattr(case, 'nature_of_proceeding', None),
+                getattr(case, 'filing_date', None),
+                getattr(case, 'office', None),
+                getattr(case, 'style_of_cause', None),
+                getattr(case, 'language', None),
+                datetime.now()
+            ))
+
+            # Save docket entries if they exist
+            if hasattr(case, 'docket_entries') and case.docket_entries:
+                self._save_docket_entries(cursor, case.court_file_no, case.docket_entries)
+
+            conn.commit()
+            cursor.close()
+            conn.close()
+
+            logger.info(f"Successfully saved case {case.court_file_no} to database")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to save case {case.court_file_no} to database: {e}")
+            return False
+
+    def save_cases_to_database(self, cases: List[Case]) -> Tuple[int, int]:
+        """
+        Save multiple cases to the database using batch UPSERT.
+
+        Args:
+            cases: List of Case objects to save
+
+        Returns:
+            Tuple[int, int]: (successful_saves, failed_saves)
+        """
+        successful = 0
+        failed = 0
+
+        for case in cases:
+            if self.save_case_to_database(case):
+                successful += 1
+            else:
+                failed += 1
+
+        logger.info(f"Database save complete: {successful} successful, {failed} failed")
+        return successful, failed
+
+    def _save_docket_entries(self, cursor, case_id: str, docket_entries: List[DocketEntry]) -> None:
+        """
+        Save docket entries for a case.
+
+        Args:
+            cursor: Database cursor
+            case_id: Case ID
+            docket_entries: List of docket entries
+        """
+        if not docket_entries:
+            return
+
+        # Prepare data for batch insert
+        entries_data = []
+        for entry in docket_entries:
+            entries_data.append((
+                case_id,
+                entry.doc_id,
+                entry.entry_date,
+                entry.entry_office,
+                entry.summary
+            ))
+
+        # Batch insert with ON CONFLICT DO NOTHING (since docket entries are immutable)
+        execute_values(cursor, """
+            INSERT INTO docket_entries (case_id, doc_id, entry_date, entry_office, summary)
+            VALUES %s
+            ON CONFLICT (case_id, doc_id) DO NOTHING
+        """, entries_data)
+
+        logger.debug(f"Saved {len(docket_entries)} docket entries for case {case_id}")
+
+    def export_and_save(self, cases: List[Case], base_filename: Optional[str] = None) -> dict:
+        """
+        Export cases to files and save to database.
+
+        Args:
+            cases: List of Case objects to export and save
+            base_filename: Optional base filename for files
+
+        Returns:
+            Dictionary with export results
+        """
+        results = {}
+
+        try:
+            # Export to files
+            file_results = self.export_all_formats(cases, base_filename)
+            results.update(file_results)
+
+            # Save to database
+            successful, failed = self.save_cases_to_database(cases)
+            results['database'] = {
+                'successful': successful,
+                'failed': failed
+            }
+
+            logger.info(f"Export and save complete for {len(cases)} cases")
+            return results
+
+        except Exception as e:
+            logger.error(f"Failed to export and save cases: {e}")
+            results['error'] = str(e)
+            return results
+
+    def get_case_count_from_database(self) -> int:
+        """
+        Get total number of cases in the database.
+
+        Returns:
+            int: Number of cases
+        """
+        try:
+            conn = psycopg2.connect(**self.db_config.__dict__)
+            cursor = conn.cursor()
+
+            cursor.execute("SELECT COUNT(*) FROM cases")
+            count = cursor.fetchone()[0]
+
+            cursor.close()
+            conn.close()
+
+            return count
+
+        except Exception as e:
+            logger.error(f"Failed to get case count from database: {e}")
+            return 0
+
+    def get_cases_by_year_from_database(self, year: int) -> List[dict]:
+        """
+        Get all cases for a specific year from the database.
+
+        Args:
+            year: Year to query
+
+        Returns:
+            List[dict]: List of case dictionaries
+        """
+        try:
+            conn = psycopg2.connect(**self.db_config.__dict__)
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT * FROM cases
+                WHERE case_id LIKE %s
+                ORDER BY case_id
+            """, (f'IMM-%-{year % 100:02d}',))
+
+            columns = [desc[0] for desc in cursor.description]
+            cases = [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+            cursor.close()
+            conn.close()
+
+            logger.info(f"Retrieved {len(cases)} cases for year {year}")
+            return cases
+
+        except Exception as e:
+            logger.error(f"Failed to get cases for year {year}: {e}")
+            return []

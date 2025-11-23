@@ -95,59 +95,58 @@ specs/                       # 项目规格和任务管理
 
 #### 单个案件抓取
 ```bash
-python main.py "https://www.fct-cf.ca/en/court-files-and-decisions/IMM-12345-22"
+python -m src.cli.main single IMM-12345-25
 ```
 
 #### 批量抓取
 ```bash
-# 使用包含多个URL的文件
-python main.py --batch example_cases.txt
+# 抓取2025年的案件（从上次中断处继续）
+python -m src.cli.main batch 2025
+
+# 限制抓取数量
+python -m src.cli.main batch 2025 --max-cases 50
 ```
 
-#### 指定输出格式和目录
+#### 查看统计信息
 ```bash
-# 只导出JSON格式
-python main.py --format json --output ./results "https://www.fct-cf.ca/en/court-files-and-decisions/IMM-12345-22"
+# 查看所有年份的总案件数
+python -m src.cli.main stats
 
-# 只导出CSV格式
-python main.py --format csv --output ./results "https://www.fct-cf.ca/en/court-files-and-decisions/IMM-12345-22"
-
-# 同时导出两种格式（默认）
-python main.py --output ./results "https://www.fct-cf.ca/en/court-files-and-decisions/IMM-12345-22"
-```
-
-#### 显示浏览器窗口（调试用）
-```bash
-python main.py --no-headless "https://www.fct-cf.ca/en/court-files-and-decisions/IMM-12345-22"
+# 查看特定年份的统计
+python -m src.cli.main stats --year 2025
 ```
 
 ### Python API使用
 
 ```python
-from src.services.case_scraper_service import CaseScraperService
-from src.services.export_service import ExportService
+from src.cli.main import FederalCourtScraperCLI
 
-# 初始化服务
-scraper = CaseScraperService()
-exporter = ExportService()
+# 初始化CLI
+cli = FederalCourtScraperCLI()
 
-# 抓取案件
-case = scraper.scrape_single_case("https://www.fct-cf.ca/en/court-files-and-decisions/IMM-12345-22")
+# 抓取单个案件
+case = cli.scrape_single_case("IMM-12345-25")
+
+# 批量抓取
+cases = cli.scrape_batch_cases(2025, max_cases=10)
 
 # 导出数据
-exporter.export_all_formats([case], "case_data")
+export_result = cli.export_cases(cases, "federal_court_cases")
 ```
 
 ### 批量处理示例
 
-创建包含多个URL的文件 `cases.txt`：
-```
-https://www.fct-cf.ca/en/court-files-and-decisions/IMM-12345-22
-https://www.fct-cf.ca/en/court-files-and-decisions/IMM-67890-23
-https://www.fct-cf.ca/en/court-files-and-decisions/IMM-11111-24
+运行批量抓取2025年的案件：
+```bash
+python -m src.cli.main batch 2025
 ```
 
-运行批量抓取：
+这将：
+1. 从上次中断处继续（如果有的话）
+2. 使用搜索表单查找案件
+3. 提取案件详情和法庭记录
+4. 保存到PostgreSQL数据库
+5. 导出为JSON和CSV文件
 ```bash
 python main.py --batch cases.txt
 ```
@@ -253,6 +252,79 @@ mypy src/
 - 遵守网站的robots.txt和使用条款
 - 避免对目标网站造成过大负担
 - 用于合法的研究和分析目的
+
+## 🔧 故障排除
+
+### 常见问题
+
+#### Chrome WebDriver 问题
+**问题**: `WebDriverException: Message: 'chromedriver' executable needs to be in PATH`
+
+**解决方法**:
+```bash
+# 安装 WebDriver Manager
+pip install webdriver-manager
+
+# 或手动下载 ChromeDriver
+# 1. 检查 Chrome 版本: chrome://version
+# 2. 下载对应版本: https://chromedriver.chromium.org/downloads
+# 3. 添加到 PATH 或项目目录
+```
+
+#### 数据库连接问题
+**问题**: `psycopg2.OperationalError: could not connect to server`
+
+**解决方法**:
+```bash
+# 确保 PostgreSQL 运行
+sudo systemctl status postgresql
+
+# 检查数据库配置 in src/lib/config.py
+# 运行数据库初始化
+python scripts/init_database.py
+```
+
+#### 案件搜索失败
+**问题**: 连续多个案件搜索失败
+
+**解决方法**:
+- 检查案件编号格式: `IMM-XXXXX-YY`
+- 确认年份在有效范围内 (2020-2025)
+- 查看日志中的详细错误信息
+- 可能触发了紧急停止机制
+
+#### 内存不足
+**问题**: 大批量处理时内存不足
+
+**解决方法**:
+- 减少 `--max-cases` 参数
+- 分批处理不同年份
+- 增加系统内存或使用 swap
+
+#### 网络超时
+**问题**: `TimeoutException` 频繁出现
+
+**解决方法**:
+- 检查网络连接
+- 增加超时设置 in config.py
+- 减少并发请求 (当前设计为单线程)
+
+### 调试模式
+
+启用详细日志:
+```bash
+# 设置日志级别
+export LOGURU_LEVEL=DEBUG
+
+# 运行时查看详细输出
+python -m src.cli.main single IMM-12345-25
+```
+
+### 性能优化
+
+- 使用 SSD 存储数据库
+- 定期运行 `VACUUM` 维护 PostgreSQL
+- 监控磁盘空间使用情况
 
 ## 📞 联系方式
 

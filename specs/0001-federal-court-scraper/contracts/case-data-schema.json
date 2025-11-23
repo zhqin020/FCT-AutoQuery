@@ -1,48 +1,91 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Federal Court Case Data Schema",
-  "description": "JSON schema for scraped federal court case data",
+  "description": "JSON schema for scraped federal court case data including docket entries",
   "type": "object",
   "properties": {
-    "case_id": {
+    "url": {
       "type": "string",
-      "description": "Unique identifier for the case"
+      "format": "uri",
+      "description": "URL of the case page"
     },
-    "case_number": {
+    "court_file_no": {
       "type": "string",
-      "pattern": ".*IMM-.*",
-      "description": "Case number containing IMM-"
+      "pattern": "^IMM-.*",
+      "description": "Court file number (e.g., IMM-12345-25)"
     },
-    "title": {
+    "case_type": {
       "type": "string",
-      "description": "Case title"
+      "description": "Type (e.g., Immigration Matters)"
     },
-    "court": {
+    "type_of_action": {
       "type": "string",
-      "description": "Court name"
+      "description": "Type of Action"
     },
-    "date": {
+    "nature_of_proceeding": {
+      "type": "string",
+      "description": "Nature of Proceeding (long text)"
+    },
+    "filing_date": {
       "type": "string",
       "format": "date",
-      "description": "Case date"
+      "description": "Filing Date"
+    },
+    "office": {
+      "type": "string",
+      "description": "Office (e.g., Toronto)"
+    },
+    "style_of_cause": {
+      "type": "string",
+      "description": "Style of Cause (parties, long text)"
+    },
+    "language": {
+      "type": "string",
+      "description": "Language"
     },
     "html_content": {
       "type": "string",
       "minLength": 1,
-      "description": "Full HTML content of the case"
+      "description": "Full HTML content of the modal"
     },
     "scraped_at": {
       "type": "string",
       "format": "date-time",
       "description": "Data collection timestamp"
+    },
+    "docket_entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id_from_table": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "ID (sequence number from table)"
+          },
+          "date_filed": {
+            "type": "string",
+            "format": "date",
+            "description": "Date Filed (submission date)"
+          },
+          "office": {
+            "type": "string",
+            "description": "Office (submission location)"
+          },
+          "recorded_entry_summary": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Recorded Entry Summary (content)"
+          }
+        },
+        "required": ["id_from_table", "recorded_entry_summary"]
+      },
+      "description": "Array of docket entries for the case"
     }
   },
   "required": [
-    "case_id",
-    "case_number",
-    "title",
-    "court",
-    "date",
+    "url",
+    "court_file_no",
     "html_content",
     "scraped_at"
   ]

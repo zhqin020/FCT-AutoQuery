@@ -14,12 +14,13 @@ def mock_logger():
 def sample_case_data():
     """Sample case data for testing."""
     from datetime import date
+
     return {
-        "case_id": "https://www.fct-cf.ca/en/court-files-and-decisions/sample-case",
-        "case_number": "IMM-12345-22",
-        "title": "Sample Immigration Case",
-        "court": "Federal Court",
-        "date": date(2023, 6, 15),
+        "url": "https://www.fct-cf.ca/en/court-files-and-decisions/sample-case",
+        "court_file_no": "IMM-12345-22",
+        "case_title": "Sample Immigration Case",
+        "court_name": "Federal Court",
+        "case_date": date(2023, 6, 15),
         "html_content": "<html><body><h1>Sample Case Content</h1></body></html>",
     }
 

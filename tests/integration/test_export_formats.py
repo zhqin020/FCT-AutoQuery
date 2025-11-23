@@ -7,6 +7,7 @@ import os
 from datetime import date, datetime
 from src.models.case import Case
 from src.services.export_service import ExportService
+from src.lib.config import Config
 
 
 class TestExportFormats:
@@ -21,20 +22,20 @@ class TestExportFormats:
         # Create test cases
         cases = [
             Case(
-                case_id="https://www.fct-cf.ca/en/court-files-and-decisions/IMM-12345-22",
-                case_number="IMM-12345-22",
-                title="Test Case 1",
-                court="Federal Court",
-                date=date(2023, 6, 15),
+                url="https://www.fct-cf.ca/en/court-files-and-decisions/IMM-12345-22",
+                court_file_no="IMM-12345-22",
+                case_title="Test Case 1",
+                court_name="Federal Court",
+                case_date=date(2023, 6, 15),
                 html_content="<html><body>Case 1 content</body></html>",
                 scraped_at=datetime(2023, 6, 15, 10, 0, 0),
             ),
             Case(
-                case_id="https://www.fct-cf.ca/en/court-files-and-decisions/IMM-67890-23",
-                case_number="IMM-67890-23",
-                title="Test Case 2",
-                court="Federal Court",
-                date=date(2023, 7, 20),
+                url="https://www.fct-cf.ca/en/court-files-and-decisions/IMM-67890-23",
+                court_file_no="IMM-67890-23",
+                case_title="Test Case 2",
+                court_name="Federal Court",
+                case_date=date(2023, 7, 20),
                 html_content="<html><body>Case 2 content</body></html>",
                 scraped_at=datetime(2023, 7, 20, 11, 0, 0),
             ),
@@ -59,20 +60,20 @@ class TestExportFormats:
         # Create test cases
         cases = [
             Case(
-                case_id="https://www.fct-cf.ca/en/court-files-and-decisions/IMM-11111-24",
-                case_number="IMM-11111-24",
-                title="CSV Test Case 1",
-                court="Federal Court",
-                date=date(2023, 8, 10),
+                url="https://www.fct-cf.ca/en/court-files-and-decisions/IMM-11111-24",
+                court_file_no="IMM-11111-24",
+                case_title="CSV Test Case 1",
+                court_name="Federal Court",
+                case_date=date(2023, 8, 10),
                 html_content="<html><body>CSV content 1</body></html>",
                 scraped_at=datetime(2023, 8, 10, 9, 30, 0),
             ),
             Case(
-                case_id="https://www.fct-cf.ca/en/court-files-and-decisions/IMM-22222-24",
-                case_number="IMM-22222-24",
-                title="CSV Test Case 2",
-                court="Federal Court",
-                date=date(2023, 9, 5),
+                url="https://www.fct-cf.ca/en/court-files-and-decisions/IMM-22222-24",
+                court_file_no="IMM-22222-24",
+                case_title="CSV Test Case 2",
+                court_name="Federal Court",
+                case_date=date(2023, 9, 5),
                 html_content="<html><body>CSV content 2</body></html>",
                 scraped_at=datetime(2023, 9, 5, 14, 15, 0),
             ),
@@ -85,10 +86,20 @@ class TestExportFormats:
         assert len(csv_rows[1]) == 7
 
         # Test CSV writing
-        with tempfile.NamedTemporaryFile(mode='w+', suffix='.csv', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w+", suffix=".csv", delete=False) as f:
             writer = csv.writer(f)
             # Write header
-            writer.writerow(["case_id", "case_number", "title", "court", "date", "html_content", "scraped_at"])
+            writer.writerow(
+                [
+                    "case_id",
+                    "case_number",
+                    "title",
+                    "court",
+                    "date",
+                    "html_content",
+                    "scraped_at",
+                ]
+            )
             # Write data
             writer.writerows(csv_rows)
             temp_file = f.name
@@ -96,7 +107,7 @@ class TestExportFormats:
         try:
             # Verify file was written
             assert os.path.exists(temp_file)
-            with open(temp_file, 'r') as f:
+            with open(temp_file, "r") as f:
                 content = f.read()
                 assert "IMM-11111-24" in content
                 assert "IMM-22222-24" in content
@@ -107,11 +118,11 @@ class TestExportFormats:
     def test_export_with_special_characters_csv(self):
         """Test CSV export handles special characters correctly."""
         case = Case(
-            case_id="https://www.fct-cf.ca/en/court-files-and-decisions/IMM-33333-25",
-            case_number="IMM-33333-25",
-            title="Case with spécial chars: éñü",
-            court="Federal Court",
-            date=date(2023, 10, 1),
+            url="https://www.fct-cf.ca/en/court-files-and-decisions/IMM-33333-25",
+            court_file_no="IMM-33333-25",
+            case_title="Case with spécial chars: éñü",
+            court_name="Federal Court",
+            case_date=date(2023, 10, 1),
             html_content='<html><body>Content with "quotes" and commas, and newlines\n</body></html>',
             scraped_at=datetime(2023, 10, 1, 12, 0, 0),
         )
@@ -119,14 +130,26 @@ class TestExportFormats:
         csv_row = case.to_csv_row()
 
         # Test CSV writing with special characters
-        with tempfile.NamedTemporaryFile(mode='w+', suffix='.csv', delete=False, encoding='utf-8') as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w+", suffix=".csv", delete=False, encoding="utf-8"
+        ) as f:
             writer = csv.writer(f)
-            writer.writerow(["case_id", "case_number", "title", "court", "date", "html_content", "scraped_at"])
+            writer.writerow(
+                [
+                    "case_id",
+                    "case_number",
+                    "title",
+                    "court",
+                    "date",
+                    "html_content",
+                    "scraped_at",
+                ]
+            )
             writer.writerow(csv_row)
             temp_file = f.name
 
         try:
-            with open(temp_file, 'r', encoding='utf-8') as f:
+            with open(temp_file, "r", encoding="utf-8") as f:
                 content = f.read()
                 assert "spécial chars" in content
                 assert '"quotes"' in content
@@ -143,16 +166,26 @@ class TestExportFormats:
         assert json_str == "[]"
 
         # CSV with empty data
-        with tempfile.NamedTemporaryFile(mode='w+', suffix='.csv', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w+", suffix=".csv", delete=False) as f:
             writer = csv.writer(f)
-            writer.writerow(["case_id", "case_number", "title", "court", "date", "html_content", "scraped_at"])
+            writer.writerow(
+                [
+                    "case_id",
+                    "case_number",
+                    "title",
+                    "court",
+                    "date",
+                    "html_content",
+                    "scraped_at",
+                ]
+            )
             # No data rows
             temp_file = f.name
 
         try:
-            with open(temp_file, 'r') as f:
+            with open(temp_file, "r") as f:
                 content = f.read()
-                lines = content.strip().split('\n')
+                lines = content.strip().split("\n")
                 assert len(lines) == 1  # Just header
                 assert "case_id" in lines[0]
         finally:
@@ -162,26 +195,28 @@ class TestExportFormats:
         """Test that export files are created with correct names."""
         cases = [
             Case(
-                case_id="https://www.fct-cf.ca/en/court-files-and-decisions/IMM-44444-25",
-                case_number="IMM-44444-25",
-                title="File Creation Test",
-                court="Federal Court",
-                date=date(2023, 11, 1),
+                url="https://www.fct-cf.ca/en/court-files-and-decisions/IMM-44444-25",
+                court_file_no="IMM-44444-25",
+                case_title="File Creation Test",
+                court_name="Federal Court",
+                case_date=date(2023, 11, 1),
                 html_content="<html><body>Test</body></html>",
                 scraped_at=datetime(2023, 11, 1, 13, 0, 0),
             ),
         ]
 
         # Test JSON file creation
-        with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as json_file:
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as json_file:
             json_file_path = json_file.name
 
         try:
-            with open(json_file_path, 'w', encoding='utf-8') as f:
-                json.dump([case.to_dict() for case in cases], f, indent=2, ensure_ascii=False)
+            with open(json_file_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    [case.to_dict() for case in cases], f, indent=2, ensure_ascii=False
+                )
 
             assert os.path.exists(json_file_path)
-            with open(json_file_path, 'r', encoding='utf-8') as f:
+            with open(json_file_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 assert len(data) == 1
                 assert data[0]["case_number"] == "IMM-44444-25"
@@ -189,18 +224,28 @@ class TestExportFormats:
             os.unlink(json_file_path)
 
         # Test CSV file creation
-        with tempfile.NamedTemporaryFile(suffix='.csv', delete=False) as csv_file:
+        with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as csv_file:
             csv_file_path = csv_file.name
 
         try:
-            with open(csv_file_path, 'w', newline='', encoding='utf-8') as f:
+            with open(csv_file_path, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
-                writer.writerow(["case_id", "case_number", "title", "court", "date", "html_content", "scraped_at"])
+                writer.writerow(
+                    [
+                        "case_id",
+                        "case_number",
+                        "title",
+                        "court",
+                        "date",
+                        "html_content",
+                        "scraped_at",
+                    ]
+                )
                 for case in cases:
                     writer.writerow(case.to_csv_row())
 
             assert os.path.exists(csv_file_path)
-            with open(csv_file_path, 'r', encoding='utf-8') as f:
+            with open(csv_file_path, "r", encoding="utf-8") as f:
                 reader = csv.reader(f)
                 rows = list(reader)
                 assert len(rows) == 2  # Header + 1 data row
@@ -213,11 +258,11 @@ class TestExportFormats:
         # Create test cases
         cases = [
             Case(
-                case_id="https://www.fct-cf.ca/en/court-files-and-decisions/IMM-55555-25",
-                case_number="IMM-55555-25",
-                title="ExportService JSON Test",
-                court="Federal Court",
-                date=date(2023, 12, 1),
+                url="https://www.fct-cf.ca/en/court-files-and-decisions/IMM-55555-25",
+                court_file_no="IMM-55555-25",
+                case_title="ExportService JSON Test",
+                court_name="Federal Court",
+                case_date=date(2023, 12, 1),
                 html_content="<html><body>ExportService test content</body></html>",
                 scraped_at=datetime(2023, 12, 1, 14, 0, 0),
             ),
@@ -225,7 +270,7 @@ class TestExportFormats:
 
         # Create ExportService with temp directory
         with tempfile.TemporaryDirectory() as temp_dir:
-            export_service = ExportService(temp_dir)
+            export_service = ExportService(Config, temp_dir)
 
             # Export to JSON
             json_path = export_service.export_to_json(cases, "test_export.json")
@@ -234,7 +279,7 @@ class TestExportFormats:
             assert os.path.exists(json_path)
 
             # Verify content
-            with open(json_path, 'r', encoding='utf-8') as f:
+            with open(json_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 assert len(data) == 1
                 assert data[0]["case_number"] == "IMM-55555-25"
@@ -245,11 +290,11 @@ class TestExportFormats:
         # Create test cases
         cases = [
             Case(
-                case_id="https://www.fct-cf.ca/en/court-files-and-decisions/IMM-66666-25",
-                case_number="IMM-66666-25",
-                title="ExportService CSV Test",
-                court="Federal Court",
-                date=date(2023, 12, 15),
+                url="https://www.fct-cf.ca/en/court-files-and-decisions/IMM-66666-25",
+                court_file_no="IMM-66666-25",
+                case_title="ExportService CSV Test",
+                court_name="Federal Court",
+                case_date=date(2023, 12, 15),
                 html_content="<html><body>CSV export test</body></html>",
                 scraped_at=datetime(2023, 12, 15, 15, 0, 0),
             ),
@@ -257,7 +302,7 @@ class TestExportFormats:
 
         # Create ExportService with temp directory
         with tempfile.TemporaryDirectory() as temp_dir:
-            export_service = ExportService(temp_dir)
+            export_service = ExportService(Config, temp_dir)
 
             # Export to CSV
             csv_path = export_service.export_to_csv(cases, "test_export.csv")
@@ -266,7 +311,7 @@ class TestExportFormats:
             assert os.path.exists(csv_path)
 
             # Verify content
-            with open(csv_path, 'r', encoding='utf-8') as f:
+            with open(csv_path, "r", encoding="utf-8") as f:
                 reader = csv.reader(f)
                 rows = list(reader)
                 assert len(rows) == 2  # Header + 1 data row
@@ -278,11 +323,11 @@ class TestExportFormats:
         # Create test cases
         cases = [
             Case(
-                case_id="https://www.fct-cf.ca/en/court-files-and-decisions/IMM-77777-25",
-                case_number="IMM-77777-25",
-                title="Both Formats Test",
-                court="Federal Court",
-                date=date(2024, 1, 1),
+                url="https://www.fct-cf.ca/en/court-files-and-decisions/IMM-77777-25",
+                court_file_no="IMM-77777-25",
+                case_title="Both Formats Test",
+                court_name="Federal Court",
+                case_date=date(2024, 1, 1),
                 html_content="<html><body>Both formats test</body></html>",
                 scraped_at=datetime(2024, 1, 1, 16, 0, 0),
             ),
@@ -290,7 +335,7 @@ class TestExportFormats:
 
         # Create ExportService with temp directory
         with tempfile.TemporaryDirectory() as temp_dir:
-            export_service = ExportService(temp_dir)
+            export_service = ExportService(Config, temp_dir)
 
             # Export to both formats
             result = export_service.export_all_formats(cases, "both_formats_test")
@@ -302,13 +347,13 @@ class TestExportFormats:
             assert os.path.exists(result["csv"])
 
             # Verify JSON content
-            with open(result["json"], 'r', encoding='utf-8') as f:
+            with open(result["json"], "r", encoding="utf-8") as f:
                 json_data = json.load(f)
                 assert len(json_data) == 1
                 assert json_data[0]["case_number"] == "IMM-77777-25"
 
             # Verify CSV content
-            with open(result["csv"], 'r', encoding='utf-8') as f:
+            with open(result["csv"], "r", encoding="utf-8") as f:
                 reader = csv.reader(f)
                 rows = list(reader)
                 assert len(rows) == 2
@@ -318,7 +363,7 @@ class TestExportFormats:
         """Test ExportService validation of cases."""
         # Create ExportService with temp directory
         with tempfile.TemporaryDirectory() as temp_dir:
-            export_service = ExportService(temp_dir)
+            export_service = ExportService(Config, temp_dir)
 
             # Test empty cases list
             try:
@@ -339,11 +384,11 @@ class TestExportFormats:
         # Create test case with special characters
         cases = [
             Case(
-                case_id="https://www.fct-cf.ca/en/court-files-and-decisions/IMM-99999-25",
-                case_number="IMM-99999-25",
-                title="Spécial caractères: éñü 测试",
-                court="Federal Court",
-                date=date(2024, 2, 1),
+                url="https://www.fct-cf.ca/en/court-files-and-decisions/IMM-99999-25",
+                court_file_no="IMM-99999-25",
+                case_title="Spécial caractères: éñü 测试",
+                court_name="Federal Court",
+                case_date=date(2024, 2, 1),
                 html_content='<html><body>Content with "quotes", commas, and newlines\n测试</body></html>',
                 scraped_at=datetime(2024, 2, 1, 18, 0, 0),
             ),
@@ -351,19 +396,19 @@ class TestExportFormats:
 
         # Create ExportService with temp directory
         with tempfile.TemporaryDirectory() as temp_dir:
-            export_service = ExportService(temp_dir)
+            export_service = ExportService(Config, temp_dir)
 
             # Export to both formats
             result = export_service.export_all_formats(cases, "special_chars_test")
 
             # Verify JSON preserves special characters
-            with open(result["json"], 'r', encoding='utf-8') as f:
+            with open(result["json"], "r", encoding="utf-8") as f:
                 json_data = json.load(f)
                 assert "Spécial caractères" in json_data[0]["title"]
                 assert "测试" in json_data[0]["html_content"]
 
             # Verify CSV preserves special characters
-            with open(result["csv"], 'r', encoding='utf-8') as f:
+            with open(result["csv"], "r", encoding="utf-8") as f:
                 content = f.read()
                 assert "Spécial caractères" in content
                 assert "测试" in content

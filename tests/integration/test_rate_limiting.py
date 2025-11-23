@@ -1,7 +1,6 @@
 """Integration tests for rate limiting functionality."""
 
 import time
-import pytest
 from unittest.mock import patch, MagicMock
 from src.services.case_scraper_service import CaseScraperService
 from src.lib.rate_limiter import EthicalRateLimiter
@@ -10,14 +9,18 @@ from src.lib.rate_limiter import EthicalRateLimiter
 class TestRateLimiting:
     """Integration tests for rate limiting during scraping operations."""
 
-    @patch('src.services.case_scraper_service.webdriver')
-    @patch('src.services.case_scraper_service.EthicalRateLimiter')
-    def test_rate_limiting_applied_during_multiple_scrapes(self, mock_rate_limiter, mock_webdriver):
+    @patch("src.services.case_scraper_service.webdriver")
+    @patch("src.services.case_scraper_service.EthicalRateLimiter")
+    def test_rate_limiting_applied_during_multiple_scrapes(
+        self, mock_rate_limiter, mock_webdriver
+    ):
         """Test that rate limiting is applied when scraping multiple cases."""
         # Setup mocks
         mock_driver = MagicMock()
         mock_webdriver.Chrome.return_value = mock_driver
-        mock_driver.page_source = "<html><title>Test Case</title><body>Test content</body></html>"
+        mock_driver.page_source = (
+            "<html><title>Test Case</title><body>Test content</body></html>"
+        )
 
         # Mock rate limiter to track calls
         mock_rate_limiter_instance = MagicMock()
@@ -37,19 +40,23 @@ class TestRateLimiting:
         for url in urls:
             result = service.scrape_single_case(url)
             assert result is not None
-            assert isinstance(result, dict) or hasattr(result, 'case_id')  # Case object
+            assert isinstance(result, dict) or hasattr(result, "case_id")  # Case object
 
         # Verify rate limiter was called for each scrape
         assert mock_rate_limiter_instance.wait_if_needed.call_count == len(urls)
 
-    @patch('src.services.case_scraper_service.webdriver')
-    @patch('src.services.case_scraper_service.EthicalRateLimiter')
-    def test_rate_limiting_enforces_minimum_interval(self, mock_rate_limiter, mock_webdriver):
+    @patch("src.services.case_scraper_service.webdriver")
+    @patch("src.services.case_scraper_service.EthicalRateLimiter")
+    def test_rate_limiting_enforces_minimum_interval(
+        self, mock_rate_limiter, mock_webdriver
+    ):
         """Test that rate limiting enforces minimum 1-second intervals."""
         # Setup mocks
         mock_driver = MagicMock()
         mock_webdriver.Chrome.return_value = mock_driver
-        mock_driver.page_source = "<html><title>Test Case</title><body>Test content</body></html>"
+        mock_driver.page_source = (
+            "<html><title>Test Case</title><body>Test content</body></html>"
+        )
 
         # Mock rate limiter to simulate waiting
         mock_rate_limiter_instance = MagicMock()
@@ -65,10 +72,12 @@ class TestRateLimiting:
         url1 = "https://www.fct-cf.ca/en/court-files-and-decisions/IMM-12345-22"
         start_time = time.time()
         result1 = service.scrape_single_case(url1)
-        first_scrape_time = time.time() - start_time
+        time.time() - start_time
 
         # Second scrape should trigger rate limiting
-        mock_rate_limiter_instance.wait_if_needed.return_value = 1.0  # Simulate 1 second wait
+        mock_rate_limiter_instance.wait_if_needed.return_value = (
+            1.0  # Simulate 1 second wait
+        )
 
         url2 = "https://www.fct-cf.ca/en/court-files-and-decisions/IMM-67890-23"
         start_time = time.time()
@@ -125,14 +134,18 @@ class TestRateLimiting:
         assert limiter.validate_ethical_delay(0.0) is False
         assert limiter.validate_ethical_delay(0.9) is False
 
-    @patch('src.services.case_scraper_service.webdriver')
-    @patch('src.services.case_scraper_service.EthicalRateLimiter')
-    def test_rate_limiter_integration_with_service(self, mock_rate_limiter, mock_webdriver):
+    @patch("src.services.case_scraper_service.webdriver")
+    @patch("src.services.case_scraper_service.EthicalRateLimiter")
+    def test_rate_limiter_integration_with_service(
+        self, mock_rate_limiter, mock_webdriver
+    ):
         """Test that CaseScraperService properly integrates with rate limiter."""
         # Setup mocks
         mock_driver = MagicMock()
         mock_webdriver.Chrome.return_value = mock_driver
-        mock_driver.page_source = "<html><title>IMM-12345-22</title><body>Content</body></html>"
+        mock_driver.page_source = (
+            "<html><title>IMM-12345-22</title><body>Content</body></html>"
+        )
 
         mock_rate_limiter_instance = MagicMock()
         mock_rate_limiter.return_value = mock_rate_limiter_instance
