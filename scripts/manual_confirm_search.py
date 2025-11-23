@@ -148,9 +148,9 @@ try:
     if not found:
         # Save diagnostics for inspection
         try:
-            from datetime import datetime
+            from datetime import datetime, timezone
 
-            ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
             driver.save_screenshot(f"logs/manual_confirm_search_fail_{ts}.png")
             with open(
                 f"logs/manual_confirm_search_fail_{ts}.html", "w", encoding="utf-8"

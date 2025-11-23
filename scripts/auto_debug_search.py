@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from selenium.webdriver.common.by import By
@@ -76,7 +76,7 @@ try:
     # Wait for results to load
     time.sleep(5)
 
-    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     png = LOG_DIR / f"auto_debug_search_{ts}.png"
     html = LOG_DIR / f"auto_debug_search_{ts}.html"
     try:

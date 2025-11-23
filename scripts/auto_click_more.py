@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -234,7 +234,7 @@ try:
 
         if not rows:
             print("No table rows detected. Saving diagnostics.")
-        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         driver.save_screenshot(f"logs/auto_click_more_no_rows_{ts}.png")
         with open(
             f"logs/auto_click_more_no_rows_{ts}.html", "w", encoding="utf-8"
@@ -255,7 +255,7 @@ try:
 
     if target_row is None:
         print("Could not locate row with case number; saving diagnostics")
-        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         driver.save_screenshot(f"logs/auto_click_more_no_target_{ts}.png")
         with open(
             f"logs/auto_click_more_no_target_{ts}.html", "w", encoding="utf-8"
@@ -362,7 +362,7 @@ try:
 
     if more_el is None:
         print("No More control found; saving diagnostics")
-        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         driver.save_screenshot(f"logs/auto_click_more_no_more_{ts}.png")
         with open(
             f"logs/auto_click_more_no_more_{ts}.html", "w", encoding="utf-8"
@@ -393,7 +393,7 @@ try:
 
     if modal is None:
         print("Modal did not appear; saving diagnostics")
-        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         driver.save_screenshot(f"logs/auto_click_more_no_modal_{ts}.png")
         with open(
             f"logs/auto_click_more_no_modal_{ts}.html", "w", encoding="utf-8"
@@ -401,16 +401,24 @@ try:
             f.write(driver.page_source)
         raise SystemExit("No modal")
 
-    # Pause briefly and allow user to visually confirm modal contents
+    # Pause briefly and allow user to visually confirm modal contents.
+    # If the environment variable `AUTO_CONFIRM` is set (truthy), skip the
+    # interactive `input()` prompt so the script can run non-interactively.
+    import os
+
     print("Modal appeared. Pausing 5 seconds for you to inspect...")
     time.sleep(5)
-    try:
-        input(
-            "If the modal looks correct, press Enter to continue with extraction (or Ctrl-C to abort)..."
-        )
-    except Exception:
-        # In non-interactive runs, just continue
-        pass
+    auto_confirm = os.environ.get("AUTO_CONFIRM")
+    if auto_confirm and auto_confirm not in ("0", "false", "False"):
+        print("AUTO_CONFIRM set — continuing without waiting for Enter.")
+    else:
+        try:
+            input(
+                "If the modal looks correct, press Enter to continue with extraction (or Ctrl-C to abort)..."
+            )
+        except Exception:
+            # In non-interactive runs, just continue
+            pass
 
     # Use service internal extractors to parse modal
     case_data = s._extract_case_header(modal)
@@ -440,7 +448,7 @@ try:
         print(i, e)
 
     # save modal snapshot
-    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     driver.save_screenshot(f"logs/auto_click_more_modal_{ts}.png")
     with open(f"logs/auto_click_more_modal_{ts}.html", "w", encoding="utf-8") as f:
         f.write(driver.page_source)
@@ -453,7 +461,7 @@ try:
 
         out_dir = Path("output")
         out_dir.mkdir(parents=True, exist_ok=True)
-        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         safe_case = (case_data.get("case_id") or case_number).replace("/", "_")
         out_path = out_dir / f"{safe_case}_{ts}.json"
 
@@ -489,7 +497,7 @@ try:
                 )
                 for e in docket_entries
             ],
-            "scraped_at": datetime.utcnow().isoformat(),
+            "scraped_at": datetime.now(timezone.utc).isoformat(),
         }
 
         with open(out_path, "w", encoding="utf-8") as jf:
@@ -531,10 +539,22 @@ try:
         except Exception:
             print("Failed to close modal programmatically.")
 
-    # Allow the user to confirm before exiting and closing browser
+    # Allow the user to confirm before exiting and closing browser.
+    # If `AUTO_CONFIRM` is set, skip the final prompt so the script exits
+    # cleanly in non-interactive runs.
     try:
-        input("Press Enter to exit and close the browser...")
+        import os
+
+        auto_confirm = os.environ.get("AUTO_CONFIRM")
+        if auto_confirm and auto_confirm not in ("0", "false", "False"):
+            print("AUTO_CONFIRM set — exiting without waiting for Enter.")
+        else:
+            try:
+                input("Press Enter to exit and close the browser...")
+            except Exception:
+                pass
     except Exception:
+        # As a last resort, do not block exit
         pass
 
 finally:
