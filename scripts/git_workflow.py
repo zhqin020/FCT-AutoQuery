@@ -3,8 +3,6 @@
 
 import subprocess
 import sys
-from pathlib import Path
-from typing import Optional
 
 
 def run_command(cmd: list, check: bool = True) -> subprocess.CompletedProcess:
@@ -31,7 +29,7 @@ def validate_branch_name(branch: str) -> bool:
     if any(branch.startswith(prefix) for prefix in valid_prefixes):
         return True
     # Also allow numeric feature branch format (e.g., 0001-feature-name)
-    return branch.split('-')[0].isdigit() and len(branch.split('-')[0]) == 4
+    return branch.split("-")[0].isdigit() and len(branch.split("-")[0]) == 4
 
 
 def run_tests() -> bool:
@@ -87,7 +85,9 @@ def commit_ready_workflow() -> None:
     # Validate branch
     branch = get_current_branch()
     if not validate_branch_name(branch):
-        print(f"ERROR: Invalid branch name '{branch}'. Must start with feat/, fix/, or test/")
+        print(
+            f"ERROR: Invalid branch name '{branch}'. Must start with feat/, fix/, or test/"
+        )
         sys.exit(1)
 
     # Run tests first (TDD: Red/Green/Refactor)

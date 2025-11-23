@@ -19,16 +19,6 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-# Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent / "src"))
-
-from src.lib.logging_config import setup_logging
-from src.services.case_scraper_service import CaseScraperService
-from src.services.export_service import ExportService
-
-# Setup logging
-setup_logging()
-
 
 def main():
     """Main entry point for the Federal Court Case Scraper."""
@@ -45,7 +35,7 @@ def main():
    python main.py --batch cases.txt
 
 3. 指定输出目录 / Specify output directory:
-   python main.py --output ./results "https://www.fct-cf.ca/en/court-files-and-decisions/IMM-12345-22"
+    python main.py --output ./results <case_url>
 
 注意事项 / Important Notes:
 - 程序会自动遵守速率限制 (1秒间隔)
@@ -108,6 +98,14 @@ def main():
 
     try:
         # Initialize services
+        # Configure logging and import project modules here so module-level
+        # code stays free of side-effects (avoids flake8 E402).
+        from src.lib.logging_config import setup_logging
+        from src.services.case_scraper_service import CaseScraperService
+        from src.services.export_service import ExportService
+
+        setup_logging()
+
         print(
             "🚀 初始化联邦法院案件抓取器... / Initializing Federal Court Case Scraper..."
         )
@@ -179,9 +177,7 @@ def main():
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             base_filename = f"federal_court_cases_{timestamp}"
 
-            print(
-                f"\n📊 正在导出 {len(cases)} 个案件... / Exporting {len(cases)} cases..."
-            )
+            print(f"\n📊 Exporting {len(cases)} cases...")
 
             if args.format == "json":
                 json_file = exporter.export_to_json(cases, f"{base_filename}.json")
@@ -195,7 +191,7 @@ def main():
 
             else:  # both
                 files = exporter.export_all_formats(cases, base_filename)
-                print(f"📄 文件已保存 / Files saved:")
+                print("📄 文件已保存 / Files saved:")
                 print(f"   JSON: {files['json']}")
                 print(f"   CSV: {files['csv']}")
 

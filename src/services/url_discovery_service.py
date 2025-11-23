@@ -1,7 +1,6 @@
 """Case number generation service for Federal Court case scraping."""
 
-from datetime import datetime
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import psycopg2
 from psycopg2.extras import RealDictCursor

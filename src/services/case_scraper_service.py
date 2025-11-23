@@ -158,18 +158,15 @@ class CaseScraperService:
             time.sleep(2)  # Brief wait for results to load
 
             # Check for "No data available"
-            try:
-                no_data = driver.find_element(
-                    By.XPATH, "//td[contains(text(), 'No data available')]"
-                )
+            if driver.find_elements(
+                By.XPATH, "//td[contains(text(), 'No data available')]"
+            ):
                 logger.info(f"No results found for case: {case_number}")
                 return False
-            except NoSuchElementException:
-                pass
 
             # Check for results table
             try:
-                results_table = WebDriverWait(driver, 10).until(
+                WebDriverWait(driver, 10).until(
                     EC.presence_of_element_located((By.XPATH, "//table"))
                 )
                 logger.info(f"Results found for case: {case_number}")

@@ -41,7 +41,7 @@ class DocketEntry:
             raise ValueError("Summary cannot be empty")
 
     @classmethod
-    def from_dict(cls, data: dict) -> 'DocketEntry':
+    def from_dict(cls, data: dict) -> "DocketEntry":
         """Create a DocketEntry instance from dictionary data.
 
         Args:
@@ -52,19 +52,19 @@ class DocketEntry:
         """
         # Convert entry_date string to date if present
         entry_date = None
-        if data.get('entry_date'):
-            if isinstance(data['entry_date'], str):
-                entry_date = date.fromisoformat(data['entry_date'])
+        if data.get("entry_date"):
+            if isinstance(data["entry_date"], str):
+                entry_date = date.fromisoformat(data["entry_date"])
             else:
-                entry_date = data['entry_date']
+                entry_date = data["entry_date"]
 
         return cls(
-            id=data.get('id'),
-            case_id=data['case_id'],
-            doc_id=data['doc_id'],
+            id=data.get("id"),
+            case_id=data["case_id"],
+            doc_id=data["doc_id"],
             entry_date=entry_date,
-            entry_office=data.get('entry_office'),
-            summary=data.get('summary'),
+            entry_office=data.get("entry_office"),
+            summary=data.get("summary"),
         )
 
     def to_dict(self) -> dict:

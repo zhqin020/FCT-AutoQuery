@@ -4,7 +4,7 @@
 import ast
 import sys
 from pathlib import Path
-from typing import List, Tuple
+from typing import List
 
 
 class CodingStandardsChecker:
@@ -23,7 +23,7 @@ class CodingStandardsChecker:
             bool: True if file passes all checks
         """
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
+            with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
 
             tree = ast.parse(content, filename=str(file_path))
@@ -55,7 +55,7 @@ class CodingStandardsChecker:
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 # Skip __init__ methods for now
-                if node.name == '__init__':
+                if node.name == "__init__":
                     continue
 
                 # Check return type annotation
@@ -66,7 +66,7 @@ class CodingStandardsChecker:
 
                 # Check parameter type annotations
                 for arg in node.args.args:
-                    if arg.arg not in ('self', 'cls') and arg.annotation is None:
+                    if arg.arg not in ("self", "cls") and arg.annotation is None:
                         self.errors.append(
                             f"{file_path}:{node.lineno}: Missing type annotation for parameter '{arg.arg}' in function '{node.name}'"
                         )
@@ -83,7 +83,7 @@ class CodingStandardsChecker:
                 from_imports.append((node.module, [alias.name for alias in node.names]))
 
         # Check for loguru import (required by constitution)
-        if any('loguru' in imp for imp in imports):
+        if any("loguru" in imp for imp in imports):
             # Good, loguru is imported
             pass
 
@@ -108,7 +108,7 @@ def main() -> int:
             all_passed = False
             continue
 
-        if not file_path.suffix == '.py':
+        if not file_path.suffix == ".py":
             print(f"Skipping non-Python file: {file_path}")
             continue
 
