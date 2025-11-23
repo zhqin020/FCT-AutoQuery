@@ -153,6 +153,44 @@ case = scraper.scrape_single_case("https://www.fct-cf.ca/en/court-files-and-deci
 exporter.export_all_formats([case], "case_data")
 ```
 
+## Pre-commit & Code Quality
+
+This project includes a starter `.pre-commit-config.yaml` with `isort`, `black`, and `flake8` hooks to help keep the codebase formatted and linted locally.
+
+Install and enable hooks in your active environment:
+
+```bash
+pip install --upgrade pre-commit black isort flake8
+pre-commit install --install-hooks
+```
+
+Run hooks across the repo:
+
+```bash
+pre-commit run --all-files
+```
+
+If you hit a hook you want to bypass temporarily, commit with `--no-verify`:
+
+```bash
+git commit --no-verify -m "WIP: skip hooks"
+```
+
+Note: the repository currently allows some flake8 warnings to be ignored in the starter config (e.g., long lines). If you want stricter checks, remove the ignored codes from `.pre-commit-config.yaml` and re-install hooks.
+
+## Branch naming and workflow
+
+- Use branch prefixes `feat/`, `fix/`, or `test/` to comply with project checks and CI. Example: `feat/federal-court-scraper`.
+- Rename a branch locally and push:
+
+```bash
+# Rename current branch
+git branch -m feat/your-branch-name
+# Push and set upstream
+git push origin -u feat/your-branch-name
+```
+
+
 ## 输出文件格式
 
 ### JSON格式

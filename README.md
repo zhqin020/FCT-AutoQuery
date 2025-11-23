@@ -62,16 +62,43 @@ specs/                       # 项目规格和任务管理
 ### 环境要求
 - Python 3.11+
 - Chrome浏览器（用于Selenium自动化）
-
-### 安装步骤
-
-1. **克隆项目**
    ```bash
    git clone https://github.com/zhqin020/FCT-AutoQuery.git
    cd FCT-AutoQuery
    ```
 
 2. **创建虚拟环境**
+
+### Pre-commit & Formatting
+
+- **Starter config**: This repository includes a starter `.pre-commit-config.yaml` enabling `isort`, `black` and `flake8` hooks used for local formatting and linting.
+- **Install hooks and tools**:
+   ```bash
+   pip install --upgrade pre-commit black isort flake8
+   pre-commit install --install-hooks
+   ```
+- **Run hooks manually**:
+   ```bash
+   # Run all configured hooks on the repository
+   pre-commit run --all-files
+   ```
+- **Bypass hooks (single commit)**: use `git commit --no-verify` (use sparingly).
+
+Note: The project temporarily configures flake8 to ignore a small set of checks (long lines and a few legacy warnings). If you prefer stricter checks, remove the ignored codes from `.pre-commit-config.yaml` and re-run `pre-commit install --install-hooks`.
+
+### Branch naming
+
+- The repository enforces a branch naming convention for pull requests and automated checks. Prefer `feat/`, `fix/`, or `test/` prefixes, for example:
+   - `feat/add-user-auth`
+   - `fix/login-bug`
+   - `test/user-validation`
+
+- To rename a local branch to conform:
+   ```bash
+   # on the branch you want to rename
+   git branch -m feat/your-new-name
+   git push origin -u feat/your-new-name
+   ```
    ```bash
    python -m venv venv
    source venv/bin/activate  # Linux/Mac
