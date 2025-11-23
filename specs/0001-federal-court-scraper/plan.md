@@ -1,13 +1,13 @@
-# Implementation Plan: Federal Court Case Scraper
+# Implementation Plan: [FEATURE]
 
-**Branch**: `0001-federal-court-scraper` | **Date**: 2025-11-20 | **Spec**: [link to spec.md]
-**Input**: Feature specification from `/specs/0001-federal-court-scraper/spec.md`
+**Branch**: `[####-feature-name]` | **Date**: [DATE] | **Spec**: [link]
+**Input**: Feature specification from `/specs/[####-feature-name]/spec.md`
 
 **Note**: This template is filled in by the `/speckit.plan` command. See `.specify/templates/commands/plan.md` for the execution workflow.
 
 ## Summary
 
-Automate web scraping of Canadian Federal Court public cases for IMM cases (2023-2025 and ongoing), extracting HTML content and exporting to CSV/JSON formats. Technical approach uses Selenium for browser automation with strict 1-second intervals, ensuring completely legal and ethical access to public data only.
+[Extract from feature spec: primary requirement + technical approach from research]
 
 ## Technical Context
 
@@ -17,17 +17,15 @@ Automate web scraping of Canadian Federal Court public cases for IMM cases (2023
   the iteration process.
 -->
 
-## Technical Context
-
-**Language/Version**: Python 3.11  
-**Primary Dependencies**: Selenium (web automation), requests (HTTP), pandas (data processing), loguru (logging)  
-**Storage**: CSV and JSON file exports (no database required for public data)  
-**Testing**: pytest with unittest.mock for network isolation  
-**Target Platform**: Linux (WSL environment)  
-**Project Type**: Single project (command-line scraping tool)  
-**Performance Goals**: Process cases with 1-second intervals, 95% success rate, export in structured formats  
-**Constraints**: Exactly 1-second delays, public data only, no E-Filing access, ethical scraping  
-**Scale/Scope**: 2023-2025 and ongoing cases, IMM cases only, public Federal Court data
+**Language/Version**: [e.g., Python 3.11, Swift 5.9, Rust 1.75 or NEEDS CLARIFICATION]  
+**Primary Dependencies**: [e.g., FastAPI, UIKit, LLVM or NEEDS CLARIFICATION]  
+**Storage**: [if applicable, e.g., PostgreSQL, CoreData, files or N/A]  
+**Testing**: [e.g., pytest, XCTest, cargo test or NEEDS CLARIFICATION]  
+**Target Platform**: [e.g., Linux server, iOS 15+, WASM or NEEDS CLARIFICATION]
+**Project Type**: [single/web/mobile - determines source structure]  
+**Performance Goals**: [domain-specific, e.g., 1000 req/s, 10k lines/sec, 60 fps or NEEDS CLARIFICATION]  
+**Constraints**: [domain-specific, e.g., <200ms p95, <100MB memory, offline-capable or NEEDS CLARIFICATION]  
+**Scale/Scope**: [domain-specific, e.g., 10k users, 1M LOC, 50 screens or NEEDS CLARIFICATION]
 
 ## Constitution Check
 
@@ -35,16 +33,17 @@ Automate web scraping of Canadian Federal Court public cases for IMM cases (2023
 
 - Ensure testing standards are planned (mandatory coverage, TDD, mocking)
 - Git workflow compliance is incorporated (TBD, issue-driven branches)
-- Coding standards are followed (type hinting, ethical scraping, 1-second intervals)
+- Coding standards are followed (type hinting, ethical scraping)
 - Issue management strategy is adhered to (mandatory issues, lifecycle)
 - Git workflow steps are integrated (test-first, branch naming conventions)
+- Environment activation is required (conda activate fct before commands)
 
 ## Project Structure
 
 ### Documentation (this feature)
 
 ```text
-specs/0001-federal-court-scraper/
+specs/[####-feature]/
 ├── plan.md              # This file (/speckit.plan command output)
 ├── research.md          # Phase 0 output (/speckit.plan command)
 ├── data-model.md        # Phase 1 output (/speckit.plan command)
@@ -61,22 +60,44 @@ specs/0001-federal-court-scraper/
   not include Option labels.
 -->
 
-### Source Code (repository root)
-
 ```text
+# [REMOVE IF UNUSED] Option 1: Single project (DEFAULT)
 src/
-├── models/          # Data models (Case)
-├── services/        # Business logic (CaseScraperService, ExportService)
-├── cli/             # Command-line interface
-└── lib/             # Utilities (URL validator, rate limiter)
+├── models/
+├── services/
+├── cli/
+└── lib/
 
 tests/
-├── contract/        # API contract tests
-├── integration/     # End-to-end scraping tests
-└── unit/            # Unit tests for individual components
+├── contract/
+├── integration/
+└── unit/
+
+# [REMOVE IF UNUSED] Option 2: Web application (when "frontend" + "backend" detected)
+backend/
+├── src/
+│   ├── models/
+│   ├── services/
+│   └── api/
+└── tests/
+
+frontend/
+├── src/
+│   ├── components/
+│   ├── pages/
+│   └── services/
+└── tests/
+
+# [REMOVE IF UNUSED] Option 3: Mobile + API (when "iOS/Android" detected)
+api/
+└── [same as backend above]
+
+ios/ or android/
+└── [platform-specific structure: feature modules, UI flows, platform tests]
 ```
 
-**Structure Decision**: Single project structure selected for this command-line scraping tool. Source code organized by responsibility with clear separation of models, services, and CLI components.
+**Structure Decision**: [Document the selected structure and reference the real
+directories captured above]
 
 ## Complexity Tracking
 

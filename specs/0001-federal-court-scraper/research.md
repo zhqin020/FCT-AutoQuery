@@ -1,6 +1,6 @@
 # Research: Federal Court Case Scraper
 
-**Date**: 2025-11-20
+**Date**: 2025-11-22
 **Purpose**: Resolve technical unknowns and establish implementation approach for public case scraping
 
 ## Technical Decisions
@@ -76,3 +76,27 @@
 - Trust-based approach: Too risky for legal compliance
 - Manual oversight: Not scalable for automated processing
 **Best Practices Applied**: Pre-validate all URLs, log all access, implement emergency stop capability
+
+### DOM Stability Strategies
+**Decision**: Use explicit waits, stable locators, and fallback selectors
+**Rationale**: Court website DOM may change; explicit waits handle dynamic loading, stable locators (IDs > CSS > XPath) reduce brittleness.
+**Alternatives Considered**:
+- Implicit waits: Can cause unpredictable timing
+- Hard-coded XPath: Fails on DOM changes
+**Best Practices Applied**: Prefer IDs and CSS selectors, use WebDriverWait with expected conditions, implement multiple locator strategies with fallbacks, monitor for DOM changes
+
+### Database Optimization for Web Scraping Data
+**Decision**: Use UPSERT operations, indexes on case_id, batch inserts, and connection pooling
+**Rationale**: Frequent case data updates require efficient conflict resolution; indexes speed lookups; batching reduces overhead.
+**Alternatives Considered**:
+- Individual INSERT/UPDATE: Slower for bulk operations
+- No indexes: Poor query performance
+**Best Practices Applied**: Use PostgreSQL ON CONFLICT for UPSERT, create indexes on case_id and timestamps, batch operations in transactions, implement connection pooling with psycopg2
+
+### Error Handling Strategies in Selenium Web Scraping
+**Decision**: Catch specific exceptions, use retries for transient errors, log with context, continue processing
+**Rationale**: Web scraping encounters network issues, element not found, timeouts; specific handling prevents crashes and maintains data integrity.
+**Alternatives Considered**:
+- Generic except: Hides issues
+- Stop on error: Fails batch processing
+**Best Practices Applied**: Handle NoSuchElementException, TimeoutException, WebDriverException separately, implement retry logic for network errors, log errors with timestamps and case IDs, ensure driver cleanup

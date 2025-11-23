@@ -1,9 +1,9 @@
 <!-- Sync Impact Report
-Version change: 1.0.0 → 1.1.0
-List of modified principles: All (replaced with Testing Standard, Git Workflow & Branching Strategy, Coding Standards, Issue Management Strategy)
-Added sections: Project Overview, Issue Management Strategy, Git Workflow
+Version change: 1.1.0 → 1.2.0
+List of modified principles: None
+Added sections: Environment Activation Requirement
 Removed sections: None
-Templates requiring updates: plan-template.md (update constitution check for new principles), spec-template.md (update compliance for new principles), tasks-template.md (add tasks for testing, git workflow, issue management)
+Templates requiring updates: plan-template.md (add to constitution check)
 Follow-up TODOs: None
 -->
 # FCT-AutoQuery Constitution
@@ -62,6 +62,9 @@ Follow-up TODOs: None
     * **Closed:** Automatically closed via Pull Request (using "Closes #ID").
 4.  **Labeling:** Use `bug`, `feature`, `test-gap`, `tech-debt`.
 
+### V. Environment Activation Requirement
+**必须在 fct 虚拟环境下运行各项命令。运行命令前，需要先运行: conda activate fct**
+
 ## Git Workflow (Strict TBD + Issue Driven)
 **Workflow: Issue -> Branch -> Test -> Code -> Merge -> Close.**
 
@@ -78,4 +81,4 @@ Follow-up TODOs: None
 ## Governance
 This constitution supersedes all other project guidelines. Amendments require consensus from core contributors and must include a migration plan. All pull requests must verify compliance with these principles. Use this constitution as the basis for decision-making in development.
 
-**Version**: 1.1.0 | **Ratified**: 2025-11-19 | **Last Amended**: 2025-11-19
+**Version**: 1.2.0 | **Ratified**: 2025-11-19 | **Last Amended**: 2025-11-22

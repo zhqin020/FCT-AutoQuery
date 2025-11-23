@@ -24,6 +24,7 @@ cd src [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLO
 Python 3.11: Follow standard conventions
 
 ## Recent Changes
+- 0001-federal-court-scraper: Added [if applicable, e.g., PostgreSQL, CoreData, files or N/A]
 - 0001-federal-court-scraper: Added Python 3.11 + Selenium (web automation), requests (HTTP), pandas (data processing), loguru (logging)
 
 - 0001-federal-court-scraper: Added Python 3.11 + Selenium (web automation), psycopg2 (PostgreSQL), pytest (testing), loguru (logging)

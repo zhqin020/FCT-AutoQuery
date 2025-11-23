@@ -1,9 +1,9 @@
-# Tasks: Federal Court Case Scraper
+# Tasks: Federal Court Case Scraper Correction
 
 **Input**: Design documents from `/specs/0001-federal-court-scraper/`
 **Prerequisites**: plan.md (required), spec.md (required for user stories), research.md, data-model.md, contracts/
 
-**Tests**: Tests are included as requested in the feature specification for validation.
+**Tests**: Tests are OPTIONAL - not explicitly requested in the feature specification.
 
 **Organization**: Tasks are grouped by user story to enable independent implementation and testing of each story.
 
@@ -13,20 +13,13 @@
 - **[Story]**: Which user story this task belongs to (e.g., US1, US2, US3)
 - Include exact file paths in descriptions
 
-## Path Conventions
-
-- **Single project**: `src/`, `tests/` at repository root
-- Paths shown below assume single project - adjust based on plan.md structure
-
 ## Phase 1: Setup (Shared Infrastructure)
 
-**Purpose**: Project initialization and basic structure
+**Purpose**: Database and configuration setup
 
-- [x] T001 Create project structure per implementation plan
-- [x] T002 Initialize Python project with Selenium, pandas, loguru dependencies
-- [x] T003 [P] Configure linting and formatting tools (black, flake8, mypy)
-
----
+- [ ] T001 Setup PostgreSQL database schema for cases and docket_entries tables
+- [ ] T002 Configure database connection in src/lib/config.py
+- [ ] T003 Setup logging configuration in src/lib/logging_config.py
 
 ## Phase 2: Foundational (Blocking Prerequisites)
 
@@ -34,180 +27,87 @@
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
-- [x] T004 Setup Case data model in src/models/case.py
-- [x] T005 [P] Implement URL validation and rate limiting utilities in src/lib/
-- [x] T006 [P] Setup logging infrastructure with loguru
-- [x] T007 Configure environment configuration management
-- [x] T008 [P] Setup testing framework (pytest) and coverage tools
-- [x] T009 [P] Configure git workflow and branching strategy enforcement
-- [x] T010 [P] Implement coding standards (type hinting, docstrings, ethical scraping)
-- [x] T011 [P] Establish issue management process and issues/ folder
-- [x] T012 [P] Integrate git workflow steps into development pipeline
+- [ ] T004 [P] Implement rate limiter in src/lib/rate_limiter.py
+- [ ] T005 [P] Implement URL validator in src/lib/url_validator.py
+- [ ] T006 [P] Setup testing framework (pytest) and coverage tools
 
 **Checkpoint**: Foundation ready - user story implementation can now begin in parallel
 
----
+## Phase 3: User Story 1 - Automate Federal Court Case Search and Scraping via Search Form (Priority: P1) 🎯 MVP
 
-## Phase 3: User Story 1 - Automated Public Case Collection (Priority: P1) 🎯 MVP
+**Goal**: Enable automated searching and scraping of individual cases via search form
 
-**Goal**: Enable automated scraping of public federal court cases for IMM cases with HTML content extraction.
+**Independent Test**: Can be fully tested by running the scraper on a single known case number and verifying that data is extracted and stored correctly via the search form process.
 
-**Independent Test**: Scrape a single known case URL and verify HTML content is extracted and stored.
+- [ ] T007 [P] [US1] Create Case model in src/models/case.py
+- [ ] T008 [P] [US1] Create DocketEntry model in src/models/docket_entry.py
+- [ ] T009 [US1] Implement CaseScraperService in src/services/case_scraper_service.py for page navigation and form interaction
+- [ ] T010 [US1] Add modal detection and data extraction logic in case_scraper_service.py
+- [ ] T011 [US1] Implement error handling and retry logic for network failures in case_scraper_service.py
 
-### Tests for User Story 1 ⚠️
+## Phase 4: User Story 2 - Handle Batch Case Number Generation and Resume (Priority: P2)
 
-> **NOTE: Write these tests FIRST, ensure they FAIL before implementation**
+**Goal**: Support batch processing with resume capability
 
-- [x] T013 [P] [US1] Contract test for case data validation in tests/contract/test_case_data.py
-- [x] T014 [P] [US1] Integration test for single case scraping in tests/integration/test_single_case_scraping.py
+**Independent Test**: Can be tested by starting the scraper and verifying it resumes from the correct case number after interruption.
 
-### Implementation for User Story 1
+- [ ] T012 [US2] Implement UrlDiscoveryService in src/services/url_discovery_service.py for case number generation
+- [ ] T013 [US2] Add resume logic to query last processed case from database in url_discovery_service.py
+- [ ] T014 [US2] Implement year skipping for consecutive no-results in url_discovery_service.py
 
-- [x] T015 [US1] Implement CaseScraperService in src/services/case_scraper_service.py
-- [x] T016 [US1] Implement URL discovery logic for public case lists
-- [x] T017 [US1] Add HTML content extraction with Selenium
-- [x] T018 [US1] Implement IMM case filtering
-- [x] T019 [US1] Add validation and error handling for scraping operations
-- [x] T020 [US1] Add logging for case scraping operations
+## Phase 5: User Story 3 - Data Storage and Export (Priority: P3)
 
-**Checkpoint**: At this point, User Story 1 should be fully functional and testable independently
+**Goal**: Store scraped data and export to files
 
----
+**Independent Test**: Can be tested by scraping one case and verifying database insertion and JSON file creation.
 
-## Phase 4: User Story 2 - Ethical and Legal Compliance (Priority: P2)
+- [ ] T015 [US3] Implement ExportService in src/services/export_service.py for JSON/CSV export
+- [ ] T016 [US3] Add PostgreSQL UPSERT operations for cases and docket_entries in export_service.py
+- [ ] T017 [US3] Implement file organization by year in export_service.py
 
-**Goal**: Ensure scraper only accesses public case pages with proper rate limiting and legal compliance.
+## Final Phase: Polish & Cross-Cutting Concerns
 
-**Independent Test**: Monitor access patterns and verify only public case URLs are accessed with 1-second intervals.
+**Purpose**: Integration, documentation, and final validation
 
-### Tests for User Story 2 ⚠️
+- [ ] T018 Integrate all services in src/cli/main.py
+- [ ] T019 Add command-line argument parsing for batch processing in main.py
+- [ ] T020 Implement progress tracking and logging in main.py
+- [ ] T021 Add emergency stop mechanism for continuous failures
+- [ ] T022 Update requirements.txt with all dependencies
+- [ ] T023 Update README.md with corrected usage instructions
+- [ ] T024 Create database initialization scripts
+- [ ] T025 Add troubleshooting guide for common issues
+- [ ] T026 Validate all success criteria are met
+- [ ] T027 Final code review and constitution compliance check
 
-- [x] T021 [P] [US2] Contract test for URL validation in tests/contract/test_url_validation.py
-- [x] T022 [P] [US2] Integration test for rate limiting in tests/integration/test_rate_limiting.py
+## Dependencies
 
-### Implementation for User Story 2
+**User Story Completion Order**:
+1. User Story 1 (P1) - Core scraping functionality
+2. User Story 2 (P2) - Batch processing support  
+3. User Story 3 (P3) - Data persistence and export
 
-- [x] T023 [US2] Implement URL validation service to ensure public case pages only
-- [x] T024 [US2] Add exact 1-second rate limiting between page accesses
-- [x] T025 [US2] Implement emergency stop capability for compliance violations
-- [x] T026 [US2] Add access logging and audit trail
-- [x] T027 [US2] Integrate compliance checks with User Story 1 scraping
+**Task Dependencies**:
+- All user story tasks depend on Phase 2 completion
+- T009 depends on T007 and T008
+- T013 depends on database schema (T001)
+- T016 depends on database schema (T001)
 
-**Checkpoint**: At this point, User Stories 1 AND 2 should both work independently
+## Parallel Execution Examples
 
----
+**Within User Story 1**:
+- T007 and T008 can run in parallel (different model files)
+- T009-T011 must run sequentially (service implementation)
 
-## Phase 5: User Story 3 - Structured Data Export (Priority: P3)
-
-**Goal**: Export scraped cases in both CSV and JSON formats with proper data structure.
-
-**Independent Test**: Verify export files contain correct data structure and one record per case.
-
-### Tests for User Story 3 ⚠️
-
-- [x] T028 [P] [US3] Contract test for data export formats in tests/contract/test_data_export.py
-- [x] T029 [P] [US3] Integration test for CSV/JSON export in tests/integration/test_export_formats.py
-
-### Implementation for User Story 3
-
-- [x] T030 [US3] Implement ExportService in src/services/export_service.py
-- [x] T031 [US3] Add CSV export functionality with proper escaping
-- [x] T032 [US3] Add JSON export functionality with case objects
-- [x] T033 [US3] Implement data validation before export
-- [x] T034 [US3] Add export progress logging and error handling
-
-**Checkpoint**: All user stories should now be independently functional
-
----
-
-## Phase 6: Polish & Cross-Cutting Concerns
-
-**Purpose**: Improvements that affect multiple user stories
-
-- [ ] T035 [P] Documentation updates in docs/
-- [ ] T036 Code cleanup and refactoring
-- [ ] T037 Performance optimization across all stories
-- [ ] T038 [P] Additional unit tests in tests/unit/
-- [ ] T039 Security hardening for web scraping
-- [ ] T040 Run quickstart.md validation
-- [ ] T041 Create GitHub issue #1 for federal court case scraper feature
-
----
-
-## Dependencies & Execution Order
-
-### Phase Dependencies
-
-- **Setup (Phase 1)**: No dependencies - can start immediately
-- **Foundational (Phase 2)**: Depends on Setup completion - BLOCKS all user stories
-- **User Stories (Phase 3+)**: All depend on Foundational phase completion
-  - User stories can then proceed in parallel (if staffed)
-  - Or sequentially in priority order (P1 → P2 → P3)
-- **Polish (Final Phase)**: Depends on all desired user stories being complete
-
-### User Story Dependencies
-
-- **User Story 1 (P1)**: Can start after Foundational (Phase 2) - No dependencies on other stories
-- **User Story 2 (P2)**: Can start after Foundational (Phase 2) - May integrate with US1 but should be independently testable
-- **User Story 3 (P3)**: Can start after Foundational (Phase 2) - May integrate with US1/US2 but should be independently testable
-
-### Within Each User Story
-
-- Tests (if included) MUST be written and FAIL before implementation
-- Models before services
-- Services before endpoints
-- Core implementation before integration
-- Story complete before moving to next priority
-
-### Parallel Opportunities
-
-- All Setup tasks marked [P] can run in parallel
-- All Foundational tasks marked [P] can run in parallel (within Phase 2)
-- Once Foundational phase completes, all user stories can start in parallel (if team capacity allows)
-- All tests for a user story marked [P] can run in parallel
-- Models within a story marked [P] can run in parallel
-- Different user stories can be worked on in parallel by different team members
-
----
+**Across Stories**:
+- User stories can be implemented in parallel once foundation is complete
+- US2 and US3 can start after US1 models are done
 
 ## Implementation Strategy
 
-### MVP First (User Story 1 Only)
+**MVP First**: Start with User Story 1 for basic scraping capability, then incrementally add US2 and US3.
 
-1. Complete Phase 1: Setup
-2. Complete Phase 2: Foundational (CRITICAL - blocks all stories)
-3. Complete Phase 3: User Story 1
-4. **STOP and VALIDATE**: Test User Story 1 independently
-5. Deploy/demo if ready
+**Incremental Delivery**: Each user story delivers independently testable value.
 
-### Incremental Delivery
-
-1. Complete Setup + Foundational → Foundation ready
-2. Add User Story 1 → Test independently → Deploy/Demo (MVP!)
-3. Add User Story 2 → Test independently → Deploy/Demo
-4. Add User Story 3 → Test independently → Deploy/Demo
-5. Each story adds value without breaking previous stories
-
-### Parallel Team Strategy
-
-With multiple developers:
-
-1. Team completes Setup + Foundational together
-2. Once Foundational is done:
-   - Developer A: User Story 1
-   - Developer B: User Story 2
-   - Developer C: User Story 3
-3. Stories complete and integrate independently
-
----
-
-## Notes
-
-- [P] tasks = different files, no dependencies
-- [Story] label maps task to specific user story for traceability
-- Each user story should be independently completable and testable
-- Verify tests fail before implementing
-- Commit after each task or logical group
-- Stop at any checkpoint to validate story independently
-- Avoid: vague tasks, same file conflicts, cross-story dependencies that break independence</content>
+**Risk Mitigation**: Foundation phase ensures stable base before feature work.</content>
 <parameter name="filePath">/home/watson/work/FCT-AutoQuery/specs/0001-federal-court-scraper/tasks.md
