@@ -116,6 +116,24 @@ Note: The project temporarily configures flake8 to ignore a small set of checks 
    python -m pytest tests/ -v
    ```
 
+   ### 快速调试脚本示例
+
+   项目还包含用于本地快速调试和手工检查的脚本 `scripts/auto_click_more.py`。下面是几个常见示例：
+
+   - 跳过交互式确认并运行（适合手动快速检查）：
+   ```bash
+   python scripts/auto_click_more.py --yes
+   ```
+
+   - 在 CI/测试中注入一个替代的 Service 类（不会启动浏览器）：
+   ```bash
+   # 这里使用文件路径导入语法：<path/to/file.py>:ClassName
+   python scripts/auto_click_more.py --yes --service-class tests/integration/fake_service.py:FakeService
+   ```
+
+   注意：脚本默认会把结构化 JSON 输出到 `output/`。CLI 标志 `--yes` 优先于 `AUTO_CONFIRM` 环境变量（历史兼容）。
+
+
 ## 📖 使用指南
 
 ### 命令行使用
@@ -175,7 +193,11 @@ python -m src.cli.main batch 2025
 4. 保存到PostgreSQL数据库
 5. 导出为JSON和CSV文件
 ```bash
-python main.py --batch cases.txt
+# 批量抓取（示例：抓取 2025 年，最多 50 个案件）
+python -m src.cli.main batch 2025 --max-cases 50
+
+# 抓取单个案件并自动导出（JSON/CSV 输出到 `output/`）
+python -m src.cli.main single IMM-12345-22
 ```
 
 ### 运行演示脚本

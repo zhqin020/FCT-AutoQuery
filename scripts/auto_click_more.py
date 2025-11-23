@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import argparse
+import os
 import time
 from datetime import datetime, timezone
 
@@ -7,9 +9,143 @@ from selenium.webdriver.common.keys import Keys
 
 from src.services.case_scraper_service import CaseScraperService
 
-case_number = "IMM-12345-25"
+# CLI: allow non-interactive runs via `--yes` or `--non-interactive`.
+parser = argparse.ArgumentParser(
+    description="Run a quick smoke search and open the modal for a court case"
+)
+parser.add_argument(
+    "--yes",
+    "-y",
+    action="store_true",
+    help="Run non-interactively; skip confirmation prompts",
+)
+parser.add_argument(
+    "--non-interactive",
+    action="store_true",
+    help="Alias for --yes",
+)
+parser.add_argument(
+    "--service-class",
+    help=(
+        "Optional dotted import path to a Service class to instantiate, e.g. "
+        "tests.integration.fake_service.FakeService"
+    ),
+)
+parser.add_argument(
+    "--case",
+    help="Case number to search (e.g. IMM-12345-22). Overrides built-in default.",
+)
+args = parser.parse_args()
 
-s = CaseScraperService(headless=False)
+# Resolve non-interactive preference: CLI flag takes precedence,
+# otherwise respect AUTO_CONFIRM environment variable (legacy support).
+env_auto = os.environ.get("AUTO_CONFIRM")
+env_truthy = bool(env_auto and env_auto not in ("0", "false", "False"))
+non_interactive = bool(args.yes or args.non_interactive or env_truthy)
+
+case_number = args.case or os.environ.get("CASE_NUMBER") or "IMM-12345-25"
+
+
+def import_class(dotted_path: str):
+    """Import a class from a dotted path string."""
+    # Support two formats:
+    #  - dotted.module.ClassName
+    #  - file_path.py:ClassName
+    import importlib
+    import importlib.machinery
+    import importlib.util
+
+    if ":" in dotted_path:
+        file_path, class_name = dotted_path.rsplit(":", 1)
+        loader = importlib.machinery.SourceFileLoader(class_name, file_path)
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+        return getattr(module, class_name)
+
+    module_path, _, class_name = dotted_path.rpartition(".")
+    if not module_path:
+        raise ImportError(f"Invalid service class path: {dotted_path}")
+    module = importlib.import_module(module_path)
+    return getattr(module, class_name)
+
+
+# Instantiate service: prefer user-provided class (for tests), otherwise
+# use the real CaseScraperService.
+if args.service_class:
+    try:
+        ServiceClass = import_class(args.service_class)
+        s = ServiceClass(headless=False)
+        print(f"Using injected service class: {args.service_class}")
+    except Exception as e:
+        raise SystemExit(
+            f"Failed to import/instantiate service class '{args.service_class}': {e}"
+        )
+else:
+    s = CaseScraperService(headless=False)
+
+# If the provided service implements a high-level fetch method, use it and
+# skip the browser-driven orchestration. This allows injection of a fake
+# service for CI tests.
+if hasattr(s, "fetch_case_and_docket"):
+    try:
+        case_data, docket_entries = s.fetch_case_and_docket(
+            case_number, non_interactive
+        )
+
+        # Export structured JSON to output/ (same format as below)
+        import json
+        from pathlib import Path
+
+        out_dir = Path("output")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        safe_case = (case_data.get("case_id") or case_number).replace("/", "_")
+        out_path = out_dir / f"{safe_case}_{ts}.json"
+
+        cd = dict(case_data)
+        if isinstance(cd.get("filing_date"), (str,)):
+            pass
+        else:
+            try:
+                if cd.get("filing_date") is not None:
+                    cd["filing_date"] = cd["filing_date"].isoformat()
+            except Exception:
+                pass
+
+        payload = {
+            "case": cd,
+            "docket_entries": [
+                (
+                    e.to_dict()
+                    if hasattr(e, "to_dict")
+                    else {
+                        "doc_id": getattr(e, "doc_id", None),
+                        "case_id": getattr(e, "case_id", None),
+                        "entry_date": (
+                            getattr(e, "entry_date", None).isoformat()
+                            if getattr(e, "entry_date", None)
+                            else None
+                        ),
+                        "entry_office": getattr(e, "entry_office", None),
+                        "summary": getattr(e, "summary", None),
+                    }
+                )
+                for e in docket_entries
+            ],
+            "scraped_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        with open(out_path, "w", encoding="utf-8") as jf:
+            json.dump(payload, jf, ensure_ascii=False, indent=2)
+        print(f"Saved structured JSON to {out_path}")
+        s.close()
+        raise SystemExit(0)
+    except SystemExit:
+        raise
+    except Exception as e:
+        print("Injected service fetch failed:", e)
+        # fall back to browser-driven flow
 try:
     s.initialize_page()
     driver = s._get_driver()
@@ -402,15 +538,10 @@ try:
         raise SystemExit("No modal")
 
     # Pause briefly and allow user to visually confirm modal contents.
-    # If the environment variable `AUTO_CONFIRM` is set (truthy), skip the
-    # interactive `input()` prompt so the script can run non-interactively.
-    import os
-
     print("Modal appeared. Pausing 5 seconds for you to inspect...")
     time.sleep(5)
-    auto_confirm = os.environ.get("AUTO_CONFIRM")
-    if auto_confirm and auto_confirm not in ("0", "false", "False"):
-        print("AUTO_CONFIRM set — continuing without waiting for Enter.")
+    if non_interactive:
+        print("Non-interactive mode — continuing without waiting for Enter.")
     else:
         try:
             input(
@@ -540,14 +671,11 @@ try:
             print("Failed to close modal programmatically.")
 
     # Allow the user to confirm before exiting and closing browser.
-    # If `AUTO_CONFIRM` is set, skip the final prompt so the script exits
-    # cleanly in non-interactive runs.
+    # If non-interactive mode is enabled, skip the final prompt so the
+    # script exits cleanly in non-interactive runs.
     try:
-        import os
-
-        auto_confirm = os.environ.get("AUTO_CONFIRM")
-        if auto_confirm and auto_confirm not in ("0", "false", "False"):
-            print("AUTO_CONFIRM set — exiting without waiting for Enter.")
+        if non_interactive:
+            print("Non-interactive mode — exiting without waiting for Enter.")
         else:
             try:
                 input("Press Enter to exit and close the browser...")

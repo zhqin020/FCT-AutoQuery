@@ -2,7 +2,7 @@
 
 import time
 from datetime import date, datetime
-from typing import Optional, Tuple
+from typing import Optional
 
 from selenium import webdriver
 from selenium.common.exceptions import NoSuchElementException, TimeoutException
@@ -442,51 +442,150 @@ class CaseScraperService:
             logger.error(f"Error searching case {case_number}: {e}")
             return False
 
-    def scrape_case_data(
-        self, case_number: str
-    ) -> Tuple[Optional[Case], list[DocketEntry]]:
+    def scrape_case_data(self, case_number: str) -> Optional[Case]:
         """Scrape case data from the modal after clicking More.
 
         Args:
             case_number: Case number being scraped
 
         Returns:
-            Tuple of (Case, list of DocketEntry) or (None, []) if failed
+            Case object on success, or None on failure. The returned Case will
+            have a dynamic attribute `docket_entries` (list) attached when
+            entries were extracted to preserve downstream access.
         """
         driver = self._get_driver()
 
         try:
-            # Click the "More" link — be tolerant of different markup/text casing
+            # Click the "More" link — prefer locating the control inside the
+            # result row that contains the case_number. This is more robust
+            # against pages that show many results or render 'More' controls per-row.
             logger.info(f"Clicking More for case: {case_number}")
             more_link = None
+
+            # First, try to find the target row containing the case number
             try:
-                more_link = WebDriverWait(driver, 6).until(
-                    EC.element_to_be_clickable((By.LINK_TEXT, "More"))
-                )
+                rows = driver.find_elements(By.XPATH, "//table//tbody//tr")
+                target_row = None
+                for r in rows:
+                    try:
+                        first = r.find_element(By.TAG_NAME, "td")
+                        if case_number in (first.text or ""):
+                            target_row = r
+                            break
+                    except Exception:
+                        continue
             except Exception:
-                # Try case-insensitive xpath for anchors or buttons containing "more"
+                target_row = None
+
+            # candidate xpaths to find More control within a row
+            candidate_xpaths = [
+                ".//button[@id='re']",
+                ".//a[@id='re']",
+                ".//button[@id='more']",
+                ".//a[@id='more']",
+                ".//button[.//i[contains(@class,'fa-search-plus')]]",
+                ".//a[.//i[contains(@class,'fa-search-plus')]]",
+                ".//button[.//i[contains(@class,'fa-search')]]",
+                ".//a[.//i[contains(@class,'fa-search')]]",
+                ".//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'more')]",
+                ".//a[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'more')]",
+                ".//button[contains(@data-target, 'Modal') or contains(@data-toggle, 'modal')]",
+                ".//a[contains(@href, 'javascript') or contains(@href, '#') or contains(@data-target, 'Modal')]",
+            ]
+
+            if target_row is not None:
+                for xp in candidate_xpaths:
+                    try:
+                        more_link = target_row.find_element(By.XPATH, xp)
+                        logger.info("Found More element in row via: %s", xp)
+                        break
+                    except Exception:
+                        continue
+
+            # If not found in-row, fall back to the previous global strategies
+            if more_link is None:
                 try:
                     more_link = WebDriverWait(driver, 6).until(
-                        EC.element_to_be_clickable(
-                            (
-                                By.XPATH,
-                                "//a[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'more')]|//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'more')]",
-                            )
-                        )
+                        EC.element_to_be_clickable((By.LINK_TEXT, "More"))
                     )
                 except Exception:
-                    # As a last resort try any link with title or aria-label 'more'
+                    # Try case-insensitive xpath for anchors or buttons containing "more"
                     try:
                         more_link = WebDriverWait(driver, 6).until(
                             EC.element_to_be_clickable(
                                 (
                                     By.XPATH,
-                                    "//a[@title and contains(translate(@title, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'more')] | //*[(@aria-label) and contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'more')]",
+                                    "//a[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'more')]|//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'more')]",
                                 )
                             )
                         )
                     except Exception:
-                        more_link = None
+                        # As a last resort try any link with title or aria-label 'more'
+                        try:
+                            more_link = WebDriverWait(driver, 6).until(
+                                EC.element_to_be_clickable(
+                                    (
+                                        By.XPATH,
+                                        "//a[@title and contains(translate(@title, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'more')] | //*[(@aria-label) and contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'more')]",
+                                    )
+                                )
+                            )
+                        except Exception:
+                            more_link = None
+
+            # If still not found, attempt a couple of quick retries (handle race conditions)
+            if more_link is None and target_row is not None:
+                logger.info(
+                    "More control not found initially; retrying within target row"
+                )
+                for attempt in range(2):
+                    time.sleep(0.5)
+                    for xp in candidate_xpaths:
+                        try:
+                            more_link = target_row.find_element(By.XPATH, xp)
+                            logger.info(
+                                "Found More element in row on retry %d via: %s",
+                                attempt + 1,
+                                xp,
+                            )
+                            break
+                        except Exception:
+                            continue
+                    if more_link is not None:
+                        break
+
+            # Last-resort fallback: try clicking the last cell's button/link or the whole row
+            if more_link is None:
+                try:
+                    logger.info(
+                        "Attempting fallback: click last-cell button or anchor in the target row"
+                    )
+                    last_ctl = None
+                    if target_row is not None:
+                        try:
+                            last_ctl = target_row.find_element(
+                                By.XPATH, ".//td[last()]//button | .//td[last()]//a"
+                            )
+                        except Exception:
+                            last_ctl = None
+
+                    if last_ctl is not None:
+                        more_link = last_ctl
+                        logger.info("Using last-cell control as More fallback")
+                    else:
+                        # Try clicking the row itself (some pages bind click to row)
+                        if target_row is not None:
+                            try:
+                                driver.execute_script(
+                                    "arguments[0].click();", target_row
+                                )
+                                logger.info("Clicked target row as fallback")
+                                # Give page a short moment for modal to appear
+                                time.sleep(0.5)
+                            except Exception:
+                                logger.info("Row click fallback did not trigger modal")
+                except Exception:
+                    logger.debug("Fallback attempt failed", exc_info=True)
 
             if more_link is None:
                 raise Exception("Could not find 'More' link/button for case")
@@ -557,22 +656,29 @@ class CaseScraperService:
             # Close modal
             self._close_modal()
 
+            # Attach docket entries to the Case object for downstream use
+            try:
+                case.docket_entries = docket_entries
+            except Exception:
+                # Best-effort, non-fatal
+                pass
+
             # Log structured output for later inspection
             try:
                 logger.debug("Case summary: %s", case.to_dict())
             except Exception:
                 logger.debug("Case summary not serializable")
 
-            return case, docket_entries
+            return case
 
         except Exception as e:
             logger.error(f"Error scraping case {case_number}: {e}")
             # Try to close modal if open
             try:
                 self._close_modal()
-            except:
+            except Exception:
                 pass
-            return None, []
+            return None
 
     def _extract_case_header(self, modal_element) -> dict:
         """Extract case header information from modal.
