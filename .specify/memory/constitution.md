@@ -81,4 +81,13 @@ Follow-up TODOs: None
 ## Governance
 This constitution supersedes all other project guidelines. Amendments require consensus from core contributors and must include a migration plan. All pull requests must verify compliance with these principles. Use this constitution as the basis for decision-making in development.
 
+##  Numbered next-step options rule:
+   - When I present multiple suggested next actions or choices to you, I will prefix each option with a number (1., 2., 3., ...).
+   - You can reply with the number to choose that option.
+
+   - 示例（Example）:
+     1. Run the scraper and attach JSON output
+     2. Commit and push the branch
+     3. Replace `id` with `doc_id` in exported JSON
+     
 **Version**: 1.2.0 | **Ratified**: 2025-11-19 | **Last Amended**: 2025-11-22

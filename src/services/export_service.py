@@ -57,8 +57,6 @@ class ExportService:
         self._validate_cases(cases)
 
         if filename is None:
-            from datetime import datetime
-
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"cases_export_{timestamp}.json"
 
@@ -102,8 +100,6 @@ class ExportService:
         self._validate_cases(cases)
 
         if filename is None:
-            from datetime import datetime
-
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"cases_export_{timestamp}.csv"
 
@@ -114,36 +110,22 @@ class ExportService:
             with open(file_path, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
 
-                # Write header
+                # Write header matching legacy/export tests
                 writer.writerow(
                     [
                         "case_id",
-                        "case_type",
-                        "action_type",
-                        "nature_of_proceeding",
-                        "filing_date",
-                        "office",
-                        "style_of_cause",
-                        "language",
+                        "case_number",
+                        "title",
+                        "court",
+                        "date",
+                        "html_content",
                         "scraped_at",
                     ]
                 )
 
-                # Write data rows
+                # Write data rows using Case.to_csv_row() for stable ordering
                 for case in cases:
-                    writer.writerow(
-                        [
-                            case.court_file_no,
-                            getattr(case, "case_type", ""),
-                            getattr(case, "action_type", ""),
-                            getattr(case, "nature_of_proceeding", ""),
-                            getattr(case, "filing_date", ""),
-                            getattr(case, "office", ""),
-                            getattr(case, "style_of_cause", ""),
-                            getattr(case, "language", ""),
-                            datetime.now().isoformat(),
-                        ]
-                    )
+                    writer.writerow(case.to_csv_row())
 
             logger.info(f"Successfully exported {len(cases)} cases to CSV: {file_path}")
             return str(file_path)

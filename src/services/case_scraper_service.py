@@ -295,9 +295,10 @@ class CaseScraperService:
             try:
                 import os
                 from datetime import datetime as _dt
+                from datetime import timezone as _tz
                 from pathlib import Path
 
-                ts = _dt.utcnow().strftime("%Y%m%d_%H%M%S")
+                ts = _dt.now(_tz.utc).strftime("%Y%m%d_%H%M%S")
                 log_dir = Path("logs")
                 os.makedirs(log_dir, exist_ok=True)
 
