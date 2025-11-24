@@ -2,10 +2,11 @@
 
 import time
 from datetime import date, datetime
-from typing import Optional, Tuple
+from pathlib import Path
+from typing import Optional
 
 from selenium import webdriver
-from selenium.common.exceptions import NoSuchElementException, TimeoutException
+from selenium.common.exceptions import NoSuchElementException
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
@@ -105,7 +106,7 @@ class CaseScraperService:
                         # Prefer JS click to avoid overlay issues
                         driver.execute_script("arguments[0].click();", el)
                         logger.info(
-                            "Dismissed cookie/consent banner using xpath: %s", xp
+                            "Dismissed cookie/consent banner using xpath: {}", xp
                         )
                         time.sleep(0.2)
                         return
@@ -113,7 +114,7 @@ class CaseScraperService:
                         try:
                             el.click()
                             logger.info(
-                                "Dismissed cookie/consent banner using xpath (native click): %s",
+                                "Dismissed cookie/consent banner using xpath (native click): {}",
                                 xp,
                             )
                             time.sleep(0.2)
@@ -144,7 +145,7 @@ class CaseScraperService:
                 )
                 return
             except Exception as e:
-                logger.debug("_safe_send_keys JS fallback failed: %s", e)
+                logger.debug("_safe_send_keys JS fallback failed: {}", e)
                 raise
 
     def _submit_search(self, driver, input_element) -> None:
@@ -185,7 +186,7 @@ class CaseScraperService:
                 )
                 return
             except Exception as e:
-                logger.debug("JS form submit fallback failed: %s", e)
+                logger.debug("JS form submit fallback failed: {}", e)
                 raise
 
         # Click using JS if normal click fails
@@ -195,7 +196,7 @@ class CaseScraperService:
             try:
                 driver.execute_script("arguments[0].click();", submit)
             except Exception as e:
-                logger.debug("Submit click failed: %s", e)
+                logger.debug("Submit click failed: {}", e)
                 raise
 
     def initialize_page(self) -> None:
@@ -360,81 +361,155 @@ class CaseScraperService:
         driver = self._get_driver()
 
         try:
-            # Apply rate limiting
-            self.rate_limiter.wait_if_needed()
+            # Try the search up to two times: initial attempt, then one retry
+            # that re-initializes the page. This mirrors the harness retry
+            # strategy for flaky client-side population.
+            for attempt in range(2):
+                # Apply rate limiting
+                self.rate_limiter.wait_if_needed()
 
-            # Clear and input case number
-            logger.info(f"Searching for case: {case_number}")
-            # Prefer the dedicated court number input, but fall back to the generic site search.
-            possible_case_inputs = [
-                "courtNumber",
-                "selectCourtNumber",
-                "selectRetcaseCourtNumber",
-                "searchd",
-            ]
-            case_input = None
-            for cid in possible_case_inputs:
-                try:
-                    case_input = WebDriverWait(driver, 2).until(
-                        EC.presence_of_element_located((By.ID, cid))
-                    )
-                    break
-                except Exception:
-                    continue
-            if case_input is None:
-                # As a last resort try to find any text input inside the search tab
-                try:
-                    case_input = WebDriverWait(driver, 3).until(
-                        EC.presence_of_element_located(
-                            (By.XPATH, "//input[@type='text']")
+                # Clear and input case number
+                logger.info(
+                    f"Searching for case: {case_number} (attempt {attempt + 1})"
+                )
+                # Prefer the dedicated court number input, but fall back to the generic site search.
+                possible_case_inputs = [
+                    "courtNumber",
+                    "selectCourtNumber",
+                    "selectRetcaseCourtNumber",
+                    "searchd",
+                ]
+                case_input = None
+                for cid in possible_case_inputs:
+                    try:
+                        case_input = WebDriverWait(driver, 2).until(
+                            EC.presence_of_element_located((By.ID, cid))
                         )
-                    )
+                        break
+                    except Exception:
+                        continue
+                if case_input is None:
+                    # As a last resort try to find any text input inside the search tab
+                    try:
+                        case_input = WebDriverWait(driver, 3).until(
+                            EC.presence_of_element_located(
+                                (By.XPATH, "//input[@type='text']")
+                            )
+                        )
 
+                    except Exception:
+                        case_input = None
+                # Dismiss any overlay that appeared just before interacting
+                try:
+                    self._dismiss_cookie_banner(driver)
                 except Exception:
-                    raise
-            # Dismiss any overlay that appeared just before interacting
-            try:
-                self._dismiss_cookie_banner(driver)
-            except Exception:
-                pass
+                    pass
 
-            # Use robust send keys with JS fallback
-            self._safe_send_keys(driver, case_input, case_number)
-
-            # Submit using robust helper
-            try:
-                self._submit_search(driver, case_input)
-            except Exception as submit_err:
-                logger.warning("Submit attempt failed: %s", submit_err)
-                # Continue and let the wait for results determine outcome
-
-            # Wait for results: either a table appears or a no-data message
-            try:
-                WebDriverWait(driver, 10).until(
-                    lambda d: d.find_elements(By.XPATH, "//table")
-                    or d.find_elements(
-                        By.XPATH, "//td[contains(text(), 'No data available')]"
+                if case_input is None:
+                    logger.debug(
+                        "Could not locate a search input for attempt {}", attempt + 1
                     )
-                )
-            except Exception:
-                # allow downstream checks to decide
-                pass
+                    # If this was the first attempt, re-initialize and retry
+                    if attempt == 0:
+                        try:
+                            self.initialize_page()
+                            driver = self._get_driver()
+                            continue
+                        except Exception:
+                            pass
+                    return False
 
-            # Check for "No data available"
-            if driver.find_elements(
-                By.XPATH, "//td[contains(text(), 'No data available')]"
-            ):
-                logger.info(f"No results found for case: {case_number}")
-                return False
+                # Use robust send keys with JS fallback
+                self._safe_send_keys(driver, case_input, case_number)
 
-            # Check for results table
-            try:
-                WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located((By.XPATH, "//table"))
-                )
-                logger.info(f"Results found for case: {case_number}")
-                return True
-            except TimeoutException:
+                # Small stabilization pause to allow client-side handlers
+                # (e.g. input listeners) to process the entered value before
+                # submitting. Matches the harness behavior which waits after
+                # typing the case number.
+                time.sleep(2)
+
+                # Try a tab-specific submit first (more reliable on this site)
+                try:
+                    tab_submit = driver.find_element(By.ID, "tab02Submit")
+                    try:
+                        driver.execute_script("arguments[0].click();", tab_submit)
+                        logger.debug("Clicked tab02Submit")
+                    except Exception:
+                        tab_submit.click()
+                except Exception:
+                    # Fall back to the generic submit helper
+                    try:
+                        self._submit_search(driver, case_input)
+                    except Exception as submit_err:
+                        logger.warning("Submit attempt failed: {}", submit_err)
+                        # Continue and let the wait for results determine outcome
+
+                # Poll for results: check repeatedly for the case row or an explicit
+                # 'No data available' marker. Polling is often more reliable than
+                # relying on DataTables' async hooks.
+                found_row = False
+                no_data = False
+                for _ in range(40):
+                    if driver.find_elements(
+                        By.XPATH, "//td[contains(text(), 'No data available')]"
+                    ):
+                        no_data = True
+                        break
+                    if driver.find_elements(
+                        By.XPATH,
+                        f"//table//td[contains(normalize-space(.), '{case_number}')]",
+                    ):
+                        found_row = True
+                        break
+                    time.sleep(0.5)
+
+                if no_data:
+                    logger.info(f"No results found for case: {case_number}")
+                    return False
+
+                if found_row:
+                    logger.info(f"Results found for case: {case_number}")
+                    return True
+
+                # As a final fallback, check for any table rows present
+                if driver.find_elements(By.XPATH, "//table//tbody//tr"):
+                    logger.info(
+                        "Table rows present but specific case not detected: {}",
+                        case_number,
+                    )
+                    return True
+
+                # If first attempt failed, re-initialize and retry
+                if attempt == 0:
+                    try:
+                        logger.info(
+                            "Retrying search: re-initializing page and retrying"
+                        )
+                        self.initialize_page()
+                        driver = self._get_driver()
+                        continue
+                    except Exception:
+                        pass
+
+                # Save diagnostics before giving up
+                try:
+                    logs = Path("logs")
+                    logs.mkdir(parents=True, exist_ok=True)
+                    from datetime import timezone as _tz
+
+                    ts = datetime.now(_tz.utc).strftime("%Y%m%d_%H%M%S")
+                    page_path = logs / f"search_no_rows_{case_number}_{ts}.html"
+                    with open(page_path, "w", encoding="utf-8") as fh:
+                        fh.write(driver.page_source)
+                    try:
+                        png_path = logs / f"search_no_rows_{case_number}_{ts}.png"
+                        driver.save_screenshot(str(png_path))
+                    except Exception:
+                        pass
+                    logger.info("Saved diagnostics to {}", page_path)
+                except Exception:
+                    logger.debug("Failed to save search diagnostics", exc_info=True)
+
                 logger.warning(f"No results table found for case: {case_number}")
                 return False
 
@@ -442,53 +517,318 @@ class CaseScraperService:
             logger.error(f"Error searching case {case_number}: {e}")
             return False
 
-    def scrape_case_data(
-        self, case_number: str
-    ) -> Tuple[Optional[Case], list[DocketEntry]]:
+    def scrape_case_data(self, case_number: str) -> Optional[Case]:
         """Scrape case data from the modal after clicking More.
 
         Args:
             case_number: Case number being scraped
 
         Returns:
-            Tuple of (Case, list of DocketEntry) or (None, []) if failed
+            Case object on success, or None on failure. The returned Case will
+            have a dynamic attribute `docket_entries` (list) attached when
+            entries were extracted to preserve downstream access.
         """
         driver = self._get_driver()
 
         try:
-            # Click the "More" link — be tolerant of different markup/text casing
+            # Click the "More" link — prefer locating the control inside the
+            # result row that contains the case_number. This is more robust
+            # against pages that show many results or render 'More' controls per-row.
             logger.info(f"Clicking More for case: {case_number}")
             more_link = None
+            # If a fallback (row click) causes the modal to appear without a
+            # clickable per-row control, we capture that here and continue
+            # the flow without needing to click `more_link`.
+            prefound_modal = None
+
+            # First, try to find the target row containing the case number
             try:
-                more_link = WebDriverWait(driver, 6).until(
-                    EC.element_to_be_clickable((By.LINK_TEXT, "More"))
-                )
+                rows = driver.find_elements(By.XPATH, "//table//tbody//tr")
+                target_row = None
+                for r in rows:
+                    try:
+                        first = r.find_element(By.TAG_NAME, "td")
+                        if case_number in (first.text or ""):
+                            target_row = r
+                            break
+                    except Exception:
+                        continue
             except Exception:
-                # Try case-insensitive xpath for anchors or buttons containing "more"
+                target_row = None
+
+                # Instrumentation: save current page HTML and a snippet for this
+                # target row to `logs/` to help diagnose failures where the CLI
+                # cannot find/click the per-row "More" control.
+                # Wait for the client-side DataTable to populate the target row
                 try:
-                    more_link = WebDriverWait(driver, 6).until(
-                        EC.element_to_be_clickable(
+                    WebDriverWait(driver, 12).until(
+                        EC.presence_of_element_located(
                             (
                                 By.XPATH,
-                                "//a[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'more')]|//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'more')]",
+                                f"//table//td[contains(normalize-space(.), '{case_number}')]",
                             )
                         )
                     )
                 except Exception:
-                    # As a last resort try any link with title or aria-label 'more'
+                    # If the wait fails, continue — downstream logic will handle missing row
+                    logger.debug(
+                        "Timed out waiting for case row to appear: {}", case_number
+                    )
+
+                # Locate the target row containing the case number (again, after wait)
+                try:
+                    rows = driver.find_elements(By.XPATH, "//table//tbody//tr")
+                    target_row = None
+                    for r in rows:
+                        try:
+                            first = r.find_element(By.TAG_NAME, "td")
+                            if case_number in (first.text or ""):
+                                target_row = r
+                                break
+                        except Exception:
+                            continue
+                except Exception:
+                    target_row = None
+
+                # Instrumentation: save current page HTML and a snippet for this
+                # target row to `logs/` to help diagnose failures where the CLI
+                # cannot find/click the per-row "More" control. Save these after
+                # waiting for the table to populate to avoid empty snippets.
+                try:
+                    logs = Path("logs")
+                    logs.mkdir(parents=True, exist_ok=True)
+                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    # full page
+                    page_path = logs / f"cli_page_{case_number}_{ts}.html"
+                    try:
+                        with open(page_path, "w", encoding="utf-8") as fh:
+                            fh.write(driver.page_source)
+                        logger.info("Saved full page HTML to {}", page_path)
+                    except Exception:
+                        logger.debug("Failed to save full page HTML", exc_info=True)
+
+                    # row snippet — use outerHTML on the located WebElement to avoid
+                    # extracting from the raw page_source which may be stale.
+                    snippet_path = logs / f"row_snippet_{case_number}_{ts}.html"
+                    try:
+                        snippet_html = ""
+                        if target_row is not None:
+                            snippet_html = target_row.get_attribute("outerHTML") or ""
+                        else:
+                            try:
+                                el = driver.find_element(
+                                    By.XPATH,
+                                    f"//td[contains(normalize-space(.), '{case_number}')]",
+                                )
+                                tr = el.find_element(By.XPATH, "ancestor::tr[1]")
+                                snippet_html = tr.get_attribute("outerHTML") or ""
+                            except Exception:
+                                snippet_html = ""
+
+                        with open(snippet_path, "w", encoding="utf-8") as fh:
+                            fh.write("<html><body>\n")
+                            fh.write(snippet_html)
+                            fh.write("\n</body></html>")
+                        logger.info("Saved row snippet HTML to {}", snippet_path)
+                    except Exception:
+                        logger.debug("Failed to save row snippet", exc_info=True)
+                    # also try to save a screenshot for visual debugging
+                    try:
+                        png_path = logs / f"screenshot_{case_number}_{ts}.png"
+                        driver.save_screenshot(str(png_path))
+                        logger.info("Saved screenshot to {}", png_path)
+                    except Exception:
+                        logger.debug("Failed to save screenshot", exc_info=True)
+                except Exception:
+                    logger.debug("Instrumentation write failed", exc_info=True)
+
+            # Pre-click extraction from the target row (case id, style, nature)
+            pre_click_case = None
+            pre_click_style = None
+            pre_click_nature = None
+            try:
+                if target_row is not None:
+                    try:
+                        table_el = target_row.find_element(By.XPATH, "ancestor::table")
+                    except Exception:
+                        table_el = None
+
+                    headers = []
+                    try:
+                        if table_el is not None:
+                            headers = [
+                                h.text.strip().lower()
+                                for h in table_el.find_elements(
+                                    By.XPATH, ".//thead//th"
+                                )
+                                if h.text and h.text.strip()
+                            ]
+                    except Exception:
+                        headers = []
+
+                    cols = target_row.find_elements(By.TAG_NAME, "td")
+                    texts = [c.text.strip() for c in cols]
+
+                    def get_by_header(names):
+                        for n in names:
+                            for i, h in enumerate(headers):
+                                if n in h:
+                                    if i < len(texts):
+                                        return texts[i]
+                        return None
+
+                    pre_click_case = get_by_header(
+                        [
+                            "court file",
+                            "court number",
+                            "court no",
+                            "court file no",
+                            "court number",
+                        ]
+                    ) or (texts[0] if len(texts) > 0 else None)
+                    pre_click_style = get_by_header(
+                        ["style", "style of cause", "style of cause/"]
+                    ) or (texts[1] if len(texts) > 1 else None)
+                    pre_click_nature = get_by_header(
+                        ["nature", "nature of proceeding"]
+                    ) or (texts[2] if len(texts) > 2 else None)
+
+                    logger.debug(
+                        "Pre-click extracted: case=%s style=%s nature=%s",
+                        pre_click_case,
+                        pre_click_style,
+                        pre_click_nature,
+                    )
+            except Exception:
+                logger.debug("Pre-click extraction failed", exc_info=True)
+
+            # candidate xpaths to find More control within a row
+            candidate_xpaths = [
+                ".//button[@id='re']",
+                ".//a[@id='re']",
+                ".//button[@id='more']",
+                ".//a[@id='more']",
+                ".//button[.//i[contains(@class,'fa-search-plus')]]",
+                ".//a[.//i[contains(@class,'fa-search-plus')]]",
+                ".//button[.//i[contains(@class,'fa-search')]]",
+                ".//a[.//i[contains(@class,'fa-search')]]",
+                ".//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'more')]",
+                ".//a[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'more')]",
+                ".//button[contains(@data-target, 'Modal') or contains(@data-toggle, 'modal')]",
+                ".//a[contains(@href, 'javascript') or contains(@href, '#') or contains(@data-target, 'Modal')]",
+            ]
+
+            if target_row is not None:
+                for xp in candidate_xpaths:
+                    try:
+                        more_link = target_row.find_element(By.XPATH, xp)
+                        logger.info("Found More element in row via: {}", xp)
+                        break
+                    except Exception:
+                        continue
+
+            # If not found in-row, fall back to the previous global strategies
+            if more_link is None:
+                try:
+                    more_link = WebDriverWait(driver, 6).until(
+                        EC.element_to_be_clickable((By.LINK_TEXT, "More"))
+                    )
+                except Exception:
+                    # Try case-insensitive xpath for anchors or buttons containing "more"
                     try:
                         more_link = WebDriverWait(driver, 6).until(
                             EC.element_to_be_clickable(
                                 (
                                     By.XPATH,
-                                    "//a[@title and contains(translate(@title, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'more')] | //*[(@aria-label) and contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'more')]",
+                                    "//a[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'more')]|//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'more')]",
                                 )
                             )
                         )
                     except Exception:
-                        more_link = None
+                        # As a last resort try any link with title or aria-label 'more'
+                        try:
+                            more_link = WebDriverWait(driver, 6).until(
+                                EC.element_to_be_clickable(
+                                    (
+                                        By.XPATH,
+                                        "//a[@title and contains(translate(@title, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'more')] | //*[(@aria-label) and contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'more')]",
+                                    )
+                                )
+                            )
+                        except Exception:
+                            more_link = None
 
+            # If still not found, attempt a couple of quick retries (handle race conditions)
+            if more_link is None and target_row is not None:
+                logger.info(
+                    "More control not found initially; retrying within target row"
+                )
+                for attempt in range(2):
+                    time.sleep(0.5)
+                    for xp in candidate_xpaths:
+                        try:
+                            more_link = target_row.find_element(By.XPATH, xp)
+                            logger.info(
+                                "Found More element in row on retry {} via: {}",
+                                attempt + 1,
+                                xp,
+                            )
+                            break
+                        except Exception:
+                            continue
+                    if more_link is not None:
+                        break
+
+            # Last-resort fallback: try clicking the last cell's button/link or the whole row
             if more_link is None:
+                try:
+                    logger.info(
+                        "Attempting fallback: click last-cell button or anchor in the target row"
+                    )
+                    last_ctl = None
+                    if target_row is not None:
+                        try:
+                            last_ctl = target_row.find_element(
+                                By.XPATH, ".//td[last()]//button | .//td[last()]//a"
+                            )
+                        except Exception:
+                            last_ctl = None
+
+                    if last_ctl is not None:
+                        more_link = last_ctl
+                        logger.info("Using last-cell control as More fallback")
+                    else:
+                        # Try clicking the row itself (some pages bind click to row)
+                        if target_row is not None:
+                            try:
+                                driver.execute_script(
+                                    "arguments[0].click();", target_row
+                                )
+                                logger.info("Clicked target row as fallback")
+                                # Give page a short moment for modal to appear
+                                time.sleep(0.5)
+                                # Quick check: maybe the row-click already opened the
+                                # modal. If so, capture it and continue without
+                                # requiring an explicit more_link click.
+                                try:
+                                    prefound_modal = WebDriverWait(driver, 1).until(
+                                        EC.presence_of_element_located(
+                                            (By.CLASS_NAME, "modal-content")
+                                        )
+                                    )
+                                    logger.info(
+                                        "Modal detected immediately after row-click fallback"
+                                    )
+                                except Exception:
+                                    prefound_modal = None
+                            except Exception:
+                                logger.info("Row click fallback did not trigger modal")
+                except Exception:
+                    logger.debug("Fallback attempt failed", exc_info=True)
+
+            # If we still don't have a clickable element and the fallback did
+            # not already open the modal, treat this as a failure.
+            if more_link is None and prefound_modal is None:
                 raise Exception("Could not find 'More' link/button for case")
 
             # Try normal click first, then JS click fallback
@@ -502,36 +842,103 @@ class CaseScraperService:
 
             # Wait for modal to appear. Accept several common modal patterns
             modal = None
-            modal_selectors = [
-                (By.CLASS_NAME, "modal-content"),
-                (By.CLASS_NAME, "modal-body"),
-                (By.XPATH, "//div[@role='dialog']"),
-            ]
-            for by, sel in modal_selectors:
-                try:
-                    modal = WebDriverWait(driver, 10).until(
-                        EC.presence_of_element_located((by, sel))
-                    )
-                    break
-                except Exception:
-                    continue
+            # If the fallback already produced the modal, reuse it.
+            if prefound_modal is not None:
+                modal = prefound_modal
+            else:
+                modal_selectors = [
+                    (By.CLASS_NAME, "modal-content"),
+                    (By.CLASS_NAME, "modal-body"),
+                    (By.XPATH, "//div[@role='dialog']"),
+                ]
+                for by, sel in modal_selectors:
+                    try:
+                        modal = WebDriverWait(driver, 10).until(
+                            EC.presence_of_element_located((by, sel))
+                        )
+                        break
+                    except Exception:
+                        continue
 
             if modal is None:
                 raise Exception("Modal did not appear after clicking More")
 
             # Extract header information
+            # allow a short stabilization so dynamically-inserted modal content
+            # (labels, caption, and tables) have time to render — the harness
+            # pauses 5s; here a short sleep reduces missing header fields.
+            try:
+                time.sleep(1)
+            except Exception:
+                pass
             logger.debug("Extracting case header from modal")
             case_data = self._extract_case_header(modal)
-            logger.debug("Raw extracted header: %s", case_data)
+            # Merge pre-click extracted values into modal header when modal lacks them
+            try:
+                if not case_data.get("case_id") and pre_click_case:
+                    case_data["case_id"] = pre_click_case
+                if not case_data.get("style_of_cause") and pre_click_style:
+                    case_data["style_of_cause"] = pre_click_style
+                if not case_data.get("nature_of_proceeding") and pre_click_nature:
+                    case_data["nature_of_proceeding"] = pre_click_nature
+            except Exception:
+                pass
+            logger.debug("Raw extracted header: {}", case_data)
 
             # Extract docket entries (pass case_number so entries get case_id)
             logger.debug("Extracting docket entries from modal")
             docket_entries = self._extract_docket_entries(modal, case_number)
-            logger.debug("Extracted %d docket entries", len(docket_entries))
+            logger.debug("Extracted {} docket entries", len(docket_entries))
 
             # Normalize and create Case object
             # Ensure we don't pass duplicate case_id kwarg
             header_case_id = case_data.pop("case_id", None) or case_number
+            # Ensure we have basic metadata: url and modal HTML
+            try:
+                if not case_data.get("url"):
+                    case_data["url"] = driver.current_url
+            except Exception:
+                case_data["url"] = None
+
+            try:
+                # capture modal outerHTML to a separate file under logs/
+                from datetime import timezone as _tz
+
+                logs = Path("logs")
+                logs.mkdir(parents=True, exist_ok=True)
+                ts = datetime.now(_tz.utc).strftime("%Y%m%d_%H%M%S")
+                safe_id = (header_case_id or case_number).replace("/", "_")
+                modal_path = logs / f"modal_{safe_id}_{ts}.html"
+                try:
+                    html = (
+                        modal.get_attribute("outerHTML")
+                        or modal.get_attribute("innerHTML")
+                        or ""
+                    )
+                    with open(modal_path, "w", encoding="utf-8") as mf:
+                        mf.write(html)
+                    case_data["html_path"] = str(modal_path)
+                    logger.info("Saved modal HTML to %s", modal_path)
+                except Exception:
+                    case_data["html_path"] = None
+            except Exception:
+                case_data["html_path"] = None
+
+            # If style_of_cause missing, attempt to extract it from the
+            # previously-located target_row (search results row) which often
+            # contains the style in the second cell.
+            try:
+                if not case_data.get("style_of_cause") and target_row is not None:
+                    try:
+                        tds = target_row.find_elements(By.TAG_NAME, "td")
+                        if len(tds) >= 2:
+                            so = (tds[1].text or "").strip()
+                            if so:
+                                case_data["style_of_cause"] = so
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             # Remove any unexpected keys before passing to Case
             allowed = {
                 "case_type",
@@ -542,37 +949,117 @@ class CaseScraperService:
                 "style_of_cause",
                 "language",
                 "url",
-                "html_content",
+                # do not include large HTML content inline in the Case object;
+                # modal HTML is saved to logs/ and referenced by `html_path`.
             }
             filtered = {k: v for k, v in case_data.items() if k in allowed}
 
             case = Case(case_id=header_case_id, **filtered)
 
             logger.info(
-                "Successfully scraped case: %s (entries=%d)",
+                "Successfully scraped case: {} (entries={})",
                 header_case_id,
                 len(docket_entries),
             )
 
+            # Build structured payload matching scripts/auto_click_more.py format
+            try:
+                import json
+                from datetime import timezone as _tz
+
+                # Build a clean copy of the header for payload export. Remove
+                # the `html_content` key if present and instead include
+                # `html_path` (which points to the saved modal HTML file).
+                cd = dict(case_data)
+                if "html_content" in cd:
+                    cd.pop("html_content", None)
+                # normalize filing_date to ISO if it's a date object
+                try:
+                    if (
+                        not isinstance(cd.get("filing_date"), str)
+                        and cd.get("filing_date") is not None
+                    ):
+                        cd["filing_date"] = cd["filing_date"].isoformat()
+                except Exception:
+                    pass
+
+                de_list = []
+                for e in docket_entries:
+                    if hasattr(e, "to_dict"):
+                        try:
+                            de_list.append(e.to_dict())
+                        except Exception:
+                            de_list.append(
+                                {
+                                    "doc_id": getattr(e, "doc_id", None),
+                                    "case_id": getattr(e, "case_id", None),
+                                    "entry_date": (
+                                        getattr(e, "entry_date", None).isoformat()
+                                        if getattr(e, "entry_date", None)
+                                        else None
+                                    ),
+                                    "entry_office": getattr(e, "entry_office", None),
+                                    "summary": getattr(e, "summary", None),
+                                }
+                            )
+                    else:
+                        de_list.append(
+                            {
+                                "doc_id": getattr(e, "doc_id", None),
+                                "case_id": getattr(e, "case_id", None),
+                                "entry_date": (
+                                    getattr(e, "entry_date", None).isoformat()
+                                    if getattr(e, "entry_date", None)
+                                    else None
+                                ),
+                                "entry_office": getattr(e, "entry_office", None),
+                                "summary": getattr(e, "summary", None),
+                            }
+                        )
+
+                payload = {
+                    "case": cd,
+                    "docket_entries": de_list,
+                    "scraped_at": datetime.now(_tz.utc).isoformat(),
+                }
+
+                # Log the structured JSON payload (pretty-printed) to the main log
+                logger.info(
+                    "Scraped payload:\n{}",
+                    json.dumps(payload, indent=2, ensure_ascii=False),
+                )
+            except Exception:
+                # Non-fatal if logging the payload fails
+                logger.debug(
+                    "Failed to serialize/log structured payload", exc_info=True
+                )
+
             # Close modal
             self._close_modal()
 
+            # Attach docket entries to the Case object for downstream use
+            try:
+                case.docket_entries = docket_entries
+            except Exception:
+                # Best-effort, non-fatal
+                pass
+
             # Log structured output for later inspection
             try:
-                logger.debug("Case summary: %s", case.to_dict())
+                logger.debug("Case summary: {}", case.to_dict())
             except Exception:
                 logger.debug("Case summary not serializable")
 
-            return case, docket_entries
+            return case
 
         except Exception as e:
             logger.error(f"Error scraping case {case_number}: {e}")
             # Try to close modal if open
             try:
                 self._close_modal()
-            except:
+            except Exception:
                 pass
-            return None, []
+            return None
 
     def _extract_case_header(self, modal_element) -> dict:
         """Extract case header information from modal.
@@ -1014,9 +1501,15 @@ class CaseScraperService:
             # Choose the correct table for docket entries: prefer tables with headers matching 'ID' and 'Recorded Entry Summary' or 'Date Filed'
             tables = modal_element.find_elements(By.XPATH, ".//table")
             table = None
-            # Prefer the table that likely contains actual docket rows (not the small illustrative example)
+            # Score candidate tables and pick the best match. Heuristics:
+            #  - Prefer tables with multiple data rows
+            #  - Penalize tables that look like the example/template ("#" / "YYYY-MM-DD")
+            #  - Reward tables with captions or ancestor headings indicating 'information about the court file'
+            #  - Reward tables with header tokens like 'recorded entry' / 'date'
+            candidates = []
             for t in tables:
                 try:
+                    score = 0
                     # Count data rows (tbody tr) excluding header rows
                     try:
                         data_rows = [
@@ -1029,29 +1522,22 @@ class CaseScraperService:
                             if not r.find_elements(By.TAG_NAME, "th")
                         ]
 
-                    # If table has more than one data row, it's likely the real data table
-                    if data_rows and len(data_rows) > 1:
-                        table = t
-                        break
+                    nrows = len(data_rows) if data_rows is not None else 0
+                    score += nrows * 10
 
-                    # If only one row, check whether it's the placeholder/example (first cell '#' and second 'YYYY-MM-DD')
-                    if data_rows and len(data_rows) == 1:
+                    # Check for obvious placeholder/example single-row pattern
+                    if nrows == 1:
                         try:
                             first_td = data_rows[0].find_elements(By.TAG_NAME, "td")
                             if first_td and len(first_td) >= 2:
                                 v0 = (first_td[0].text or "").strip()
                                 v1 = (first_td[1].text or "").strip()
-                                # placeholder example often uses '#' and 'YYYY-MM-DD'
-                                if v0 != "#" and v1.upper() != "YYYY-MM-DD":
-                                    table = t
-                                    break
-                                # otherwise skip this table (it's the example)
-                                else:
-                                    continue
+                                if v0 == "#" or v1.upper() == "YYYY-MM-DD":
+                                    score -= 100
                         except Exception:
                             pass
 
-                    # Prefer the table that is explicitly labeled as 'Information about the court file'
+                    # Caption / ancestor headers
                     try:
                         caps = [
                             c.text.strip().lower()
@@ -1059,48 +1545,67 @@ class CaseScraperService:
                             if c.text and c.text.strip()
                         ]
                         if any("information about the court file" in c for c in caps):
-                            table = t
-                            break
+                            score += 50
                     except Exception:
                         pass
 
-                    # Or prefer if an ancestor contains a heading with that text
                     try:
                         anc = t.find_elements(
                             By.XPATH,
                             "ancestor::*[.//h4[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'information about the court file')]]",
                         )
                         if anc:
-                            table = t
-                            break
+                            score += 40
                     except Exception:
                         pass
 
-                    # Otherwise inspect header cells for useful tokens (fallback)
-                    ths = [
-                        h.text.strip().lower()
-                        for h in t.find_elements(By.XPATH, ".//th")
-                        if h.text and h.text.strip()
-                    ]
-                    joined = " | ".join(ths)
-                    if (
-                        any(
+                    # Header tokens
+                    try:
+                        ths = [
+                            h.text.strip().lower()
+                            for h in t.find_elements(By.XPATH, ".//th")
+                            if h.text and h.text.strip()
+                        ]
+                        joined = " | ".join(ths)
+                        if any(
                             k in joined
                             for k in ["recorded entry", "recorded entry summary"]
-                        )
-                        or (
-                            "id" in joined
-                            and ("date filed" in joined or "date" in joined)
-                        )
-                        or ("recorded" in joined and "summary" in joined)
-                    ):
-                        table = t
-                        break
+                        ):
+                            score += 40
+                        if "id" in joined and (
+                            "date filed" in joined or "date" in joined
+                        ):
+                            score += 30
+                        if "recorded" in joined and "summary" in joined:
+                            score += 30
+                    except Exception:
+                        joined = ""
+
+                    # If table has at least one non-placeholder row but was small, give it a small boost
+                    if nrows == 1 and score >= 10:
+                        score += 5
+
+                    candidates.append((score, t, nrows))
                 except Exception:
                     continue
-            # fallback to first table if none matched
-            if table is None:
-                table = modal_element.find_element(By.XPATH, ".//table")
+
+            # Choose best scored candidate (highest score); if none, fallback to first table
+            if candidates:
+                candidates.sort(key=lambda it: it[0], reverse=True)
+                best_score, best_table, best_nrows = candidates[0]
+                if best_score <= 0:
+                    # all candidates scored poorly (likely only templates); fallback to first table
+                    try:
+                        table = modal_element.find_element(By.XPATH, ".//table")
+                    except Exception:
+                        table = None
+                else:
+                    table = best_table
+            else:
+                try:
+                    table = modal_element.find_element(By.XPATH, ".//table")
+                except Exception:
+                    table = None
             # Determine header mapping if present
             headers = []
             try:

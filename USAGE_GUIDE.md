@@ -127,15 +127,35 @@ if self._consecutive_errors >= self._max_consecutive_errors:
 
 ### 命令行运行
 ```bash
-# 单个案件抓取
-python main.py "https://www.fct-cf.ca/en/court-files-and-decisions/IMM-12345-22"
+# 单个案件抓取（建议使用模块化入口）
+# 使用新的 CLI 子命令接口：
+python -m src.cli.main single IMM-12345-22
 
-# 批量抓取
-python main.py --batch example_cases.txt
+# 批量抓取（按年份）
+python -m src.cli.main batch 2025 --max-cases 50
 
-# 指定输出格式和目录
-python main.py --format json --output ./results "https://www.fct-cf.ca/en/court-files-and-decisions/IMM-12345-22"
+# 注意：CLI 在成功抓取后会导出 JSON 和 CSV 到 `output/`，
+# 不再使用旧的 `--format`/`--output` 选项。要在脚本层面做自定义导出，
+# 请使用 `src.services.export_service.ExportService` 在 Python API 中调用。
 ```
+
+### 脚本 `scripts/auto_click_more.py`（快速烟雾/手工检查）
+
+该脚本用于快速在界面上搜索并打开案件的“More/Modal”视图，便于调试解析器和生成样例输出。
+
+- **非交互运行**: 使用 `--yes` 或 `--non-interactive` 跳过交互式确认提示（CLI 标志优先于 `AUTO_CONFIRM` 环境变量）。
+  - 示例: `python scripts/auto_click_more.py --yes`
+
+- **注入服务类（测试/替代实现）**: 使用 `--service-class <path>` 将一个可实例化的 Service 类注入脚本，脚本会优先调用该类的 `fetch_case_and_docket(case_number, non_interactive)` 方法（如果存在），以获取结构化数据并直接导出 JSON。支持两种路径格式：
+  - dotted module: `package.module.ClassName`（在可导入的包路径下）
+  - file path: `path/to/file.py:ClassName`（按文件加载，便于在子进程中注入测试实现）
+  - 示例（测试用法）: `python scripts/auto_click_more.py --yes --service-class tests/integration/fake_service.py:FakeService`
+
+- **快速测试模式（历史/兼容）**: 脚本仍支持使用环境变量 `AUTO_CONFIRM=1` 来跳过确认提示（早期兼容方式）。CLI 标志 `--yes` 优先于 `AUTO_CONFIRM`。
+
+- **CI 友好说明**: 为了在 CI 中运行无需启动浏览器，我们提供了一个 `FakeService`（见 `tests/integration/fake_service.py`）并通过 `--service-class` 注入；这种方式不会启动 Selenium 或 Chrome。脚本的 JSON 输出会写入 `output/`，文件名包含案件编号和时间戳，例如: `output/IMM-12345-25_20251123_081700.json`。
+
+这些选项使脚本既适合本地交互式调试，也可在自动化/CI 环境中运行而不依赖浏览器。
 
 ### Python API使用
 ```python
