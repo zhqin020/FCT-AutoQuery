@@ -901,10 +901,28 @@ class CaseScraperService:
                 case_data["url"] = None
 
             try:
-                # capture modal outerHTML for storage/inspection
-                case_data["html_content"] = modal.get_attribute("outerHTML") or ""
+                # capture modal outerHTML to a separate file under logs/
+                from datetime import timezone as _tz
+
+                logs = Path("logs")
+                logs.mkdir(parents=True, exist_ok=True)
+                ts = datetime.now(_tz.utc).strftime("%Y%m%d_%H%M%S")
+                safe_id = (header_case_id or case_number).replace("/", "_")
+                modal_path = logs / f"modal_{safe_id}_{ts}.html"
+                try:
+                    html = (
+                        modal.get_attribute("outerHTML")
+                        or modal.get_attribute("innerHTML")
+                        or ""
+                    )
+                    with open(modal_path, "w", encoding="utf-8") as mf:
+                        mf.write(html)
+                    case_data["html_path"] = str(modal_path)
+                    logger.info("Saved modal HTML to %s", modal_path)
+                except Exception:
+                    case_data["html_path"] = None
             except Exception:
-                case_data["html_content"] = ""
+                case_data["html_path"] = None
 
             # If style_of_cause missing, attempt to extract it from the
             # previously-located target_row (search results row) which often
@@ -931,7 +949,8 @@ class CaseScraperService:
                 "style_of_cause",
                 "language",
                 "url",
-                "html_content",
+                # do not include large HTML content inline in the Case object;
+                # modal HTML is saved to logs/ and referenced by `html_path`.
             }
             filtered = {k: v for k, v in case_data.items() if k in allowed}
 
@@ -948,7 +967,12 @@ class CaseScraperService:
                 import json
                 from datetime import timezone as _tz
 
+                # Build a clean copy of the header for payload export. Remove
+                # the `html_content` key if present and instead include
+                # `html_path` (which points to the saved modal HTML file).
                 cd = dict(case_data)
+                if "html_content" in cd:
+                    cd.pop("html_content", None)
                 # normalize filing_date to ISO if it's a date object
                 try:
                     if (
