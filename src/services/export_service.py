@@ -161,6 +161,21 @@ class ExportService:
 
         try:
             json_path = self.export_to_json(cases, f"{base_filename}.json")
+
+            # Respect configuration: optionally export JSON only
+            try:
+                export_json_only = (
+                    self.config.get_export_json_only()
+                    if hasattr(self.config, "get_export_json_only")
+                    else False
+                )
+            except Exception:
+                export_json_only = False
+
+            if export_json_only:
+                logger.info(f"Exported {len(cases)} cases to JSON only")
+                return {"json": json_path, "csv": None}
+
             csv_path = self.export_to_csv(cases, f"{base_filename}.csv")
 
             logger.info(f"Successfully exported {len(cases)} cases to both formats")

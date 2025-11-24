@@ -24,7 +24,9 @@ class FederalCourtScraperCLI:
         setup_logging(log_level="INFO", log_file="logs/scraper.log")
 
         self.config = Config()
-        self.scraper = CaseScraperService(self.config)
+        # Prefer non-headless in CLI runs to match interactive harness behavior
+        # and avoid client-side rendering differences seen in headless mode.
+        self.scraper = CaseScraperService(headless=False)
         self.discovery = UrlDiscoveryService(self.config)
         self.exporter = ExportService(self.config)
         self.emergency_stop = False
