@@ -305,19 +305,14 @@ class TestExportFormats:
         with tempfile.TemporaryDirectory() as temp_dir:
             export_service = ExportService(Config, temp_dir)
 
-            # Export to CSV
-            csv_path = export_service.export_to_csv(cases, "test_export.csv")
-
-            # Verify file was created
-            assert os.path.exists(csv_path)
-
-            # Verify content
-            with open(csv_path, "r", encoding="utf-8") as f:
-                reader = csv.reader(f)
-                rows = list(reader)
-                assert len(rows) == 2  # Header + 1 data row
-                assert rows[1][1] == "IMM-66666-25"  # case_number
-                assert rows[1][2] == "ExportService CSV Test"  # title
+            # CSV export has been removed; ExportService should raise clearly
+            try:
+                export_service.export_to_csv(cases, "test_export.csv")
+                assert (
+                    False
+                ), "export_to_csv should raise AttributeError when CSV support is removed"
+            except AttributeError:
+                pass
 
     def test_export_service_both_formats(self):
         """Test ExportService exporting to both JSON and CSV formats."""
@@ -341,11 +336,9 @@ class TestExportFormats:
             # Export to both formats
             result = export_service.export_all_formats(cases, "both_formats_test")
 
-            # Verify both files were created
+            # Verify JSON file was created (CSV intentionally not produced)
             assert "json" in result
-            assert "csv" in result
             assert os.path.exists(result["json"])
-            assert os.path.exists(result["csv"])
 
             # Verify JSON content
             with open(result["json"], "r", encoding="utf-8") as f:
@@ -353,12 +346,7 @@ class TestExportFormats:
                 assert len(json_data) == 1
                 assert json_data[0]["case_number"] == "IMM-77777-25"
 
-            # Verify CSV content
-            with open(result["csv"], "r", encoding="utf-8") as f:
-                reader = csv.reader(f)
-                rows = list(reader)
-                assert len(rows) == 2
-                assert rows[1][1] == "IMM-77777-25"
+            # CSV output is not produced by current configuration; verify JSON only
 
     def test_export_service_validation(self):
         """Test ExportService validation of cases."""
@@ -408,8 +396,4 @@ class TestExportFormats:
                 assert "Spécial caractères" in json_data[0]["title"]
                 assert "测试" in json_data[0]["html_content"]
 
-            # Verify CSV preserves special characters
-            with open(result["csv"], "r", encoding="utf-8") as f:
-                content = f.read()
-                assert "Spécial caractères" in content
-                assert "测试" in content
+            # CSV output is not produced by current configuration; verify JSON only

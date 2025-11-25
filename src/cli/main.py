@@ -237,6 +237,12 @@ Examples:
         single_parser.add_argument(
             "case_number", help="Case number (e.g., IMM-12345-25)"
         )
+        # Allow --force after the 'single' subcommand as well
+        single_parser.add_argument(
+            "--force",
+            action="store_true",
+            help="Force re-scraping of this case even if it exists in the database",
+        )
 
         # Global force flag
         parser.add_argument(
@@ -252,6 +258,12 @@ Examples:
         batch_parser.add_argument("year", type=int, help="Year to scrape cases for")
         batch_parser.add_argument(
             "--max-cases", type=int, help="Maximum number of cases to scrape"
+        )
+        # Accept --force after the 'batch' subcommand as well
+        batch_parser.add_argument(
+            "--force",
+            action="store_true",
+            help="Force re-scraping of cases even if they exist in the database",
         )
 
         # Stats command
