@@ -134,9 +134,19 @@ python -m src.cli.main single IMM-12345-22
 # 批量抓取（按年份）
 python -m src.cli.main batch 2025 --max-cases 50
 
-# 注意：CLI 在成功抓取后会导出 JSON 和 CSV 到 `output/`，
-# 不再使用旧的 `--format`/`--output` 选项。要在脚本层面做自定义导出，
-# 请使用 `src.services.export_service.ExportService` 在 Python API 中调用。
+# 强制重新抓取（当数据库已有记录但需要刷新/覆盖时使用）
+python -m src.cli.main batch 2025 --max-cases 50 --force
+
+# 注意：CLI 现在默认只导出 JSON 到 `output/`（CSV 已移除）。
+# 批量运行将在 `output/` 目录生成一个审计文件（audit）记录本次运行的摘要，
+# 例如: `output/audit_20251125_005505.json`。此文件包含：
+# - `timestamp`: 运行时间戳
+# - `year`: 抓取的年度
+# - `scraped_count` / `skipped_count`
+# - `skipped`: 列表（当条目已在数据库中存在时）
+# - `export`: 导出结果（当有被抓取并导出时包含 `json` 路径和 `database` 汇总）
+#
+# 要在脚本层面做自定义导出，请使用 `src.services.export_service.ExportService` 在 Python API 中调用。
 ```
 
 ### 脚本 `scripts/auto_click_more.py`（快速烟雾/手工检查）
