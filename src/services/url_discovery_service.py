@@ -33,16 +33,16 @@ class UrlDiscoveryService:
             Optional[str]: Last processed case number, or None if none found
         """
         try:
-            conn = psycopg2.connect(**self.db_config.__dict__)
+            conn = psycopg2.connect(**self.db_config)
             cursor = conn.cursor(cursor_factory=RealDictCursor)
 
             # Query for the highest case number in the given year
             cursor.execute(
                 """
-                SELECT case_id
+                SELECT court_file_no
                 FROM cases
-                WHERE case_id LIKE %s
-                ORDER BY case_id DESC
+                WHERE court_file_no LIKE %s
+                ORDER BY court_file_no DESC
                 LIMIT 1
             """,
                 (f"IMM-%-{year % 100:02d}",),
@@ -53,7 +53,7 @@ class UrlDiscoveryService:
             conn.close()
 
             if result:
-                return result["case_id"]
+                return result["court_file_no"]
             return None
 
         except Exception as e:
@@ -99,7 +99,7 @@ class UrlDiscoveryService:
         year_suffix = f"{year % 100:02d}"
 
         for num in range(start_num, start_num + (max_cases or 1000)):
-            case_num = f"IMM-{num:05d}-{year_suffix}"
+            case_num = f"IMM-{num}-{year_suffix}"
             case_numbers.append(case_num)
 
             if max_cases and len(case_numbers) >= max_cases:
@@ -127,7 +127,7 @@ class UrlDiscoveryService:
         year_suffix = f"{year % 100:02d}"
 
         for num in range(start_num, start_num + (max_cases or 10000)):
-            case_num = f"IMM-{num:05d}-{year_suffix}"
+            case_num = f"IMM-{num}-{year_suffix}"
             case_numbers.append(case_num)
 
             if max_cases and len(case_numbers) >= max_cases:
@@ -176,7 +176,7 @@ class UrlDiscoveryService:
             dict: Statistics about processed cases
         """
         try:
-            conn = psycopg2.connect(**self.db_config.__dict__)
+            conn = psycopg2.connect(**self.db_config)
             cursor = conn.cursor(cursor_factory=RealDictCursor)
 
             # Count cases for this year
@@ -185,7 +185,7 @@ class UrlDiscoveryService:
                 SELECT COUNT(*) as total_cases,
                        MAX(scraped_at) as last_scraped
                 FROM cases
-                WHERE case_id LIKE %s
+                WHERE court_file_no LIKE %s
             """,
                 (f"IMM-%-{year % 100:02d}",),
             )

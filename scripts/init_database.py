@@ -17,12 +17,12 @@ logger = get_logger()
 
 def init_database():
     """Initialize the PostgreSQL database with required tables."""
-    config = Config()
-    db_config = config.database
+    # Use the centralized DB config helper
+    db_config = Config.get_db_config()
 
     try:
         # Connect to database
-        conn = psycopg2.connect(**db_config.__dict__)
+        conn = psycopg2.connect(**db_config)
         conn.autocommit = True
         cursor = conn.cursor()
 

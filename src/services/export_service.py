@@ -270,19 +270,19 @@ class ExportService:
             bool: True if successful, False otherwise
         """
         try:
-            conn = psycopg2.connect(**self.db_config.__dict__)
+            conn = psycopg2.connect(**self.db_config)
             cursor = conn.cursor()
 
             # UPSERT case data
             cursor.execute(
                 """
                 INSERT INTO cases (
-                    case_id, case_type, action_type, nature_of_proceeding,
+                    court_file_no, case_type, type_of_action, nature_of_proceeding,
                     filing_date, office, style_of_cause, language, scraped_at
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (case_id) DO UPDATE SET
+                ON CONFLICT (court_file_no) DO UPDATE SET
                     case_type = EXCLUDED.case_type,
-                    action_type = EXCLUDED.action_type,
+                    type_of_action = EXCLUDED.type_of_action,
                     nature_of_proceeding = EXCLUDED.nature_of_proceeding,
                     filing_date = EXCLUDED.filing_date,
                     office = EXCLUDED.office,
@@ -373,9 +373,9 @@ class ExportService:
         execute_values(
             cursor,
             """
-            INSERT INTO docket_entries (case_id, doc_id, entry_date, entry_office, summary)
+            INSERT INTO docket_entries (court_file_no, id_from_table, date_filed, office, recorded_entry_summary)
             VALUES %s
-            ON CONFLICT (case_id, doc_id) DO NOTHING
+            ON CONFLICT (court_file_no, id_from_table) DO NOTHING
         """,
             entries_data,
         )
@@ -422,7 +422,7 @@ class ExportService:
             int: Number of cases
         """
         try:
-            conn = psycopg2.connect(**self.db_config.__dict__)
+            conn = psycopg2.connect(**self.db_config)
             cursor = conn.cursor()
 
             cursor.execute("SELECT COUNT(*) FROM cases")
@@ -448,14 +448,14 @@ class ExportService:
             List[dict]: List of case dictionaries
         """
         try:
-            conn = psycopg2.connect(**self.db_config.__dict__)
+            conn = psycopg2.connect(**self.db_config)
             cursor = conn.cursor()
 
             cursor.execute(
                 """
                 SELECT * FROM cases
-                WHERE case_id LIKE %s
-                ORDER BY case_id
+                WHERE court_file_no LIKE %s
+                ORDER BY court_file_no
             """,
                 (f"IMM-%-{year % 100:02d}",),
             )
