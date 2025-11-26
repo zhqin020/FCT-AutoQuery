@@ -69,7 +69,7 @@ class Case:
 
     def to_dict(self) -> dict:
         """Convert case to dictionary for JSON export."""
-        return {
+        payload = {
             "case_id": self.case_id,
             "case_number": self.case_id,
             "title": self.style_of_cause,
@@ -86,6 +86,23 @@ class Case:
             "html_content": self.html_content,
             "scraped_at": self.scraped_at.isoformat(),
         }
+
+        # Normalize docket_entries into the serialized output so callers
+        # of `to_dict()` always receive the same shape. If the
+        # attribute is present, serialize entries via `to_dict()` where
+        # available; otherwise provide an empty list.
+        entries = getattr(self, "docket_entries", None)
+        if entries:
+            try:
+                payload["docket_entries"] = [
+                    e.to_dict() if hasattr(e, "to_dict") else e for e in entries
+                ]
+            except Exception:
+                payload["docket_entries"] = list(entries)
+        else:
+            payload["docket_entries"] = []
+
+        return payload
 
     def to_csv_row(self) -> list:
         """Return a CSV row matching tests expectations:

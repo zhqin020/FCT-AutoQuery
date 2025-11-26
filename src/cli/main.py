@@ -11,6 +11,7 @@ from src.models.case import Case
 from src.services.case_scraper_service import CaseScraperService
 from src.services.export_service import ExportService
 from src.services.url_discovery_service import UrlDiscoveryService
+from src.lib.run_logger import RunLogger
 
 logger = get_logger()
 
@@ -79,6 +80,21 @@ class FederalCourtScraperCLI:
             if case:
                 logger.info(f"Successfully scraped case: {case.case_id}")
                 self.consecutive_failures = 0  # Reset on success
+
+                # Immediately export per-case JSON and save to DB to ensure
+                # artifacts exist even if a later failure occurs.
+                try:
+                    json_path = self.exporter.export_case_to_json(case)
+                    logger.info(f"Per-case JSON written: {json_path}")
+                except Exception as e:
+                    logger.error(f"Failed to write per-case JSON for {case_number}: {e}")
+
+                try:
+                    status, msg = self.exporter.save_case_to_database(case)
+                    logger.info(f"Database save status for {case_number}: {status}")
+                except Exception as e:
+                    logger.error(f"Failed to save case {case_number} to database: {e}")
+
                 return case
             else:
                 logger.warning(f"Failed to scrape case: {case_number}")
@@ -90,12 +106,9 @@ class FederalCourtScraperCLI:
             self.consecutive_failures += 1
             return None
         finally:
-            # Close the scraper page but keep the scraper object for reuse
-            try:
-                if self.scraper:
-                    self.scraper.close()
-            except Exception:
-                pass
+            # Do not close the full WebDriver here to enable session reuse
+            # across batch operations. Individual modal/page cleanup is
+            # performed inside CaseScraperService methods.
 
             # Check for emergency stop
             if self.consecutive_failures >= self.max_consecutive_failures:
@@ -104,6 +117,13 @@ class FederalCourtScraperCLI:
                 )
                 self.emergency_stop = True
 
+    def shutdown(self) -> None:
+        """Shutdown resources (close scraper)"""
+        try:
+            if self.scraper:
+                self.scraper.close()
+        except Exception:
+            pass
     def scrape_batch_cases(
         self, year: int, max_cases: Optional[int] = None
     ) -> tuple[list, list]:
@@ -124,74 +144,107 @@ class FederalCourtScraperCLI:
         processed = 0
         skipped = []
 
+        # Run-level logger to record per-case outcomes
+        run_logger = RunLogger()
+        run_logger.start()
+
         # Get case numbers to process
         case_numbers = self.discovery.generate_case_numbers_from_last(year, max_cases)
         total_to_process = len(case_numbers)
 
         print(f"Processing {total_to_process} case numbers for year {year}...")
 
-        for i, case_number in enumerate(case_numbers, 1):
-            if self.emergency_stop:
-                logger.warning("Emergency stop triggered - halting batch processing")
-                break
+        try:
+            for i, case_number in enumerate(case_numbers, 1):
+                if self.emergency_stop:
+                    logger.warning("Emergency stop triggered - halting batch processing")
+                    break
 
-            print(f"Processing case {i}/{total_to_process}: {case_number}")
+                print(f"Processing case {i}/{total_to_process}: {case_number}")
 
-            # If not forcing, skip if case already exists in DB (avoid duplicate scraping)
+                # If not forcing, skip if case already exists in DB (avoid duplicate scraping)
+                try:
+                    if not self.force and self.exporter.case_exists(case_number):
+                        print(f"→ Skipping {case_number}: already in database")
+                        skipped.append({"case_number": case_number, "status": "skipped"})
+                        try:
+                            run_logger.record_case(case_number, outcome="skipped", reason="exists_in_db")
+                        except Exception:
+                            pass
+                        # still count as processed but not as a success
+                        processed += 1
+                        # Progress update every 10 cases
+                        if processed % 10 == 0:
+                            success_rate = len(cases) / processed * 100
+                            print(
+                                f"Progress: {processed}/{total_to_process} processed, {len(cases)} successful ({success_rate:.1f}%)"
+                            )
+                        # Check if we should skip this year
+                        if self.discovery.should_skip_year(year, consecutive_failures):
+                            logger.info(
+                                f"Skipping remaining cases for year {year} due to consecutive failures"
+                            )
+                        # Stop if we reached the limit
+                        if max_cases and len(cases) >= max_cases:
+                            break
+                        continue
+                except Exception:
+                    logger.debug(
+                        f"Existence check failed for {case_number}; attempting scrape"
+                    )
+
+                try:
+                    case = self.scrape_single_case(case_number)
+                    if case:
+                        cases.append(case)
+                        consecutive_failures = 0
+                        print(f"✓ Successfully scraped case {case.case_id}")
+                        try:
+                            run_logger.record_case(case_number, outcome="success", case_id=getattr(case, "case_id", None))
+                        except Exception:
+                            pass
+                    else:
+                        consecutive_failures += 1
+                        print(f"✗ Failed to scrape case {case_number}")
+                        try:
+                            run_logger.record_case(case_number, outcome="failed")
+                        except Exception:
+                            pass
+                except Exception as e:
+                    # Unexpected exception during scrape; record and continue
+                    logger.error(f"Unhandled error scraping case {case_number}: {e}")
+                    try:
+                        run_logger.record_case(case_number, outcome="error", message=str(e))
+                    except Exception:
+                        pass
+                    consecutive_failures += 1
+
+                processed += 1
+
+                # Progress update every 10 cases
+                if processed % 10 == 0:
+                    success_rate = len(cases) / processed * 100
+                    print(
+                        f"Progress: {processed}/{total_to_process} processed, {len(cases)} successful ({success_rate:.1f}%)"
+                    )
+
+                # Check if we should skip this year
+                if self.discovery.should_skip_year(year, consecutive_failures):
+                    logger.info(
+                        f"Skipping remaining cases for year {year} due to consecutive failures"
+                    )
+                    break
+
+                # Stop if we reached the limit
+                if max_cases and len(cases) >= max_cases:
+                    break
+
+        finally:
             try:
-                if not self.force and self.exporter.case_exists(case_number):
-                    print(f"→ Skipping {case_number}: already in database")
-                    skipped.append({"case_number": case_number, "status": "skipped"})
-                    # still count as processed but not as a success
-                    processed += 1
-                    # Progress update every 10 cases
-                    if processed % 10 == 0:
-                        success_rate = len(cases) / processed * 100
-                        print(
-                            f"Progress: {processed}/{total_to_process} processed, {len(cases)} successful ({success_rate:.1f}%)"
-                        )
-                    # Check if we should skip this year
-                    if self.discovery.should_skip_year(year, consecutive_failures):
-                        logger.info(
-                            f"Skipping remaining cases for year {year} due to consecutive failures"
-                        )
-                    # Stop if we reached the limit
-                    if max_cases and len(cases) >= max_cases:
-                        break
-                    continue
+                run_logger.finish()
+                logger.info(f"Run-level NDJSON written: {run_logger.path}")
             except Exception:
-                logger.debug(
-                    f"Existence check failed for {case_number}; attempting scrape"
-                )
-
-            case = self.scrape_single_case(case_number)
-            if case:
-                cases.append(case)
-                consecutive_failures = 0
-                print(f"✓ Successfully scraped case {case.case_id}")
-            else:
-                consecutive_failures += 1
-                print(f"✗ Failed to scrape case {case_number}")
-
-            processed += 1
-
-            # Progress update every 10 cases
-            if processed % 10 == 0:
-                success_rate = len(cases) / processed * 100
-                print(
-                    f"Progress: {processed}/{total_to_process} processed, {len(cases)} successful ({success_rate:.1f}%)"
-                )
-
-            # Check if we should skip this year
-            if self.discovery.should_skip_year(year, consecutive_failures):
-                logger.info(
-                    f"Skipping remaining cases for year {year} due to consecutive failures"
-                )
-                break
-
-            # Stop if we reached the limit
-            if max_cases and len(cases) >= max_cases:
-                break
+                pass
 
         # Return scraped cases and skipped list for auditing
         return cases, skipped
@@ -366,6 +419,12 @@ Examples:
             logger.error(f"CLI error: {e}")
             print(f"Error: {e}")
             sys.exit(1)
+        finally:
+            # Ensure resources are cleaned up (close shared WebDriver)
+            try:
+                self.shutdown()
+            except Exception:
+                pass
 
 
 def main():

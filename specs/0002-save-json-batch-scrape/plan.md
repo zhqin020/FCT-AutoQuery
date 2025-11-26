@@ -3,7 +3,7 @@ tests/
 
 **Branch**: `0002-save-json-batch-scrape` | **Date**: 2025-11-25
 **Spec**: `/home/watson/work/FCT-AutoQuery/specs/0002-save-json-batch-scrape/spec.md`
-**Input**: Feature specification copied from `/home/watson/work/FCT-AutoQuery/specs/001-save-json-batch-scrape/spec.md`
+**Input**: Feature specification: `/home/watson/work/FCT-AutoQuery/specs/0002-save-json-batch-scrape/spec.md`
 
 ## Summary
 
@@ -54,7 +54,7 @@ Goals:
 Phase 0 Tasks (implementable):
 - Task 0.1: Document current behavior and gaps in `research.md` at `/home/watson/work/FCT-AutoQuery/specs/0002-save-json-batch-scrape/research.md`.
 - Task 0.2: Research atomic-write patterns in Python (tempfile.mkstemp + os.replace) and list alternatives.
-- Task 0.3: Decide retry/backoff defaults (Proposed defaults: 3 retries, backoff 1s exponential) and document rationale.
+ - Task 0.3: Decide retry/backoff defaults (Chosen default: 2 retries, backoff base 1s exponential) and document rationale (align with `spec.md`).
 - Task 0.4: Identify WebDriver reuse approach (keep single driver instance in `BatchRunner`, handle per-case cleanup) and document failure modes.
 
 Outputs:

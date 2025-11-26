@@ -5,7 +5,7 @@ import os
 import re
 import time
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -44,7 +44,7 @@ def export_case_to_json(case: dict, output_root: Optional[str] = None) -> str:
     base_backoff = Config.get_export_write_backoff_seconds()
 
     # Year directory
-    today = datetime.utcnow()
+    today = datetime.now(timezone.utc)
     year = today.strftime("%Y")
     date_str = today.strftime("%Y%m%d")
 
@@ -228,7 +228,18 @@ class ExportService:
                 with open(fd, "w", encoding="utf-8") as tf:
                     import json as _json
 
-                    _json.dump(case.to_dict(), tf, indent=2, ensure_ascii=False, default=str)
+                    # Build payload from case.to_dict() and include docket_entries
+                    payload = case.to_dict()
+                    if hasattr(case, "docket_entries") and case.docket_entries:
+                        try:
+                            payload["docket_entries"] = [
+                                e.to_dict() if hasattr(e, "to_dict") else e for e in case.docket_entries
+                            ]
+                        except Exception:
+                            # Fallback: include raw objects if serialization fails
+                            payload["docket_entries"] = list(case.docket_entries)
+
+                    _json.dump(payload, tf, indent=2, ensure_ascii=False, default=str)
 
                 # Use os.replace to ensure atomic move
                 import os

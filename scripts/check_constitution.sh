@@ -23,6 +23,13 @@ esac
 
 echo "[OK] Environment check passed"
 
+# 1.5) Check that any 'Options' / 'Choices' sections in docs use numbered lists
+if command -v python3 >/dev/null 2>&1; then
+  python3 scripts/check_numbered_options.py || die "Numbering check failed: use numbered lists for Options sections"
+else
+  echo "Warning: python3 not found; skipping numbering check." >&2
+fi
+
 # 2) Determine changed files to check for tests
 # Prefer explicit file args: scripts/check_constitution.sh file1 file2
 FILES_TO_CHECK=()
