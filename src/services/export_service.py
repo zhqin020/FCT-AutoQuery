@@ -1,9 +1,94 @@
+from __future__ import annotations
+
+import json
+import os
+import re
+import time
+import tempfile
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+from src.lib.config import Config
+
+
+_SANITIZE_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _sanitize_case_number(name: str) -> str:
+    s = _SANITIZE_RE.sub("-", name or "")
+    s = re.sub(r"-+", "-", s).strip("-_")
+    return s or "case"
+
+
+def _unique_with_suffix(path: Path, max_attempts: int = 100) -> Path:
+    if not path.exists():
+        return path
+    base = path.stem
+    suffix = path.suffix
+    for i in range(1, max_attempts + 1):
+        candidate = path.with_name(f"{base}-{i}{suffix}")
+        if not candidate.exists():
+            return candidate
+    raise FileExistsError(f"No available filename after {max_attempts} attempts: {path}")
+
+
+def export_case_to_json(case: dict, output_root: Optional[str] = None) -> str:
+    """Export a case dict to a per-case JSON file.
+
+    Returns the final file path as a string. Raises on persistent failures.
+    """
+    output_root = output_root or Config.get_output_dir()
+    per_case_subdir = Config.get_per_case_subdir()
+    retries = Config.get_export_write_retries()
+    base_backoff = Config.get_export_write_backoff_seconds()
+
+    # Year directory
+    today = datetime.utcnow()
+    year = today.strftime("%Y")
+    date_str = today.strftime("%Y%m%d")
+
+    dir_path = Path(output_root) / per_case_subdir / year
+    dir_path.mkdir(parents=True, exist_ok=True)
+
+    case_number = case.get("case_number") or case.get("caseId") or "case"
+    safe = _sanitize_case_number(case_number)
+    base_name = f"{safe}-{date_str}"
+    final_path = dir_path / f"{base_name}.json"
+    final_path = _unique_with_suffix(final_path)
+
+    tmp_path = None
+    last_exc = None
+    for attempt in range(1, retries + 1):
+        try:
+            fd, tmp_path = tempfile.mkstemp(dir=str(dir_path))
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(case, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, final_path)
+            return str(final_path)
+        except Exception as exc:  # pragma: no cover - handle filesystem errors
+            last_exc = exc
+            try:
+                if tmp_path and os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
+            if attempt == retries:
+                raise
+            time.sleep(base_backoff * (2 ** (attempt - 1)))
+
+    # Shouldn't reach here
+    raise last_exc or RuntimeError("Failed to export case to JSON")
 """Export service for structured data export in CSV, JSON, and database formats."""
 
 import json
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Tuple
+import re
 
 import psycopg2
 from psycopg2.extras import execute_values
@@ -29,6 +114,9 @@ class ExportService:
         """
         self.config = config
         self.db_config = Config.get_db_config()
+        # Respect configured output dir when caller passes default placeholder
+        if output_dir == "output":
+            output_dir = Config.get_output_dir()
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         logger.info(
@@ -77,6 +165,86 @@ class ExportService:
         except Exception as e:
             logger.error(f"Failed to export cases to JSON: {e}")
             raise
+
+    def export_case_to_json(self, case: Case, date_str: Optional[str] = None) -> str:
+        """
+        Export a single case to a per-case JSON file under `output/json/<YYYY>/`.
+
+        Args:
+            case: Case object to export
+            date_str: Optional date string to use in filename (YYYYMMDD). If not
+                      provided, uses today's date.
+
+        Returns:
+            Path to the exported JSON file as string
+
+        Raises:
+            Exception on failure
+        """
+        if not isinstance(case, Case):
+            raise ValueError("export_case_to_json requires a Case instance")
+
+        # Determine date for filename
+        from datetime import datetime
+
+        if date_str is None:
+            date_str = datetime.now().strftime("%Y%m%d")
+
+        year = date_str[:4]
+
+        # Build directory: output/json/<YYYY>/
+        json_dir = self.output_dir / "json" / year
+        json_dir.mkdir(parents=True, exist_ok=True)
+
+        # Base filename: <case-number>-<YYYYMMDD>.json
+        safe_case = getattr(case, "court_file_no", None) or getattr(case, "case_id", None) or "case"
+        # sanitize filename characters
+        safe_case = re.sub(r"[^A-Za-z0-9._-]", "_", str(safe_case))
+        base_name = f"{safe_case}-{date_str}.json"
+        file_path = json_dir / base_name
+
+        # Avoid silent overwrite: add numeric suffix if exists
+        suffix = 0
+        final_path = file_path
+        while final_path.exists():
+            suffix += 1
+            final_path = json_dir / f"{safe_case}-{date_str}-{suffix}.json"
+
+        # Use configured subdirectory name for per-case JSON (default 'json')
+        per_case_subdir = Config.get_per_case_subdir()
+        json_dir = self.output_dir / per_case_subdir / year
+        json_dir.mkdir(parents=True, exist_ok=True)
+
+        # Atomic write: write to a temp file in same directory then rename
+        import tempfile
+
+        max_retries = Config.get_export_write_retries()
+        backoff = Config.get_export_write_backoff_seconds()
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                fd, tmp_path = tempfile.mkstemp(dir=str(json_dir), prefix="tmp_", suffix=".json")
+                with open(fd, "w", encoding="utf-8") as tf:
+                    import json as _json
+
+                    _json.dump(case.to_dict(), tf, indent=2, ensure_ascii=False, default=str)
+
+                # Use os.replace to ensure atomic move
+                import os
+
+                os.replace(tmp_path, str(final_path))
+
+                logger.info(f"Exported case {safe_case} to JSON: {final_path}")
+                return str(final_path)
+
+            except Exception as e:
+                logger.warning(f"Attempt {attempt}: failed to write per-case JSON for {safe_case}: {e}")
+                if attempt >= max_retries:
+                    logger.error(f"Exceeded max retries ({max_retries}) writing JSON for {safe_case}")
+                    raise
+                else:
+                    time.sleep(backoff)
 
     def export_to_csv(self, cases: List[Case], filename: Optional[str] = None) -> str:
         """
@@ -197,19 +365,27 @@ class ExportService:
 
         return deleted_count
 
-    def save_case_to_database(self, case: Case) -> bool:
+    def save_case_to_database(self, case: Case) -> Tuple[str, Optional[str]]:
         """
-        Save a single case to the database using UPSERT.
+        Save a single case to the database using UPSERT and return per-case status.
 
         Args:
             case: Case object to save
 
         Returns:
-            bool: True if successful, False otherwise
+            Tuple[str, Optional[str]]: (status, message) where status is one of
+            'new', 'updated', or 'failed'. Message contains error details if failed.
         """
         try:
             conn = psycopg2.connect(**self.db_config)
             cursor = conn.cursor()
+
+            # Determine if this is a new case or update
+            cursor.execute(
+                "SELECT 1 FROM cases WHERE court_file_no = %s LIMIT 1",
+                (case.court_file_no,),
+            )
+            exists = cursor.fetchone() is not None
 
             # UPSERT case data
             cursor.execute(
@@ -251,12 +427,13 @@ class ExportService:
             cursor.close()
             conn.close()
 
-            logger.info(f"Successfully saved case {case.court_file_no} to database")
-            return True
+            status = "updated" if exists else "new"
+            logger.info(f"Successfully saved case {case.court_file_no} to database ({status})")
+            return status, None
 
         except Exception as e:
             logger.error(f"Failed to save case {case.court_file_no} to database: {e}")
-            return False
+            return "failed", str(e)
 
     def case_exists(self, court_file_no: str) -> bool:
         """Return True if a case with given `court_file_no` exists in the database."""
@@ -274,7 +451,7 @@ class ExportService:
             logger.warning(f"Failed to check existence for {court_file_no}: {e}")
             return False
 
-    def save_cases_to_database(self, cases: List[Case]) -> Tuple[int, int]:
+    def save_cases_to_database(self, cases: List[Case]) -> Tuple[int, int, List[dict]]:
         """
         Save multiple cases to the database using batch UPSERT.
 
@@ -286,15 +463,18 @@ class ExportService:
         """
         successful = 0
         failed = 0
+        per_case = []
 
         for case in cases:
-            if self.save_case_to_database(case):
-                successful += 1
-            else:
+            status, message = self.save_case_to_database(case)
+            per_case.append({"case_number": case.court_file_no, "status": status, "message": message})
+            if status == "failed":
                 failed += 1
+            else:
+                successful += 1
 
         logger.info(f"Database save complete: {successful} successful, {failed} failed")
-        return successful, failed
+        return successful, failed, per_case
 
     def _save_docket_entries(
         self, cursor, case_id: str, docket_entries: List[DocketEntry]
@@ -357,8 +537,9 @@ class ExportService:
             results.update(file_results)
 
             # Save to database
-            successful, failed = self.save_cases_to_database(cases)
+            successful, failed, per_case = self.save_cases_to_database(cases)
             results["database"] = {"successful": successful, "failed": failed}
+            results["per_case"] = per_case
 
             logger.info(f"Export and save complete for {len(cases)} cases")
             return results
