@@ -33,5 +33,5 @@ IMM-1-25-20251125.json
 7.  如果有记录，将显示查找结果，columns: 'Court Number', 'Style of Cause', 'Nature of Processing', 'Parties', 'More'
 8. 点击 'Parties' cell，会弹出一个对话框，显示案件双方的信息
 9. 点击 'More' cell, 会弹出详情对话框，我们需要采集的数据全部在这个页面中
-10. 点击 'Close' 关闭对话框
+10. 点击 'Close' 关闭对话框，回到 search page, 'Search by court number' Tab 仍然保持选中状态
 11. 清除上一条记录的case number, 输入下一个编号，继续查询

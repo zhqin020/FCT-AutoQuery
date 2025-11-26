@@ -265,6 +265,24 @@ class CaseScraperService:
                     break
                 except Exception:
                     continue
+
+            # Persist discovered case input id and mark initialized to avoid
+            # repeated page initialization on subsequent searches.
+            try:
+                if found_case_input:
+                    # Cache the input id for potential later use and mark as initialized
+                    self._case_input_id = found_case_input
+                    # Default search mode is court_number when a dedicated input is found
+                    self._search_mode = "court_number" if found_case_input != "searchd" else "generic"
+                    self._initialized = True
+                    logger.info(f"Initialized search tab using input id: {found_case_input}")
+                else:
+                    # No specific case input found yet; leave initialization
+                    # state unset so fallback/exception handling can run.
+                    logger.debug("No dedicated case input detected during initialize_page")
+            except Exception:
+                # Non-fatal; proceed without caching if something goes wrong
+                logger.debug("Failed to persist initialization state", exc_info=True)
     
 
         except Exception as e:
