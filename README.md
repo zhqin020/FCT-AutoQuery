@@ -290,6 +290,31 @@ FCT_DB_PASSWORD='your_password' ./scripts/create_local_db.sh
 
 ## 🔧 开发工具
 
+## 📝 Recent changes
+
+The project includes a few recent improvements relevant to command-line workflows and auditing:
+
+- Add `--force` CLI flag to allow forcing re-scraping of cases even when they already
+   exist in the local PostgreSQL database. Use this when you want to refresh cached
+   records or re-run parsing for specific cases.
+
+- Batch runs now write an audit summary file into the `output/` directory when a
+   batch job executes. The audit filename is `audit_YYYYMMDD_HHMMSS.json` and contains:
+   - `timestamp`, `year`
+   - `scraped_count` and `skipped_count`
+   - a `skipped` list for cases that were already present in the DB
+   - an `export` object with the JSON export path and a simple database summary when
+      cases were scraped and exported
+
+Example:
+```bash
+# Force re-scrape and produce an audit file
+python -m src.cli.main batch 2025 --max-cases 50 --force
+
+# Typical audit file: output/audit_20251125_005505.json
+```
+
+
 ### 代码质量
 - **Black**: 代码格式化
 - **Flake8**: 代码风格检查

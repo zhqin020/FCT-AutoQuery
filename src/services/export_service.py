@@ -1,6 +1,5 @@
 """Export service for structured data export in CSV, JSON, and database formats."""
 
-import csv
 import json
 from datetime import datetime
 from pathlib import Path
@@ -93,46 +92,7 @@ class ExportService:
         Raises:
             ValueError: If cases list is empty or contains invalid data
         """
-        if not cases:
-            raise ValueError("Cannot export empty case list")
-
-        # Validate cases before export
-        self._validate_cases(cases)
-
-        if filename is None:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"cases_export_{timestamp}.csv"
-
-        file_path = self.output_dir / filename
-
-        try:
-            # Write to CSV file
-            with open(file_path, "w", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-
-                # Write header matching legacy/export tests
-                writer.writerow(
-                    [
-                        "case_id",
-                        "case_number",
-                        "title",
-                        "court",
-                        "date",
-                        "html_content",
-                        "scraped_at",
-                    ]
-                )
-
-                # Write data rows using Case.to_csv_row() for stable ordering
-                for case in cases:
-                    writer.writerow(case.to_csv_row())
-
-            logger.info(f"Successfully exported {len(cases)} cases to CSV: {file_path}")
-            return str(file_path)
-
-        except Exception as e:
-            logger.error(f"Failed to export cases to CSV: {e}")
-            raise
+        raise AttributeError("CSV export removed; use JSON export only")
 
     def export_all_formats(
         self, cases: List[Case], base_filename: Optional[str] = None
@@ -161,28 +121,11 @@ class ExportService:
 
         try:
             json_path = self.export_to_json(cases, f"{base_filename}.json")
-
-            # Respect configuration: optionally export JSON only
-            try:
-                export_json_only = (
-                    self.config.get_export_json_only()
-                    if hasattr(self.config, "get_export_json_only")
-                    else False
-                )
-            except Exception:
-                export_json_only = False
-
-            if export_json_only:
-                logger.info(f"Exported {len(cases)} cases to JSON only")
-                return {"json": json_path, "csv": None}
-
-            csv_path = self.export_to_csv(cases, f"{base_filename}.csv")
-
-            logger.info(f"Successfully exported {len(cases)} cases to both formats")
-            return {"json": json_path, "csv": csv_path}
+            logger.info(f"Exported {len(cases)} cases to JSON")
+            return {"json": json_path}
 
         except Exception as e:
-            logger.error(f"Failed to export cases to all formats: {e}")
+            logger.error(f"Failed to export cases to JSON: {e}")
             raise
 
     def _validate_cases(self, cases: List[Case]) -> None:
@@ -219,10 +162,7 @@ class ExportService:
         Returns:
             List of exported file paths (JSON and CSV files)
         """
-        export_files = []
-        for ext in ["*.json", "*.csv"]:
-            export_files.extend([str(f) for f in self.output_dir.glob(ext)])
-
+        export_files = [str(f) for f in self.output_dir.glob("*.json")]
         return sorted(export_files)
 
     def cleanup_old_exports(self, keep_recent: int = 10) -> int:
@@ -235,9 +175,7 @@ class ExportService:
         Returns:
             Number of files deleted
         """
-        export_files = []
-        for ext in ["*.json", "*.csv"]:
-            export_files.extend(list(self.output_dir.glob(ext)))
+        export_files = list(self.output_dir.glob("*.json"))
 
         # Sort by modification time (newest first)
         export_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
@@ -318,6 +256,22 @@ class ExportService:
 
         except Exception as e:
             logger.error(f"Failed to save case {case.court_file_no} to database: {e}")
+            return False
+
+    def case_exists(self, court_file_no: str) -> bool:
+        """Return True if a case with given `court_file_no` exists in the database."""
+        try:
+            conn = psycopg2.connect(**self.db_config)
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT 1 FROM cases WHERE court_file_no = %s LIMIT 1", (court_file_no,)
+            )
+            exists = cursor.fetchone() is not None
+            cursor.close()
+            conn.close()
+            return exists
+        except Exception as e:
+            logger.warning(f"Failed to check existence for {court_file_no}: {e}")
             return False
 
     def save_cases_to_database(self, cases: List[Case]) -> Tuple[int, int]:

@@ -64,9 +64,9 @@ def main():
 
     parser.add_argument(
         "--format",
-        choices=["json", "csv", "both"],
-        default="both",
-        help="导出格式 / Export format (default: both)",
+        choices=["json"],
+        default="json",
+        help="导出格式 / Export format (default: json)",
     )
 
     parser.add_argument(
@@ -183,17 +183,6 @@ def main():
                 json_file = exporter.export_to_json(cases, f"{base_filename}.json")
                 print(f"📄 JSON文件已保存: {json_file}")
                 print(f"📄 JSON file saved: {json_file}")
-
-            elif args.format == "csv":
-                csv_file = exporter.export_to_csv(cases, f"{base_filename}.csv")
-                print(f"📄 CSV文件已保存: {csv_file}")
-                print(f"📄 CSV file saved: {csv_file}")
-
-            else:  # both
-                files = exporter.export_all_formats(cases, base_filename)
-                print("📄 文件已保存 / Files saved:")
-                print(f"   JSON: {files['json']}")
-                print(f"   CSV: {files['csv']}")
 
             print("\n🎉 所有操作完成! / All operations completed!")
             print(f"📁 输出目录: {args.output}")
