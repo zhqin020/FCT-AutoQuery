@@ -1,0 +1,21 @@
+[database]
+host = "localhost"
+port = 5432
+name = "fct_db"
+user = "fct_user"
+password = ""
+
+[app]
+output_dir = "output"
+headless = true
+max_retries = 3
+timeout_seconds = 30
+# Per-case JSON directory name under the `output_dir` (default: "json")
+per_case_subdir = "json"
+
+# Export write retries and backoff (used for atomic per-case JSON writes)
+# Number of retries for exporter writes on transient failure (default: 2 to match spec)
+export_write_retries = 2
+export_write_backoff_seconds = 1
+# Maximum number of soft WebDriver restarts during a batch run (default: 1)
+max_driver_restarts = 1

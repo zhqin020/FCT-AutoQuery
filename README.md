@@ -240,6 +240,46 @@ python -m pytest tests/ --cov=src --cov-report=html
 - **单元测试**: 验证单个组件功能
 
 ## 📋 项目规格
+## 🗄️ 数据库初始化
+
+本项目默认使用 PostgreSQL 存储已抓取的案件和案卷条目（用于断点续抓、统计和去重）。仓库已包含一个辅助脚本用于在本地创建数据库和导入 schema：`scripts/create_local_db.sh`。
+
+快速步骤（本地开发）:
+
+1. 运行脚本创建用户与数据库（脚本会提示输入密码）：
+```bash
+chmod +x scripts/create_local_db.sh
+./scripts/create_local_db.sh
+```
+
+2. 在项目根创建本地配置文件 `config.private.toml`（该文件已在 `.gitignore` 中）：
+```toml
+[database]
+host = "localhost"
+port = 5432
+name = "fct_db"
+user = "fct_user"
+password = "<your_password_here>"
+```
+
+3. 使用 `fct` 虚拟环境运行 CLI 的统计或初始化命令：
+```bash
+conda run -n fct python -m src.cli.main stats --year 2025
+# 或通过 Python 脚本方式初始化（脚本会使用 Config 中的 DB 配置）
+conda run -n fct python scripts/init_database.py
+```
+
+非交互方式（一次性）:
+```bash
+FCT_DB_PASSWORD='your_password' ./scripts/create_local_db.sh
+```
+
+排错要点：
+- 如果出现认证失败（`password authentication failed`），请确认 `config.private.toml` 中的 `user`/`password` 是否正确，或使用 `.pgpass` 避免将密码暴露在命令行历史中。
+- 如果 Postgres 未运行，先通过 `sudo systemctl start postgresql` 启动服务。
+
+安全建议：不要将含密码的 `config.private.toml` 提交到版本库；生产环境请使用 secret manager 或环境级凭据管理。
+
 
 项目采用规范化的开发流程：
 
@@ -249,6 +289,31 @@ python -m pytest tests/ --cov=src --cov-report=html
 - **API合同**: `specs/0001-federal-court-scraper/contracts/`
 
 ## 🔧 开发工具
+
+## 📝 Recent changes
+
+The project includes a few recent improvements relevant to command-line workflows and auditing:
+
+- Add `--force` CLI flag to allow forcing re-scraping of cases even when they already
+   exist in the local PostgreSQL database. Use this when you want to refresh cached
+   records or re-run parsing for specific cases.
+
+- Batch runs now write an audit summary file into the `output/` directory when a
+   batch job executes. The audit filename is `audit_YYYYMMDD_HHMMSS.json` and contains:
+   - `timestamp`, `year`
+   - `scraped_count` and `skipped_count`
+   - a `skipped` list for cases that were already present in the DB
+   - an `export` object with the JSON export path and a simple database summary when
+      cases were scraped and exported
+
+Example:
+```bash
+# Force re-scrape and produce an audit file
+python -m src.cli.main batch 2025 --max-cases 50 --force
+
+# Typical audit file: output/audit_20251125_005505.json
+```
+
 
 ### 代码质量
 - **Black**: 代码格式化

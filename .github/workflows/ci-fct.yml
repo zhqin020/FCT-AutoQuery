@@ -1,0 +1,34 @@
+name: CI (fct)
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Miniconda
+        uses: conda-incubator/setup-miniconda@v2
+        with:
+          auto-activate-base: false
+          python-version: 3.12
+
+      - name: Create `fct` conda environment and install dependencies
+        run: |
+          conda create -n fct python=3.10 -y
+          conda run -n fct pip install --upgrade pip
+          if [ -f requirements.txt ]; then conda run -n fct pip install -r requirements.txt; fi
+
+      - name: Install package in editable mode
+        run: |
+          conda run -n fct pip install -e .
+
+      - name: Run tests
+        run: |
+          conda run -n fct pytest -q

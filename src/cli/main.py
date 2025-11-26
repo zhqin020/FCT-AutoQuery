@@ -3,7 +3,7 @@
 import argparse
 import sys
 from datetime import datetime
-from typing import List, Optional
+from typing import Optional
 
 from src.lib.config import Config
 from src.lib.logging_config import get_logger, setup_logging
@@ -11,6 +11,7 @@ from src.models.case import Case
 from src.services.case_scraper_service import CaseScraperService
 from src.services.export_service import ExportService
 from src.services.url_discovery_service import UrlDiscoveryService
+from src.lib.run_logger import RunLogger
 
 logger = get_logger()
 
@@ -26,12 +27,17 @@ class FederalCourtScraperCLI:
         self.config = Config()
         # Prefer non-headless in CLI runs to match interactive harness behavior
         # and avoid client-side rendering differences seen in headless mode.
-        self.scraper = CaseScraperService(headless=False)
+        # Lazily initialize the scraper to avoid launching a browser when all
+        # cases are already present in the DB.
+        self.scraper = None
+        self._scraper_headless = False
         self.discovery = UrlDiscoveryService(self.config)
         self.exporter = ExportService(self.config)
         self.emergency_stop = False
         self.consecutive_failures = 0
         self.max_consecutive_failures = 10  # Emergency stop threshold
+        # Force flag determines whether existing DB records should be re-scraped
+        self.force = False
 
     def scrape_single_case(self, case_number: str) -> Optional[Case]:
         """
@@ -50,8 +56,16 @@ class FederalCourtScraperCLI:
         logger.info(f"Starting scrape of case: {case_number}")
 
         try:
+            # Lazily create scraper if not initialized
+            if self.scraper is None:
+                self.scraper = CaseScraperService(headless=self._scraper_headless)
+
             # Initialize page
-            self.scraper.initialize_page()
+            try:
+                self.scraper.initialize_page()
+            except Exception as e:
+                logger.error(f"Failed to initialize page for scraping: {e}")
+                raise
 
             # Search for the case
             found = self.scraper.search_case(case_number)
@@ -66,6 +80,21 @@ class FederalCourtScraperCLI:
             if case:
                 logger.info(f"Successfully scraped case: {case.case_id}")
                 self.consecutive_failures = 0  # Reset on success
+
+                # Immediately export per-case JSON and save to DB to ensure
+                # artifacts exist even if a later failure occurs.
+                try:
+                    json_path = self.exporter.export_case_to_json(case)
+                    logger.info(f"Per-case JSON written: {json_path}")
+                except Exception as e:
+                    logger.error(f"Failed to write per-case JSON for {case_number}: {e}")
+
+                try:
+                    status, msg = self.exporter.save_case_to_database(case)
+                    logger.info(f"Database save status for {case_number}: {status}")
+                except Exception as e:
+                    logger.error(f"Failed to save case {case_number} to database: {e}")
+
                 return case
             else:
                 logger.warning(f"Failed to scrape case: {case_number}")
@@ -77,7 +106,9 @@ class FederalCourtScraperCLI:
             self.consecutive_failures += 1
             return None
         finally:
-            self.scraper.close()
+            # Do not close the full WebDriver here to enable session reuse
+            # across batch operations. Individual modal/page cleanup is
+            # performed inside CaseScraperService methods.
 
             # Check for emergency stop
             if self.consecutive_failures >= self.max_consecutive_failures:
@@ -86,9 +117,16 @@ class FederalCourtScraperCLI:
                 )
                 self.emergency_stop = True
 
+    def shutdown(self) -> None:
+        """Shutdown resources (close scraper)"""
+        try:
+            if self.scraper:
+                self.scraper.close()
+        except Exception:
+            pass
     def scrape_batch_cases(
         self, year: int, max_cases: Optional[int] = None
-    ) -> List[Case]:
+    ) -> tuple[list, list]:
         """
         Scrape multiple cases for a given year.
 
@@ -104,6 +142,11 @@ class FederalCourtScraperCLI:
         cases = []
         consecutive_failures = 0
         processed = 0
+        skipped = []
+
+        # Run-level logger to record per-case outcomes
+        run_logger = RunLogger()
+        run_logger.start()
 
         # Get case numbers to process
         case_numbers = self.discovery.generate_case_numbers_from_last(year, max_cases)
@@ -112,25 +155,69 @@ class FederalCourtScraperCLI:
         print(f"Processing {total_to_process} case numbers for year {year}...")
 
         try:
-            self.scraper.initialize_page()
-
             for i, case_number in enumerate(case_numbers, 1):
                 if self.emergency_stop:
-                    logger.warning(
-                        "Emergency stop triggered - halting batch processing"
-                    )
+                    logger.warning("Emergency stop triggered - halting batch processing")
                     break
 
                 print(f"Processing case {i}/{total_to_process}: {case_number}")
 
-                case = self.scrape_single_case(case_number)
-                if case:
-                    cases.append(case)
-                    consecutive_failures = 0
-                    print(f"✓ Successfully scraped case {case.case_id}")
-                else:
+                # If not forcing, skip if case already exists in DB (avoid duplicate scraping)
+                try:
+                    if not self.force and self.exporter.case_exists(case_number):
+                        print(f"→ Skipping {case_number}: already in database")
+                        skipped.append({"case_number": case_number, "status": "skipped"})
+                        try:
+                            run_logger.record_case(case_number, outcome="skipped", reason="exists_in_db")
+                        except Exception:
+                            pass
+                        # still count as processed but not as a success
+                        processed += 1
+                        # Progress update every 10 cases
+                        if processed % 10 == 0:
+                            success_rate = len(cases) / processed * 100
+                            print(
+                                f"Progress: {processed}/{total_to_process} processed, {len(cases)} successful ({success_rate:.1f}%)"
+                            )
+                        # Check if we should skip this year
+                        if self.discovery.should_skip_year(year, consecutive_failures):
+                            logger.info(
+                                f"Skipping remaining cases for year {year} due to consecutive failures"
+                            )
+                        # Stop if we reached the limit
+                        if max_cases and len(cases) >= max_cases:
+                            break
+                        continue
+                except Exception:
+                    logger.debug(
+                        f"Existence check failed for {case_number}; attempting scrape"
+                    )
+
+                try:
+                    case = self.scrape_single_case(case_number)
+                    if case:
+                        cases.append(case)
+                        consecutive_failures = 0
+                        print(f"✓ Successfully scraped case {case.case_id}")
+                        try:
+                            run_logger.record_case(case_number, outcome="success", case_id=getattr(case, "case_id", None))
+                        except Exception:
+                            pass
+                    else:
+                        consecutive_failures += 1
+                        print(f"✗ Failed to scrape case {case_number}")
+                        try:
+                            run_logger.record_case(case_number, outcome="failed")
+                        except Exception:
+                            pass
+                except Exception as e:
+                    # Unexpected exception during scrape; record and continue
+                    logger.error(f"Unhandled error scraping case {case_number}: {e}")
+                    try:
+                        run_logger.record_case(case_number, outcome="error", message=str(e))
+                    except Exception:
+                        pass
                     consecutive_failures += 1
-                    print(f"✗ Failed to scrape case {case_number}")
 
                 processed += 1
 
@@ -153,31 +240,14 @@ class FederalCourtScraperCLI:
                     break
 
         finally:
-            self.scraper.close()
+            try:
+                run_logger.finish()
+                logger.info(f"Run-level NDJSON written: {run_logger.path}")
+            except Exception:
+                pass
 
-        logger.info(
-            f"Batch scrape complete: {len(cases)} cases scraped for year {year}"
-        )
-        return cases
-
-    def export_cases(
-        self, cases: List[Case], base_filename: Optional[str] = None
-    ) -> dict:
-        """
-        Export cases to files.
-
-        Args:
-            cases: Cases to export
-            base_filename: Base filename for export files
-
-        Returns:
-            Dictionary with export results
-        """
-        if not base_filename:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            base_filename = f"federal_court_cases_{timestamp}"
-
-        return self.exporter.export_all_formats(cases, base_filename)
+        # Return scraped cases and skipped list for auditing
+        return cases, skipped
 
     def show_stats(self, year: Optional[int] = None) -> None:
         """
@@ -204,7 +274,7 @@ class FederalCourtScraperCLI:
 Examples:
   # Scrape a single case
   python -m src.cli.main single IMM-12345-25
-
+            # Do not initialize browser here; initialize lazily in `scrape_single_case`
   # Scrape batch cases for 2025
   python -m src.cli.main batch 2025 --max-cases 10
 
@@ -220,6 +290,19 @@ Examples:
         single_parser.add_argument(
             "case_number", help="Case number (e.g., IMM-12345-25)"
         )
+        # Allow --force after the 'single' subcommand as well
+        single_parser.add_argument(
+            "--force",
+            action="store_true",
+            help="Force re-scraping of this case even if it exists in the database",
+        )
+
+        # Global force flag
+        parser.add_argument(
+            "--force",
+            action="store_true",
+            help="Force re-scraping of cases even if they exist in the database",
+        )
 
         # Batch command
         batch_parser = subparsers.add_parser(
@@ -228,6 +311,12 @@ Examples:
         batch_parser.add_argument("year", type=int, help="Year to scrape cases for")
         batch_parser.add_argument(
             "--max-cases", type=int, help="Maximum number of cases to scrape"
+        )
+        # Accept --force after the 'batch' subcommand as well
+        batch_parser.add_argument(
+            "--force",
+            action="store_true",
+            help="Force re-scraping of cases even if they exist in the database",
         )
 
         # Stats command
@@ -240,6 +329,10 @@ Examples:
 
         args = parser.parse_args()
 
+        # Set force flag on CLI object
+        if getattr(args, "force", False):
+            self.force = True
+
         if not args.command:
             parser.print_help()
             return
@@ -248,11 +341,14 @@ Examples:
             if args.command == "single":
                 case = self.scrape_single_case(args.case_number)
                 if case:
-                    # Export the case
-                    export_result = self.export_cases([case])
+                    # Export the case and save to DB
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    base_filename = f"federal_court_cases_{timestamp}"
+                    export_result = self.exporter.export_and_save([case], base_filename)
                     print(f"\nCase scraped and exported:")
-                    print(f"  JSON: {export_result['json']}")
-                    print(f"  CSV: {export_result['csv']}")
+                    print(f"  JSON: {export_result.get('json')}")
+                    if export_result.get("database"):
+                        print(f"  Database: {export_result['database']}")
                 else:
                     print(f"\nCase {args.case_number} not found or failed to scrape")
                     if self.emergency_stop:
@@ -266,14 +362,46 @@ Examples:
                     print("Cannot start batch processing - emergency stop is active")
                     sys.exit(1)
 
-                cases = self.scrape_batch_cases(args.year, args.max_cases)
-                if cases:
-                    # Export all cases
-                    export_result = self.export_cases(cases)
+                scraped_cases, skipped = self.scrape_batch_cases(
+                    args.year, args.max_cases
+                )
+                if scraped_cases or skipped:
+                    # Export scraped cases and save to DB (only if there are scraped cases)
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    base_filename = f"federal_court_cases_{timestamp}"
+                    if scraped_cases:
+                        export_result = self.exporter.export_and_save(
+                            scraped_cases, base_filename
+                        )
+                    else:
+                        export_result = {"json": None, "database": None}
+
+                    # Build audit report
+                    audit = {
+                        "timestamp": timestamp,
+                        "year": args.year,
+                        "scraped_count": len(scraped_cases),
+                        "skipped_count": len(skipped),
+                        "skipped": skipped,
+                        "export": export_result,
+                    }
+
+                    # Write audit file to output/
+                    import json
+                    from pathlib import Path
+
+                    out_dir = Path("output")
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    audit_path = out_dir / f"audit_{timestamp}.json"
+                    with audit_path.open("w", encoding="utf-8") as fh:
+                        json.dump(audit, fh, indent=2)
+
                     print(f"\nBatch scrape complete:")
-                    print(f"  Cases scraped: {len(cases)}")
-                    print(f"  JSON: {export_result['json']}")
-                    print(f"  CSV: {export_result['csv']}")
+                    print(f"  Cases scraped: {len(scraped_cases)}")
+                    print(f"  JSON: {export_result.get('json')}")
+                    print(f"  Audit: {audit_path}")
+                    if export_result.get("database"):
+                        print(f"  Database: {export_result['database']}")
                 else:
                     print(f"\nNo cases found for year {args.year}")
                     if self.emergency_stop:
@@ -291,6 +419,12 @@ Examples:
             logger.error(f"CLI error: {e}")
             print(f"Error: {e}")
             sys.exit(1)
+        finally:
+            # Ensure resources are cleaned up (close shared WebDriver)
+            try:
+                self.shutdown()
+            except Exception:
+                pass
 
 
 def main():

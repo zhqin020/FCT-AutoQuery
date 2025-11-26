@@ -15,6 +15,8 @@ from selenium.webdriver.support.ui import WebDriverWait
 from webdriver_manager.chrome import ChromeDriverManager
 
 from src.lib.logging_config import get_logger
+from src.lib.config import Config
+from selenium.common.exceptions import WebDriverException
 from src.lib.rate_limiter import EthicalRateLimiter
 from src.lib.url_validator import URLValidator
 from src.models.case import Case
@@ -38,6 +40,9 @@ class CaseScraperService:
         self.rate_limiter = EthicalRateLimiter()  # 3-6s random delay
         self._driver: Optional[webdriver.Chrome] = None
         self._initialized = False
+        # Restart tracking
+        self._restart_count = 0
+        self._max_restarts = Config.get_max_driver_restarts()
         # search_mode: 'court_number' uses the courtNumber input; 'generic' uses the site-wide search input
         self._search_mode: str = "court_number"
 
@@ -78,7 +83,21 @@ class CaseScraperService:
         """
         if self._driver is None:
             self._driver = self._setup_driver()
-        return self._driver
+            return self._driver
+
+        # Quick liveness check: try a cheap property access
+        try:
+            # Accessing current_window_handle is a lightweight way to detect
+            # if the session has been terminated.
+            _ = self._driver.current_window_handle
+            return self._driver
+        except Exception as exc:
+            logger.warning(f"WebDriver appears dead or unresponsive (attempting restart): {exc}")
+            try:
+                return self._restart_driver()
+            except Exception:
+                # If restart failed, re-raise original exception
+                raise
 
     def _dismiss_cookie_banner(self, driver) -> None:
         """Try common cookie/consent banner selectors and dismiss them.
@@ -105,18 +124,13 @@ class CaseScraperService:
                     try:
                         # Prefer JS click to avoid overlay issues
                         driver.execute_script("arguments[0].click();", el)
-                        logger.info(
-                            "Dismissed cookie/consent banner using xpath: {}", xp
-                        )
+                        logger.info(f"Dismissed cookie/consent banner using xpath: {xp}")
                         time.sleep(0.2)
                         return
                     except Exception:
                         try:
                             el.click()
-                            logger.info(
-                                "Dismissed cookie/consent banner using xpath (native click): {}",
-                                xp,
-                            )
+                            logger.info(f"Dismissed cookie/consent banner using xpath (native click): {xp}")
                             time.sleep(0.2)
                             return
                         except Exception:
@@ -145,7 +159,7 @@ class CaseScraperService:
                 )
                 return
             except Exception as e:
-                logger.debug("_safe_send_keys JS fallback failed: {}", e)
+                logger.debug(f"_safe_send_keys JS fallback failed: {e}")
                 raise
 
     def _submit_search(self, driver, input_element) -> None:
@@ -186,7 +200,7 @@ class CaseScraperService:
                 )
                 return
             except Exception as e:
-                logger.debug("JS form submit fallback failed: {}", e)
+                logger.debug(f"JS form submit fallback failed: {e}")
                 raise
 
         # Click using JS if normal click fails
@@ -196,7 +210,7 @@ class CaseScraperService:
             try:
                 driver.execute_script("arguments[0].click();", submit)
             except Exception as e:
-                logger.debug("Submit click failed: {}", e)
+                logger.debug(f"Submit click failed: {e}")
                 raise
 
     def initialize_page(self) -> None:
@@ -251,45 +265,7 @@ class CaseScraperService:
                     break
                 except Exception:
                     continue
-
-            if not found_case_input:
-                # No case input found in the tab; raise to trigger fallback diagnostics
-                raise Exception("Could not find expected court number input on page")
-
-            # Select "Federal Court" in the associated dropdown if present.
-            # Dropdown ids vary by tab (e.g. tab02selectCourt, tab01selectCourt, court)
-            possible_court_selects = [
-                "court",
-                "tab02selectCourt",
-                "tab01selectCourt",
-                "tab03selectCourt",
-            ]
-            court_select = None
-            for sid in possible_court_selects:
-                try:
-                    court_select = driver.find_element(By.ID, sid)
-                    break
-                except Exception:
-                    continue
-
-            if court_select is not None:
-                try:
-                    # set to value 't' which corresponds to "Federal Court" in current markup
-                    driver.execute_script(
-                        "arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('change'));",
-                        court_select,
-                        "t",
-                    )
-                except Exception:
-                    try:
-                        court_select.click()
-                    except Exception:
-                        logger.debug(
-                            "Could not select Federal Court option via JS or click"
-                        )
-
-            self._initialized = True
-            logger.info("Page initialized successfully")
+    
 
         except Exception as e:
             # Capture diagnostics: page source and screenshot to help debug failures
@@ -345,6 +321,42 @@ class CaseScraperService:
             except Exception as fallback_exc:
                 logger.error(f"Fallback initialize failed: {fallback_exc}")
                 raise
+
+    def _restart_driver(self) -> webdriver.Chrome:
+        """Attempt to restart the WebDriver up to configured limit.
+
+        Returns a fresh WebDriver instance or raises if the max restarts
+        have been exceeded.
+        """
+        # Quit existing driver if present
+        try:
+            if self._driver is not None:
+                try:
+                    self._driver.quit()
+                except Exception:
+                    logger.debug("Existing driver quit failed during restart", exc_info=True)
+                finally:
+                    self._driver = None
+        except Exception:
+            # best-effort
+            self._driver = None
+
+        self._restart_count += 1
+        if self._restart_count > self._max_restarts:
+            logger.error(f"Exceeded max WebDriver restart attempts ({self._max_restarts})")
+            raise RuntimeError("Exceeded max WebDriver restart attempts")
+
+        logger.info(f"Restarting WebDriver (attempt {self._restart_count}/{self._max_restarts})")
+        # Small backoff before creating a new driver
+        time.sleep(1)
+        try:
+            self._driver = self._setup_driver()
+            # Reset initialization flag so callers can re-run page init if needed
+            self._initialized = False
+            return self._driver
+        except Exception as e:
+            logger.exception(f"Failed to restart WebDriver: {e}")
+            raise
 
     def search_case(self, case_number: str) -> bool:
         """Search for a specific case number.
@@ -406,9 +418,7 @@ class CaseScraperService:
                     pass
 
                 if case_input is None:
-                    logger.debug(
-                        "Could not locate a search input for attempt {}", attempt + 1
-                    )
+                    logger.debug(f"Could not locate a search input for attempt {attempt + 1}")
                     # If this was the first attempt, re-initialize and retry
                     if attempt == 0:
                         try:
@@ -441,7 +451,7 @@ class CaseScraperService:
                     try:
                         self._submit_search(driver, case_input)
                     except Exception as submit_err:
-                        logger.warning("Submit attempt failed: {}", submit_err)
+                        logger.warning(f"Submit attempt failed: {submit_err}")
                         # Continue and let the wait for results determine outcome
 
                 # Poll for results: check repeatedly for the case row or an explicit
@@ -473,10 +483,7 @@ class CaseScraperService:
 
                 # As a final fallback, check for any table rows present
                 if driver.find_elements(By.XPATH, "//table//tbody//tr"):
-                    logger.info(
-                        "Table rows present but specific case not detected: {}",
-                        case_number,
-                    )
+                    logger.info(f"Table rows present but specific case not detected: {case_number}")
                     return True
 
                 # If first attempt failed, re-initialize and retry
@@ -506,7 +513,7 @@ class CaseScraperService:
                         driver.save_screenshot(str(png_path))
                     except Exception:
                         pass
-                    logger.info("Saved diagnostics to {}", page_path)
+                    logger.info(f"Saved diagnostics to {page_path}")
                 except Exception:
                     logger.debug("Failed to save search diagnostics", exc_info=True)
 
@@ -571,9 +578,7 @@ class CaseScraperService:
                     )
                 except Exception:
                     # If the wait fails, continue — downstream logic will handle missing row
-                    logger.debug(
-                        "Timed out waiting for case row to appear: {}", case_number
-                    )
+                    logger.debug(f"Timed out waiting for case row to appear: {case_number}")
 
                 # Locate the target row containing the case number (again, after wait)
                 try:
@@ -603,7 +608,7 @@ class CaseScraperService:
                     try:
                         with open(page_path, "w", encoding="utf-8") as fh:
                             fh.write(driver.page_source)
-                        logger.info("Saved full page HTML to {}", page_path)
+                        logger.info(f"Saved full page HTML to {page_path}")
                     except Exception:
                         logger.debug("Failed to save full page HTML", exc_info=True)
 
@@ -629,14 +634,14 @@ class CaseScraperService:
                             fh.write("<html><body>\n")
                             fh.write(snippet_html)
                             fh.write("\n</body></html>")
-                        logger.info("Saved row snippet HTML to {}", snippet_path)
+                        logger.info(f"Saved row snippet HTML to {snippet_path}")
                     except Exception:
                         logger.debug("Failed to save row snippet", exc_info=True)
                     # also try to save a screenshot for visual debugging
                     try:
                         png_path = logs / f"screenshot_{case_number}_{ts}.png"
                         driver.save_screenshot(str(png_path))
-                        logger.info("Saved screenshot to {}", png_path)
+                        logger.info(f"Saved screenshot to {png_path}")
                     except Exception:
                         logger.debug("Failed to save screenshot", exc_info=True)
                 except Exception:
@@ -693,12 +698,7 @@ class CaseScraperService:
                         ["nature", "nature of proceeding"]
                     ) or (texts[2] if len(texts) > 2 else None)
 
-                    logger.debug(
-                        "Pre-click extracted: case=%s style=%s nature=%s",
-                        pre_click_case,
-                        pre_click_style,
-                        pre_click_nature,
-                    )
+                    logger.debug(f"Pre-click extracted: case={pre_click_case} style={pre_click_style} nature={pre_click_nature}")
             except Exception:
                 logger.debug("Pre-click extraction failed", exc_info=True)
 
@@ -722,7 +722,7 @@ class CaseScraperService:
                 for xp in candidate_xpaths:
                     try:
                         more_link = target_row.find_element(By.XPATH, xp)
-                        logger.info("Found More element in row via: {}", xp)
+                        logger.info(f"Found More element in row via: {xp}")
                         break
                     except Exception:
                         continue
@@ -768,11 +768,7 @@ class CaseScraperService:
                     for xp in candidate_xpaths:
                         try:
                             more_link = target_row.find_element(By.XPATH, xp)
-                            logger.info(
-                                "Found More element in row on retry {} via: {}",
-                                attempt + 1,
-                                xp,
-                            )
+                            logger.info(f"Found More element in row on retry {attempt + 1} via: {xp}")
                             break
                         except Exception:
                             continue
@@ -883,12 +879,12 @@ class CaseScraperService:
                     case_data["nature_of_proceeding"] = pre_click_nature
             except Exception:
                 pass
-            logger.debug("Raw extracted header: {}", case_data)
+            logger.debug(f"Raw extracted header: {case_data}")
 
             # Extract docket entries (pass case_number so entries get case_id)
             logger.debug("Extracting docket entries from modal")
             docket_entries = self._extract_docket_entries(modal, case_number)
-            logger.debug("Extracted {} docket entries", len(docket_entries))
+            logger.debug(f"Extracted {len(docket_entries)} docket entries")
 
             # Normalize and create Case object
             # Ensure we don't pass duplicate case_id kwarg
@@ -918,7 +914,7 @@ class CaseScraperService:
                     with open(modal_path, "w", encoding="utf-8") as mf:
                         mf.write(html)
                     case_data["html_path"] = str(modal_path)
-                    logger.info("Saved modal HTML to %s", modal_path)
+                    logger.info(f"Saved modal HTML to {modal_path}")
                 except Exception:
                     case_data["html_path"] = None
             except Exception:
@@ -956,11 +952,7 @@ class CaseScraperService:
 
             case = Case(case_id=header_case_id, **filtered)
 
-            logger.info(
-                "Successfully scraped case: {} (entries={})",
-                header_case_id,
-                len(docket_entries),
-            )
+            logger.info(f"Successfully scraped case: {header_case_id} (entries={len(docket_entries)})")
 
             # Build structured payload matching scripts/auto_click_more.py format
             try:
@@ -1024,10 +1016,7 @@ class CaseScraperService:
                 }
 
                 # Log the structured JSON payload (pretty-printed) to the main log
-                logger.info(
-                    "Scraped payload:\n{}",
-                    json.dumps(payload, indent=2, ensure_ascii=False),
-                )
+                logger.info(f"Scraped payload:\n{json.dumps(payload, indent=2, ensure_ascii=False)}")
             except Exception:
                 # Non-fatal if logging the payload fails
                 logger.debug(
@@ -1046,7 +1035,7 @@ class CaseScraperService:
 
             # Log structured output for later inspection
             try:
-                logger.debug("Case summary: {}", case.to_dict())
+                logger.debug(f"Case summary: {case.to_dict()}")
             except Exception:
                 logger.debug("Case summary not serializable")
 
