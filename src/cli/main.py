@@ -60,9 +60,12 @@ class FederalCourtScraperCLI:
             if self.scraper is None:
                 self.scraper = CaseScraperService(headless=self._scraper_headless)
 
-            # Initialize page
+            # Initialize page only if not already initialized (reuse session across batch)
             try:
-                self.scraper.initialize_page()
+                if not getattr(self.scraper, "_initialized", False):
+                    self.scraper.initialize_page()
+                else:
+                    logger.info("Reusing initialized page; skipping initialize_page()")
             except Exception as e:
                 logger.error(f"Failed to initialize page for scraping: {e}")
                 raise
