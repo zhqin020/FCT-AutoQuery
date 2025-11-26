@@ -46,7 +46,8 @@ def test_export_and_save_returns_per_case_entries():
         assert "case_number" in entry
         assert entry["case_number"] == "IMM-88888-25"
         assert "status" in entry
-        assert entry["status"] in ("new", "updated", "failed")
+        # Accept canonical per-case statuses defined in spec (OC-005)
+        assert entry["status"] in ("success", "error", "failed-write")
         assert "message" in entry
 
         # Verify JSON file exists on disk

@@ -1,3 +1,25 @@
+from src.services.url_discovery_service import UrlDiscoveryService
+
+
+def test_generate_case_numbers_for_year_default():
+    svc = UrlDiscoveryService(None)
+    nums = svc.generate_case_numbers_for_year(2025, start_num=1, max_cases=3)
+    assert nums == ["IMM-1-25", "IMM-2-25", "IMM-3-25"]
+
+
+def test_generate_case_numbers_from_last_with_last(monkeypatch):
+    svc = UrlDiscoveryService(None)
+
+    # Patch get_last_processed_case to return a last case
+    monkeypatch.setattr(svc, "get_last_processed_case", lambda year: "IMM-5-25")
+    nums = svc.generate_case_numbers_from_last(2025, max_cases=2)
+    assert nums == ["IMM-6-25", "IMM-7-25"]
+
+
+def test_should_skip_year():
+    svc = UrlDiscoveryService(None)
+    assert svc.should_skip_year(2025, 99) is False
+    assert svc.should_skip_year(2025, 100) is True
 from src.lib.config import Config
 from src.services.url_discovery_service import UrlDiscoveryService
 

@@ -265,6 +265,15 @@ class CaseScraperService:
                     break
                 except Exception:
                     continue
+            # Mark initialization successful so callers can reuse the page
+            # across multiple searches in batch mode.
+            self._search_mode = "court_number"
+            self._initialized = True
+            # remember which input id was found (best-effort)
+            try:
+                self._found_case_input = found_case_input
+            except Exception:
+                pass
     
 
         except Exception as e:
@@ -384,19 +393,29 @@ class CaseScraperService:
                 logger.info(
                     f"Searching for case: {case_number} (attempt {attempt + 1})"
                 )
-                # Prefer the dedicated court number input, but fall back to the generic site search.
-                possible_case_inputs = [
+                # Prefer a previously-discovered case input id to speed up
+                # repeated searches within the same initialized page.
+                cached = getattr(self, "_found_case_input", None)
+                possible_case_inputs = []
+                if cached:
+                    possible_case_inputs.append(cached)
+                possible_case_inputs.extend([
                     "courtNumber",
                     "selectCourtNumber",
                     "selectRetcaseCourtNumber",
                     "searchd",
-                ]
+                ])
+
                 case_input = None
                 for cid in possible_case_inputs:
                     try:
-                        case_input = WebDriverWait(driver, 2).until(
+                        # Prefer a very short wait for the cached id to avoid slowing batch runs
+                        wait_time = 1 if cid == cached else 2
+                        case_input = WebDriverWait(driver, wait_time).until(
                             EC.presence_of_element_located((By.ID, cid))
                         )
+                        if cid == cached:
+                            logger.debug(f"Using cached case input id: {cached}")
                         break
                     except Exception:
                         continue

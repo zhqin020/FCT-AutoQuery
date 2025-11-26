@@ -1,0 +1,25 @@
+Summary of work completed:
+
+- Implemented per-case JSON persistence with atomic writes, fsync durability, numeric suffixing, and retry/backoff.
+- Reused browser/search page across batch runs; added cached input ID and driver liveness/restart policy.
+- Ensured `Case.to_dict()` always includes `docket_entries` so per-case JSON contains entries.
+- Added run-level NDJSON `RunLogger` and canonical per-case statuses.
+- Tests added: unit tests for CLI and UrlDiscovery, integration tests for session reuse, and unit tests for exporter behavior.
+
+Test results (local): `44 passed` in the project's `fct` Conda env.
+
+Files worth reviewing: `src/services/export_service.py`, `src/services/case_scraper_service.py`, `src/models/case.py`, `src/lib/run_logger.py`, `src/cli/main.py`, and new tests under `tests/unit` and `tests/integration`.
+
+How to run locally:
+
+```
+source /home/watson/miniconda3/etc/profile.d/conda.sh
+conda activate fct
+PYTHONPATH=. pytest -q
+```
+
+Notes / follow-ups:
+- I added `specs/0002-save-json-batch-scrape/PR_DESCRIPTION.md` with a suggested PR body and a `.github/PULL_REQUEST_TEMPLATE.md`.
+- Optional: add more integration tests for transient modal failures and an optional gated Selenium job.
+
+If you'd like, I can (a) add more tests, (b) prepare an updated changelog entry, or (c) open a draft release for this feature.

@@ -89,6 +89,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Tuple
 import re
+import random
+from datetime import timezone
 
 import psycopg2
 from psycopg2.extras import execute_values
@@ -187,13 +189,15 @@ class ExportService:
         # Determine date for filename
         from datetime import datetime
 
+        # Use UTC date by default to match OC-003
         if date_str is None:
-            date_str = datetime.now().strftime("%Y%m%d")
+            date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
 
         year = date_str[:4]
 
-        # Build directory: output/json/<YYYY>/
-        json_dir = self.output_dir / "json" / year
+        # Use configured subdirectory name for per-case JSON (default 'json')
+        per_case_subdir = Config.get_per_case_subdir()
+        json_dir = self.output_dir / per_case_subdir / year
         json_dir.mkdir(parents=True, exist_ok=True)
 
         # Base filename: <case-number>-<YYYYMMDD>.json
@@ -203,59 +207,70 @@ class ExportService:
         base_name = f"{safe_case}-{date_str}.json"
         file_path = json_dir / base_name
 
-        # Avoid silent overwrite: add numeric suffix if exists
+        # Avoid silent overwrite: add numeric suffix if exists (OC-004)
         suffix = 0
         final_path = file_path
         while final_path.exists():
             suffix += 1
             final_path = json_dir / f"{safe_case}-{date_str}-{suffix}.json"
 
-        # Use configured subdirectory name for per-case JSON (default 'json')
-        per_case_subdir = Config.get_per_case_subdir()
-        json_dir = self.output_dir / per_case_subdir / year
-        json_dir.mkdir(parents=True, exist_ok=True)
-
-        # Atomic write: write to a temp file in same directory then rename
-        import tempfile
-
+        # Retry/backoff settings (OC-002)
         max_retries = Config.get_export_write_retries()
-        backoff = Config.get_export_write_backoff_seconds()
+        # Interpret config value as number of retries after initial attempt
+        attempts_allowed = int(max_retries) + 1
+        base_backoff = float(Config.get_export_write_backoff_seconds())
+        backoff_factor = 2.0
+
+        import tempfile
+        import os
+
         attempt = 0
-        while True:
+        last_exc = None
+        while attempt < attempts_allowed:
             attempt += 1
+            tmp_path = None
             try:
                 fd, tmp_path = tempfile.mkstemp(dir=str(json_dir), prefix="tmp_", suffix=".json")
-                with open(fd, "w", encoding="utf-8") as tf:
+                # Write and fsync to ensure durable write before rename (OC-001)
+                with os.fdopen(fd, "w", encoding="utf-8") as tf:
+                    payload = case.to_dict()
                     import json as _json
 
-                    # Build payload from case.to_dict() and include docket_entries
-                    payload = case.to_dict()
-                    if hasattr(case, "docket_entries") and case.docket_entries:
-                        try:
-                            payload["docket_entries"] = [
-                                e.to_dict() if hasattr(e, "to_dict") else e for e in case.docket_entries
-                            ]
-                        except Exception:
-                            # Fallback: include raw objects if serialization fails
-                            payload["docket_entries"] = list(case.docket_entries)
-
+                    # `Case.to_dict()` is authoritative and already includes
+                    # `docket_entries`. Avoid duplicating/merging here to keep
+                    # a single source of truth for serialization.
                     _json.dump(payload, tf, indent=2, ensure_ascii=False, default=str)
+                    tf.flush()
+                    try:
+                        os.fsync(tf.fileno())
+                    except Exception:
+                        # If fsync fails, allow retry logic to handle transient errors
+                        pass
 
-                # Use os.replace to ensure atomic move
-                import os
-
+                # Atomic replace
                 os.replace(tmp_path, str(final_path))
 
                 logger.info(f"Exported case {safe_case} to JSON: {final_path}")
                 return str(final_path)
 
             except Exception as e:
+                last_exc = e
                 logger.warning(f"Attempt {attempt}: failed to write per-case JSON for {safe_case}: {e}")
-                if attempt >= max_retries:
+                # cleanup temp file
+                try:
+                    if tmp_path and os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                except Exception:
+                    pass
+
+                if attempt >= attempts_allowed:
                     logger.error(f"Exceeded max retries ({max_retries}) writing JSON for {safe_case}")
-                    raise
-                else:
-                    time.sleep(backoff)
+                    raise last_exc
+
+                # exponential backoff with jitter
+                sleep_for = base_backoff * (backoff_factor ** (attempt - 1))
+                sleep_for += random.uniform(0, base_backoff)
+                time.sleep(sleep_for)
 
     def export_to_csv(self, cases: List[Case], filename: Optional[str] = None) -> str:
         """
@@ -385,7 +400,7 @@ class ExportService:
 
         Returns:
             Tuple[str, Optional[str]]: (status, message) where status is one of
-            'new', 'updated', or 'failed'. Message contains error details if failed.
+            the canonical per-case statuses (e.g., 'success' or 'error'). Message contains error details if failed.
         """
         try:
             conn = psycopg2.connect(**self.db_config)
@@ -438,13 +453,15 @@ class ExportService:
             cursor.close()
             conn.close()
 
-            status = "updated" if exists else "new"
-            logger.info(f"Successfully saved case {case.court_file_no} to database ({status})")
+            # Map DB-level status to canonical per-case status for run audits
+            db_status = "updated" if exists else "new"
+            status = "success" if db_status in ("new", "updated") else "error"
+            logger.info(f"Successfully saved case {case.court_file_no} to database ({db_status})")
             return status, None
 
         except Exception as e:
             logger.error(f"Failed to save case {case.court_file_no} to database: {e}")
-            return "failed", str(e)
+            return "error", str(e)
 
     def case_exists(self, court_file_no: str) -> bool:
         """Return True if a case with given `court_file_no` exists in the database."""
@@ -478,8 +495,9 @@ class ExportService:
 
         for case in cases:
             status, message = self.save_case_to_database(case)
+            # status is canonical (e.g., 'success' or 'error')
             per_case.append({"case_number": case.court_file_no, "status": status, "message": message})
-            if status == "failed":
+            if status != "success":
                 failed += 1
             else:
                 successful += 1

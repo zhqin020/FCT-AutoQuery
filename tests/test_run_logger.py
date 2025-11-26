@@ -18,3 +18,20 @@ def test_run_logger_writes_ndjson(tmp_path):
     data = json.loads(lines[1])
     assert data["case_number"] == "IMM-1-25"
     assert data["outcome"] == "success"
+
+
+def test_run_logger_rejects_invalid_outcome(tmp_path):
+    from src.lib.run_logger import RunLogger
+
+    run_file = tmp_path / "run_test_invalid.ndjson"
+    rl = RunLogger(str(run_file))
+    rl.start(run_id="r2")
+    try:
+        try:
+            rl.record_case("IMM-2-25", outcome="updated")
+            raised = False
+        except ValueError:
+            raised = True
+        assert raised, "RunLogger.record_case should raise ValueError for invalid outcome 'updated'"
+    finally:
+        rl.finish()

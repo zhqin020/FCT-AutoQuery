@@ -72,6 +72,42 @@ As an operator using the interactive mode, I want each manual lookup to produce 
 - **FR-007**: The system MUST expose configuration for `output directory`, `retry counts` for writes, and `max concurrent browser instances` (default: 1) as operational settings in the run configuration.
 - **FR-008**: The scraper MUST include a retry/backoff policy for transient failures (e.g., network, temporary DOM issues) and limit retries to a configurable number (default: 2).
 
+### Operational Clarifications (implementation guidance)
+
+To avoid ambiguity that has caused inconsistent implementations, include the following concrete operational requirements. These are implementation-level clarifications to be captured in the spec so acceptance tests and CI can validate behavior.
+
+- **OC-001 (Atomic write algorithm)**: The atomic write MUST follow this algorithm:
+	1. Create the target directory if it does not exist (preserving permissions).
+	2. Create a temporary file in the same directory (e.g., using mkstemp) with a predictable prefix (e.g., `.tmp-<filename>`).
+	3. Serialize JSON to the temporary file and flush the file buffer.
+	4. Call `os.fsync()` (or equivalent) on the file descriptor to ensure data is persisted to disk.
+	5. Close the temporary file and perform an atomic rename/replace (`os.replace()` or `rename` syscall) to the final filename.
+	6. If any step fails with an I/O error, log the error, and follow the configured write retry policy (see OC-002). [Clarity, Spec §FR-006]
+
+- **OC-002 (Write retry/backoff defaults)**: For transient write or I/O failures, the system MUST implement a retry/backoff policy with the following defaults unless overridden in configuration:
+	- `max_retries`: 2 (two additional attempts after the initial attempt)
+	- `initial_backoff`: 1.0 second
+	- `backoff_factor`: 2.0 (exponential backoff)
+	- `jitter`: random uniform jitter in the range [0, initial_backoff) applied to each backoff interval
+	- Retry attempts must log each try with attempt number and a concise error message.
+	- After exhausting retries, the case record MUST be marked as a `failed-write` outcome in the run log. [Clarity, Spec §FR-008]
+
+- **OC-003 (Filename timestamp and timezone)**: Filenames that include the scrape date MUST use UTC date for the `YYYYMMDD` component unless an operator explicitly configures a different timezone. The spec will record this default as `UTC` to avoid ambiguity when runs span local/daylight boundaries. [Completeness, Spec §FR-002]
+
+- **OC-004 (Duplicate filename policy)**: When a per-case filename conflict occurs for the same `<case-number>-<YYYYMMDD>.json`, the system MUST avoid silent overwrites. The canonical resolution policy is:
+	- If the intended filename does not exist, write it.
+	- If it exists, append a numeric suffix `-1`, `-2`, etc., before the `.json` extension (e.g., `IMM-1-25-20251125-1.json`).
+	- The system MUST choose the lowest available integer suffix and record the actual written filename in the run-level audit log for traceability. [Clarity, Spec §FR-002, Edge Cases]
+
+- **OC-005 (Per-case status enum)**: Define a canonical set of per-case result status values recorded in the run audit and per-case entries. Implementations and tests MUST use these values:
+	- `success` — case scraped and exported to per-case JSON (preferred canonical success label)
+	- `failed-write` — scrape succeeded but write to disk failed after retries
+	- `parse-error` — scraping/parsing of the page failed (DOM changes, missing elements)
+	- `no-results` — search returned no results for the case number
+	- `skipped` — case was intentionally skipped (duplicate, invalid input, or operator-specified rule)
+	- `error` — generic unexpected error not covered above
+	The run audit examples in the spec will be updated to use these canonical labels to avoid mixed terminology (`updated` vs `success`). [Clarity, Spec §FR-005]
+
 ### Key Entities *(include if feature involves data)*
 
  - **CaseRecord**: Represents a single scraped court case. Key attributes: `case_number`, `style_of_cause`, `nature_of_processing`, `parties` (list), `details` (string or structured), `scrape_timestamp`, `source_url`, `file_path`.
