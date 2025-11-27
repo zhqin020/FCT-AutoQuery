@@ -188,17 +188,55 @@ class ExportService:
         from datetime import datetime
 
         if date_str is None:
-            date_str = datetime.now().strftime("%Y%m%d")
+            # Derive year from the case number when possible. Case numbers are
+            # formatted as IMM-<seq>-YY where YY indicates the two-digit year.
+            # Prefer this over filing_date to ensure per-case JSON lives under
+            # the case-year folder (user expectation).
+            year = None
+            try:
+                cf = getattr(case, "court_file_no", None) or getattr(case, "case_id", None) or ""
+                import re
 
-        year = date_str[:4]
+                m = re.search(r"IMM-\d+-([0-9]{2})$", str(cf))
+                if m:
+                    yy = int(m.group(1))
+                    # assume 2000-based years (e.g. '24' -> 2024)
+                    year = 2000 + yy
+            except Exception:
+                year = None
 
-        # Build directory: output/json/<YYYY>/
-        json_dir = self.output_dir / "json" / year
-        json_dir.mkdir(parents=True, exist_ok=True)
+            if year is None:
+                # Fall back to filing_date/scraped_at if present
+                date_from_case = None
+                try:
+                    if getattr(case, "filing_date", None):
+                        date_from_case = str(getattr(case, "filing_date"))
+                    elif getattr(case, "scraped_at", None):
+                        date_from_case = str(getattr(case, "scraped_at"))
+                except Exception:
+                    date_from_case = None
 
+                if date_from_case:
+                    m2 = re.search(r"(\d{4})[-/]?(\d{2})[-/]?(\d{2})", date_from_case)
+                    if m2:
+                        date_str = f"{m2.group(1)}{m2.group(2)}{m2.group(3)}"
+                        year = int(date_str[:4])
+                if year is None:
+                    from datetime import datetime
+
+                    date_str = datetime.now().strftime("%Y%m%d")
+                    year = int(date_str[:4])
+            else:
+                # Use January 1st for filename date when deriving from case number
+                date_str = f"{year}0101"
+
+        else:
+            year = date_str[:4]
+
+        # Build directory: output/<per_case_subdir>/<YYYY>/
         # Use configured subdirectory name for per-case JSON (default 'json')
         per_case_subdir = Config.get_per_case_subdir()
-        json_dir = self.output_dir / per_case_subdir / year
+        json_dir = self.output_dir / per_case_subdir / str(year)
         json_dir.mkdir(parents=True, exist_ok=True)
 
         # Base filename: <case-number>-<YYYYMMDD>.json

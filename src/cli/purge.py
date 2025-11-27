@@ -118,9 +118,82 @@ def purge_year(
 
     # DB enumeration placeholder: in full implementation this queries DB for rows
     if not files_only:
-        # indicate that DB rows should be selected/deleted; actual selection
-        # happens in the DB purge implementation (not in this skeleton)
-        summary["db"]["rows_selected"] = "TODO: run COUNT(*) on cases for year"
+        # For dry-run we can perform a safe, read-only enumeration of DB
+        # candidate case ids derived from the case identifier (court_file_no)
+        # so operators can preview exactly which rows would be deleted.
+        if dry_run:
+            try:
+                import psycopg2
+                import re
+
+                cfg = Config.get_db_config()
+
+                def get_conn_read():
+                    return psycopg2.connect(**cfg)
+
+                conn = get_conn_read()
+                cur = conn.cursor()
+                try:
+                    # Detect columns dynamically (some DBs use different names)
+                    cur.execute("SELECT * FROM cases LIMIT 1")
+                    cols = [d[0] for d in cur.description] if cur.description else []
+
+                    id_candidates = ["id", "case_id", "caseid", "case_number"]
+                    court_candidates = ["court_file_no", "case_number", "case_no", "caseid", "case_id"]
+
+                    id_col = next((c for c in id_candidates if c in cols), None)
+                    court_col = next((c for c in court_candidates if c in cols), None)
+
+                    # If the table uses `court_file_no` as the primary identifier
+                    # (no numeric `id` column), use it as the id column as well.
+                    if not id_col and court_col:
+                        id_col = court_col
+
+                    if not id_col or not court_col:
+                        raise RuntimeError(f"Cannot determine id/case identifier columns (found: {cols})")
+
+                    cur.execute(f"SELECT {id_col}, {court_col} FROM cases")
+                    rows = cur.fetchall()
+                    candidate_ids = []
+                    for r in rows:
+                        cid = r[0]
+                        cf = r[1] if len(r) > 1 else None
+                        if not cf:
+                            continue
+                        s = str(cf)
+                        m4 = re.search(r"-(\d{4})$", s)
+                        if m4 and int(m4.group(1)) == year:
+                            candidate_ids.append(cid)
+                            continue
+                        m2 = re.search(r"-(\d{2})$", s)
+                        if m2 and (2000 + int(m2.group(1))) == year:
+                            candidate_ids.append(cid)
+                            continue
+
+                    summary["db"]["candidate_case_ids"] = candidate_ids
+                    summary["db"]["cases_selected_count"] = len(candidate_ids)
+                finally:
+                    try:
+                        cur.close()
+                    except Exception:
+                        pass
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+            except Exception as e:
+                # If DB read fails, record the error in the audit so operator
+                # can diagnose why enumeration didn't run (missing driver,
+                # bad config, etc.). Leave the placeholder as a fallback.
+                try:
+                    summary.setdefault("db", {})["error"] = str(e)
+                except Exception:
+                    pass
+                summary["db"]["rows_selected"] = "TODO: run COUNT(*) on cases for year"
+        else:
+            # indicate that DB rows should be selected/deleted; actual selection
+            # happens in the DB purge implementation (not in this skeleton)
+            summary["db"]["rows_selected"] = "TODO: run COUNT(*) on cases for year"
 
     db_success = True
     db_result = None
