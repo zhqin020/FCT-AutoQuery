@@ -1598,14 +1598,19 @@ class CaseScraperService:
 
             # Choose best scored candidate (highest score); if none, fallback to first table
             if candidates:
+                # Prefer highest score, but if all scores are non-positive
+                # choose the candidate with the most data rows (more likely real data)
                 candidates.sort(key=lambda it: it[0], reverse=True)
                 best_score, best_table, best_nrows = candidates[0]
                 if best_score <= 0:
-                    # all candidates scored poorly (likely only templates); fallback to first table
+                    # choose the candidate that has the most rows as a better fallback
                     try:
-                        table = modal_element.find_element(By.XPATH, ".//table")
+                        _, table, _ = max(candidates, key=lambda it: it[2])
                     except Exception:
-                        table = None
+                        try:
+                            table = modal_element.find_element(By.XPATH, ".//table")
+                        except Exception:
+                            table = None
                 else:
                     table = best_table
             else:

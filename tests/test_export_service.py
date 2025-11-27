@@ -106,8 +106,8 @@ def test_export_case_to_json_unique_suffix(tmp_path):
 
     assert first.exists()
     assert second.exists()
-    assert first != second
-    assert second.stem.startswith(first.stem) or "-1" in second.stem
+    # Behavior: export should overwrite existing per-case JSON for same case/date
+    assert first == second
 
     # cleanup
     try:

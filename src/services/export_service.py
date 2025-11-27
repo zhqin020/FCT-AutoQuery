@@ -196,24 +196,18 @@ class ExportService:
         json_dir = self.output_dir / "json" / year
         json_dir.mkdir(parents=True, exist_ok=True)
 
+        # Use configured subdirectory name for per-case JSON (default 'json')
+        per_case_subdir = Config.get_per_case_subdir()
+        json_dir = self.output_dir / per_case_subdir / year
+        json_dir.mkdir(parents=True, exist_ok=True)
+
         # Base filename: <case-number>-<YYYYMMDD>.json
         safe_case = getattr(case, "court_file_no", None) or getattr(case, "case_id", None) or "case"
         # sanitize filename characters
         safe_case = re.sub(r"[^A-Za-z0-9._-]", "_", str(safe_case))
         base_name = f"{safe_case}-{date_str}.json"
-        file_path = json_dir / base_name
-
-        # Avoid silent overwrite: add numeric suffix if exists
-        suffix = 0
-        final_path = file_path
-        while final_path.exists():
-            suffix += 1
-            final_path = json_dir / f"{safe_case}-{date_str}-{suffix}.json"
-
-        # Use configured subdirectory name for per-case JSON (default 'json')
-        per_case_subdir = Config.get_per_case_subdir()
-        json_dir = self.output_dir / per_case_subdir / year
-        json_dir.mkdir(parents=True, exist_ok=True)
+        final_path = json_dir / base_name
+        # Overwrite existing file with same case/date to avoid leaving stale/incorrect files
 
         # Atomic write: write to a temp file in same directory then rename
         import tempfile
