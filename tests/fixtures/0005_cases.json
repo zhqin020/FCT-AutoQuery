@@ -1,0 +1,168 @@
+[
+  {
+    "case_id": "IMM-2-23",
+    "case_number": "IMM-2-23",
+    "title": "Mandamus action to compel processing of adjustment application",
+    "court": "Buffalo",
+    "date": "2020-03-12",
+    "case_type": "Mandamus",
+    "action_type": null,
+    "nature_of_proceeding": null,
+    "filing_date": "2020-03-12",
+    "office": "Buffalo",
+    "style_of_cause": "Mandamus action to compel processing of adjustment application",
+    "language": null,
+    "url": null,
+    "html_content": "",
+    "scraped_at": "2021-06-20T12:00:00",
+    "docket_entries": [
+      {"id": null, "case_id": "IMM-2-23", "doc_id": 1, "entry_date": "2020-03-12", "entry_office": null, "summary": "Complaint filed"},
+      {"id": null, "case_id": "IMM-2-23", "doc_id": 2, "entry_date": "2020-07-02", "entry_office": null, "summary": "Rule 9 notice issued: referred to USCIS for further review"},
+      {"id": null, "case_id": "IMM-2-23", "doc_id": 3, "entry_date": "2021-06-20", "entry_office": null, "summary": "Case closed: dismissal"}
+    ]
+  },
+  {
+    "case_id": "IMM-3-21",
+    "case_number": "IMM-3-21",
+    "title": "Petition to compel adjudication",
+    "court": "San Francisco",
+    "date": "2021-11-01",
+    "case_type": null,
+    "action_type": null,
+    "nature_of_proceeding": null,
+    "filing_date": "2021-11-01",
+    "office": "San Francisco",
+    "style_of_cause": "Petition to compel adjudication",
+    "language": null,
+    "url": null,
+    "html_content": "",
+    "scraped_at": "2022-02-15T12:00:00",
+    "docket_entries": [
+      {"id": null, "case_id": "IMM-3-21", "doc_id": 1, "entry_date": "2021-11-01", "entry_office": null, "summary": "Petition to compel adjudication filed"},
+      {"id": null, "case_id": "IMM-3-21", "doc_id": 2, "entry_date": "2022-02-15", "entry_office": null, "summary": "Order: deny petition"}
+    ]
+  },
+  {
+    "case_id": "IMM-4-19",
+    "case_number": "IMM-4-19",
+    "title": "Visa petition administrative processing",
+    "court": "Houston",
+    "date": "2019-05-06",
+    "case_type": null,
+    "action_type": null,
+    "nature_of_proceeding": null,
+    "filing_date": "2019-05-06",
+    "office": "Houston",
+    "style_of_cause": "Visa petition administrative processing",
+    "language": null,
+    "url": null,
+    "html_content": "",
+    "scraped_at": "2020-01-10T12:00:00",
+    "docket_entries": [
+      {"id": null, "case_id": "IMM-4-19", "doc_id": 1, "entry_date": "2019-05-06", "entry_office": null, "summary": "Complaint"},
+      {"id": null, "case_id": "IMM-4-19", "doc_id": 2, "entry_date": "2020-01-10", "entry_office": null, "summary": "Order: stay pending administrative review"}
+    ]
+  },
+  {
+    "case_id": "IMM-5-22",
+    "case_number": "IMM-5-22",
+    "title": "Malformed date example",
+    "court": null,
+    "date": null,
+    "case_type": null,
+    "action_type": null,
+    "nature_of_proceeding": null,
+    "filing_date": "2022-02-28",
+    "office": null,
+    "style_of_cause": "Malformed date example",
+    "language": null,
+    "url": null,
+    "html_content": "",
+    "scraped_at": "2022-03-05T12:00:00",
+    "docket_entries": [
+      {"id": null, "case_id": "IMM-5-22", "doc_id": 1, "entry_date": "2022-02-28", "entry_office": null, "summary": "Filing"},
+      {"id": null, "case_id": "IMM-5-22", "doc_id": 2, "entry_date": "2022-03-05", "entry_office": null, "summary": "Rule 9: notice"}
+    ]
+  },
+  {
+    "case_id": "IMM-6-18",
+    "case_number": "IMM-6-18",
+    "title": "Petition for review",
+    "court": "Los Angeles",
+    "date": "2018-08-01",
+    "case_type": null,
+    "action_type": null,
+    "nature_of_proceeding": null,
+    "filing_date": "2018-08-01",
+    "office": "Los Angeles",
+    "style_of_cause": "Petition for review",
+    "language": null,
+    "url": null,
+    "html_content": "",
+    "scraped_at": "2018-08-01T12:00:00",
+    "docket_entries": []
+  },
+  {
+    "case_id": "IMM-7-23",
+    "case_number": "IMM-7-23",
+    "title": "Motion to compel",
+    "court": "Chicago",
+    "date": "2023-01-15",
+    "case_type": null,
+    "action_type": null,
+    "nature_of_proceeding": null,
+    "filing_date": "2023-01-15",
+    "office": "Chicago",
+    "style_of_cause": "Motion to compel",
+    "language": null,
+    "url": null,
+    "html_content": "",
+    "scraped_at": "2023-03-01T12:00:00",
+    "docket_entries": [
+      {"id": null, "case_id": "IMM-7-23", "doc_id": 1, "entry_date": "2023-01-15", "entry_office": null, "summary": "Complaint filed"},
+      {"id": null, "case_id": "IMM-7-23", "doc_id": 2, "entry_date": "2023-03-01", "entry_office": null, "summary": "Motion to compel"}
+    ]
+  },
+  {
+    "case_id": "IMM-8-20",
+    "case_number": "IMM-8-20",
+    "title": "Closed after settlement",
+    "court": null,
+    "date": "2020-06-30",
+    "case_type": null,
+    "action_type": null,
+    "nature_of_proceeding": null,
+    "filing_date": "2020-06-30",
+    "office": null,
+    "style_of_cause": "Closed after settlement",
+    "language": null,
+    "url": null,
+    "html_content": "",
+    "scraped_at": "2021-01-12T12:00:00",
+    "docket_entries": [
+      {"id": null, "case_id": "IMM-8-20", "doc_id": 1, "entry_date": "2020-06-30", "entry_office": null, "summary": "Complaint"},
+      {"id": null, "case_id": "IMM-8-20", "doc_id": 2, "entry_date": "2021-01-12", "entry_office": null, "summary": "Order: closed after settlement"}
+    ]
+  },
+  {
+    "case_id": "IMM-9-17",
+    "case_number": "IMM-9-17",
+    "title": "Administrative referral",
+    "court": "New York Visa Center",
+    "date": "2017-09-09",
+    "case_type": null,
+    "action_type": null,
+    "nature_of_proceeding": null,
+    "filing_date": "2017-09-09",
+    "office": "New York Visa Center",
+    "style_of_cause": "Administrative referral",
+    "language": null,
+    "url": null,
+    "html_content": "",
+    "scraped_at": "2018-02-20T12:00:00",
+    "docket_entries": [
+      {"id": null, "case_id": "IMM-9-17", "doc_id": 1, "entry_date": "2017-09-09", "entry_office": null, "summary": "Petition filed"},
+      {"id": null, "case_id": "IMM-9-17", "doc_id": 2, "entry_date": "2018-02-20", "entry_office": null, "summary": "r.9 notice - administrative referral"}
+    ]
+  }
+]
