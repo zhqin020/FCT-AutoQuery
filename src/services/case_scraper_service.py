@@ -924,15 +924,21 @@ class CaseScraperService:
                 safe_id = (header_case_id or case_number).replace("/", "_")
                 modal_path = logs / f"modal_{safe_id}_{ts}.html"
                 try:
-                    html = (
-                        modal.get_attribute("outerHTML")
-                        or modal.get_attribute("innerHTML")
-                        or ""
-                    )
-                    with open(modal_path, "w", encoding="utf-8") as mf:
-                        mf.write(html)
-                    case_data["html_path"] = str(modal_path)
-                    logger.info(f"Saved modal HTML to {modal_path}")
+                    # Respect configuration: allow disabling modal HTML capture
+                    from src.lib.config import Config
+
+                    if Config.get_save_modal_html():
+                        html = (
+                            modal.get_attribute("outerHTML")
+                            or modal.get_attribute("innerHTML")
+                            or ""
+                        )
+                        with open(modal_path, "w", encoding="utf-8") as mf:
+                            mf.write(html)
+                        case_data["html_path"] = str(modal_path)
+                        logger.info(f"Saved modal HTML to {modal_path}")
+                    else:
+                        case_data["html_path"] = None
                 except Exception:
                     case_data["html_path"] = None
             except Exception:

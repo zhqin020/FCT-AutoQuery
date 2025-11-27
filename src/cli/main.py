@@ -147,9 +147,10 @@ class FederalCourtScraperCLI:
         processed = 0
         skipped = []
 
-        # Run-level logger to record per-case outcomes
-        run_logger = RunLogger()
-        run_logger.start()
+        # Run-level logger to record per-case outcomes (configurable)
+        run_logger = RunLogger() if Config.get_enable_run_logger() else None
+        if run_logger:
+            run_logger.start()
 
         # Get case numbers to process
         case_numbers = self.discovery.generate_case_numbers_from_last(year, max_cases)
@@ -170,10 +171,11 @@ class FederalCourtScraperCLI:
                     if not self.force and self.exporter.case_exists(case_number):
                         print(f"→ Skipping {case_number}: already in database")
                         skipped.append({"case_number": case_number, "status": "skipped"})
-                        try:
-                            run_logger.record_case(case_number, outcome="skipped", reason="exists_in_db")
-                        except Exception:
-                            pass
+                        if run_logger:
+                            try:
+                                run_logger.record_case(case_number, outcome="skipped", reason="exists_in_db")
+                            except Exception:
+                                pass
                         # still count as processed but not as a success
                         processed += 1
                         # Progress update every 10 cases
@@ -202,24 +204,27 @@ class FederalCourtScraperCLI:
                         cases.append(case)
                         consecutive_failures = 0
                         print(f"✓ Successfully scraped case {case.case_id}")
-                        try:
-                            run_logger.record_case(case_number, outcome="success", case_id=getattr(case, "case_id", None))
-                        except Exception:
-                            pass
+                        if run_logger:
+                            try:
+                                run_logger.record_case(case_number, outcome="success", case_id=getattr(case, "case_id", None))
+                            except Exception:
+                                pass
                     else:
                         consecutive_failures += 1
                         print(f"✗ Failed to scrape case {case_number}")
-                        try:
-                            run_logger.record_case(case_number, outcome="failed")
-                        except Exception:
-                            pass
+                        if run_logger:
+                            try:
+                                run_logger.record_case(case_number, outcome="failed")
+                            except Exception:
+                                pass
                 except Exception as e:
                     # Unexpected exception during scrape; record and continue
                     logger.error(f"Unhandled error scraping case {case_number}: {e}")
-                    try:
-                        run_logger.record_case(case_number, outcome="error", message=str(e))
-                    except Exception:
-                        pass
+                    if run_logger:
+                        try:
+                            run_logger.record_case(case_number, outcome="error", message=str(e))
+                        except Exception:
+                            pass
                     consecutive_failures += 1
 
                 processed += 1
@@ -243,11 +248,12 @@ class FederalCourtScraperCLI:
                     break
 
         finally:
-            try:
-                run_logger.finish()
-                logger.info(f"Run-level NDJSON written: {run_logger.path}")
-            except Exception:
-                pass
+            if run_logger:
+                try:
+                    run_logger.finish()
+                    logger.info(f"Run-level NDJSON written: {run_logger.path}")
+                except Exception:
+                    pass
 
         # Return scraped cases and skipped list for auditing
         return cases, skipped
@@ -398,15 +404,18 @@ Examples:
                         "export": export_result,
                     }
 
-                    # Write audit file to output/
-                    import json
-                    from pathlib import Path
+                    # Write audit file to output/ (configurable)
+                    if Config.get_write_audit():
+                        import json
+                        from pathlib import Path
 
-                    out_dir = Path("output")
-                    out_dir.mkdir(parents=True, exist_ok=True)
-                    audit_path = out_dir / f"audit_{timestamp}.json"
-                    with audit_path.open("w", encoding="utf-8") as fh:
-                        json.dump(audit, fh, indent=2)
+                        out_dir = Path("output")
+                        out_dir.mkdir(parents=True, exist_ok=True)
+                        audit_path = out_dir / f"audit_{timestamp}.json"
+                        with audit_path.open("w", encoding="utf-8") as fh:
+                            json.dump(audit, fh, indent=2)
+                    else:
+                        audit_path = None
 
                     print(f"\nBatch scrape complete:")
                     print(f"  Cases scraped: {len(scraped_cases)}")
