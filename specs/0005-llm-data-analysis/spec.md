@@ -2,6 +2,13 @@
 **日期**：2025-11-26
 **状态**：待开发
 
+## Clarifications
+
+### Session 2025-11-27
+
+- Q: Deployment posture for LLM calls (local vs remote) → A: Use a local Ollama instance (no external cloud LLM by default).
+
+
 ## 1. 背景与目标
 ### 1.1 背景
 目前拥有一批加拿大联邦法院（Federal Court）的移民案件记录（JSON格式）。这些数据包含案件基本信息及详细的案卷记录（Docket Entries）。目前依靠人工阅读分析效率低下且难以发现宏观趋势。
@@ -90,6 +97,7 @@
     *   工具: Ollama (本地部署)
     *   模型: `qwen2.5-7b-instruct` 或 `llama3-8b` (平衡速度与准确性)
     *   交互: Python `requests` 库调用 Ollama API
+    *   部署要求: 优先使用本地 Ollama 实例以避免外部数据泄露与网络延迟；不使用远程云 LLM API，除非明确批准。
 *   **输出**: CSV / Excel (.xlsx)
 
 ### 5.2 性能要求
