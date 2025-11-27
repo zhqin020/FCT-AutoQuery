@@ -342,6 +342,15 @@ Examples:
 
         try:
             if args.command == "single":
+                # If not forcing, skip if case already exists in DB (avoid duplicate scraping)
+                try:
+                    if not self.force and self.exporter.case_exists(args.case_number):
+                        print(f"→ Skipping {args.case_number}: already in database")
+                        return
+                except Exception:
+                    # If existence check failed, proceed with scrape (best-effort)
+                    logger.debug(f"Existence check failed for {args.case_number}; proceeding to scrape")
+
                 case = self.scrape_single_case(args.case_number)
                 if case:
                     # Export the case and save to DB
