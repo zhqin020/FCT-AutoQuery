@@ -10,6 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 import shutil
+import os
+from typing import Dict
 
 
 def purge_output_year(output_dir: Path, year: int) -> Dict[str, int]:

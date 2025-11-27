@@ -2,6 +2,7 @@
 
 import argparse
 import sys
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -78,13 +79,62 @@ class FederalCourtScraperCLI:
                 self.consecutive_failures += 1
                 return None
 
-            # Scrape the case data
-            case = self.scraper.scrape_case_data(case_number)
+            # Scrape the case data with retries that re-run the search page
+            case = None
+            # Use runtime-configurable retry count from Config
+            try:
+                max_scrape_attempts = int(Config.get_max_retries())
+            except Exception:
+                max_scrape_attempts = 3
+            for attempt in range(1, max_scrape_attempts + 1):
+                try:
+                    case = self.scraper.scrape_case_data(case_number)
+                except Exception as e:
+                    logger.error(
+                        f"Exception during scrape_case_data attempt {attempt} for {case_number}: {e}",
+                        exc_info=True,
+                    )
+                    case = None
+
+                if case:
+                    logger.info(f"Successfully scraped case: {case.case_id} (attempt {attempt})")
+                    self.consecutive_failures = 0
+                    break
+                logger.warning(f"Scrape attempt {attempt} failed for case: {case_number}")
+                if attempt < max_scrape_attempts:
+                    # Re-run the search from the search page to recover from transient DOM state
+                    try:
+                        logger.info("Re-running search on search page before retry")
+                        # Re-initialize the page if necessary, then search
+                        try:
+                            if not getattr(self.scraper, "_initialized", False):
+                                self.scraper.initialize_page()
+                        except Exception as e:
+                            logger.debug(f"initialize_page during retry failed: {e}", exc_info=True)
+
+                        try:
+                            found = self.scraper.search_case(case_number)
+                        except Exception as e:
+                            logger.error(
+                                f"Exception during search_case retry for {case_number}: {e}",
+                                exc_info=True,
+                            )
+                            found = False
+
+                        if not found:
+                            logger.debug(
+                                "Re-search did not find the case; will re-initialize and retry",
+                                exc_info=False,
+                            )
+                            try:
+                                self.scraper.initialize_page()
+                            except Exception:
+                                pass
+                    except Exception as e:
+                        logger.debug(f"Error during retry search: {e}", exc_info=True)
+                    time.sleep(1)
 
             if case:
-                logger.info(f"Successfully scraped case: {case.case_id}")
-                self.consecutive_failures = 0  # Reset on success
-
                 # Immediately export per-case JSON and save to DB to ensure
                 # artifacts exist even if a later failure occurs.
                 try:
@@ -101,7 +151,7 @@ class FederalCourtScraperCLI:
 
                 return case
             else:
-                logger.warning(f"Failed to scrape case: {case_number}")
+                logger.warning(f"Failed to scrape case after {max_scrape_attempts} attempts: {case_number}")
                 self.consecutive_failures += 1
                 return None
 
@@ -371,6 +421,19 @@ Examples:
             action="store_true",
             help="Only operate on database records, not filesystem artifacts",
         )
+        purge_parser.add_argument(
+            "--sql-year-filter",
+            choices=("auto", "on", "off"),
+            default="auto",
+            help=(
+                "Control SQL-year-filter behavior: 'auto' try SQL then fallback, 'on' force SQL, 'off' force Python filter"
+            ),
+        )
+        purge_parser.add_argument(
+            "--force-files",
+            action="store_true",
+            help="If DB purge fails, proceed with filesystem purge when set (use with caution)",
+        )
 
         args = parser.parse_args()
 
@@ -492,6 +555,8 @@ Examples:
                     no_backup=no_backup,
                     files_only=files_only,
                     db_only=db_only,
+                    sql_year_filter=(None if args.sql_year_filter == "auto" else (True if args.sql_year_filter == "on" else False)),
+                    force_files=getattr(args, "force_files", False),
                 )
                 print("Purge summary written to:", result.get("audit_path"))
 

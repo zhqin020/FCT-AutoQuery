@@ -7,8 +7,6 @@
 ```
 初始化浏览器 → 设置速率限制器 → 配置日志系统 → 准备抓取服务
 ```
-
-### 2. URL验证流程
 ```
 输入URL → 域名验证 → 路径模式匹配 → 案件编号提取 → 验证通过/失败
 ```
@@ -16,13 +14,8 @@
 ### 3. 案件抓取流程
 ```
 URL验证 → 速率限制检查 → 浏览器导航 → 页面加载等待 → HTML内容提取 → 数据解析 → 案件对象创建
-```
 
 ### 4. 数据导出流程
-```
-案件数据验证 → 格式转换 → 文件写入 → 完整性检查 → 导出完成
-```
-
 ## 从法院网站抓取信息的详细过程
 
 ### 网站结构分析
@@ -30,47 +23,31 @@ URL验证 → 速率限制检查 → 浏览器导航 → 页面加载等待 → 
 - **英文路径**: `/en/court-files-and-decisions/`
 - **案件URL格式**: `https://www.fct-cf.ca/en/court-files-and-decisions/{CASE_NUMBER}`
 
-### 抓取步骤详解
-
-#### 步骤1: URL验证
 ```python
 # 使用URL验证器检查URL有效性
 is_valid, reason = URLValidator.validate_case_url(url)
-```
 
 **验证规则**:
 - 域名必须是 `www.fct-cf.ca` 或 `fct-cf.ca`
 - 路径必须包含 `/en/court-files-and-decisions`
 - URL必须是有效的HTTP/HTTPS链接
-
-#### 步骤2: 速率限制控制
-```python
-# 实现1秒间隔的请求限制
 wait_time = self.rate_limiter.wait_if_needed()
 ```
 
 **合规措施**:
 - 每次请求间隔至少1秒
 - 自动计算等待时间
-- 记录所有请求时间戳
 
 #### 步骤3: 浏览器自动化
-```python
-# 使用Selenium WebDriver控制Chrome浏览器
-driver = webdriver.Chrome(service=service, options=options)
 driver.get(url)
 ```
 
 **浏览器配置**:
 - 无头模式运行（可选）
 - 设置合适的窗口大小
-- 配置用户代理字符串
 - 禁用GPU加速（服务器环境）
 
 #### 步骤4: 页面内容提取
-```python
-# 等待页面加载完成后获取HTML内容
-time.sleep(2)  # 简单的等待实现
 html_content = driver.page_source
 ```
 
@@ -85,38 +62,12 @@ html_content = driver.page_source
 title = self._extract_case_title(html_content)
 case_number = self._extract_case_number(url, html_content)
 case_date = self._extract_case_date(html_content)
-```
-
-**解析方法**:
-- **标题提取**: 优先从`<title>`标签提取，其次从内容中查找案件编号
-- **案件编号**: 从URL路径或HTML内容中正则匹配 `IMM-[A-Z0-9-]+` 模式
-- **日期提取**: 识别多种日期格式 (YYYY-MM-DD, MM/DD/YYYY, YYYY/MM/DD)
 
 #### 步骤6: 数据验证与对象创建
 ```python
 # 创建标准化的案件数据对象
 case = Case.from_url(
-    url=url,
-    case_number=case_number,
-    title=title,
-    court="Federal Court",
-    case_date=case_date,
-    html_content=html_content
-)
-```
-
-**数据验证**:
-- 案件编号格式验证
-- HTML内容非空检查
-- 日期格式标准化
-- 数据完整性检查
-
-#### 步骤7: 错误处理与紧急停止
-```python
-# 监控连续错误并触发保护机制
-if self._consecutive_errors >= self._max_consecutive_errors:
     self.emergency_stop()
-```
 
 **保护机制**:
 - 连续5次错误触发紧急停止
@@ -142,11 +93,7 @@ python -m src.cli.main batch 2025 --max-cases 50 --force
 # 例如: `output/audit_20251125_005505.json`。此文件包含：
 # - `timestamp`: 运行时间戳
 # - `year`: 抓取的年度
-# - `scraped_count` / `skipped_count`
-# - `skipped`: 列表（当条目已在数据库中存在时）
-# - `export`: 导出结果（当有被抓取并导出时包含 `json` 路径和 `database` 汇总）
 #
-# 要在脚本层面做自定义导出，请使用 `src.services.export_service.ExportService` 在 Python API 中调用。
 ```
 
 ### 脚本 `scripts/auto_click_more.py`（快速烟雾/手工检查）
@@ -264,6 +211,17 @@ https://www.fct-cf.ca/en/court-files-and-decisions/IMM-12345-22,IMM-12345-22,Cas
 **Q: 浏览器启动失败**
 A: 确保已安装Chrome浏览器，或检查webdriver-manager配置
 
+### 新增配置键：`docket_parse_max_errors`
+
+- 目的：当解析 modal 中的 docket 行时，部分行可能因为页面重绘或异步内容导致解析失败。该配置控制在放弃并让上层重试之前，允许的最大解析错误行数。
+- 默认值：`3`（见 `src/lib/config.py:DEFAULT_DOCKET_PARSE_MAX_ERRORS`）
+- 配置位置：
+  - `config.private.toml` / `config.toml` 中的 `[app] docket_parse_max_errors = <n>`，或
+  - 环境变量 `FCT_DOCKET_PARSE_MAX_ERRORS`。
+- 行为：当解析错误次数超过该阈值时，解析器将中止当前 modal 的解析并抛出异常，CLI 层会重新从搜索页面发起一次新的检索并重试抓取（可配置的重试次数由 `app.max_retries` 管理）。
+
+此设置可减少保存部分/错误数据的风险，并允许在发生暂时性 DOM 问题时通过重新查询恢复。
+
 **Q: URL验证失败**
 A: 检查URL格式是否正确，域名是否为www.fct-cf.ca
 
@@ -278,3 +236,82 @@ A: 检查网络连接，确认目标网站是否可访问
 - INFO级别: 正常操作记录
 - WARNING级别: 潜在问题提醒
 - ERROR级别: 错误详情和堆栈跟踪
+
+### 完整参数索引（逐项）
+
+下面为项目中所有可用的命令行入口与参数做逐项索引，包含默认值和作用说明，便于在脚本和 CI 中精确调用。
+
+1) `python -m src.cli.main` （推荐的主 CLI）
+
+  - 全局选项:
+    - `--force` : 全局强制标志，影响 `single` / `batch` 子命令，使其在数据库已存在记录时仍然重新抓取（布尔开关）。
+
+  - 子命令 `single <case_number>` : 抓取单个案件
+    - `case_number` (位置参数): 例如 `IMM-12345-25`。
+    - `--force` : 强制重新抓取该案件。
+
+  - 子命令 `batch <year>` : 批量抓取
+    - `year` (位置参数): 目标年份，例如 `2025`。
+    - `--max-cases <n>` : 限制抓取数量
+    - `--force` : 强制重新抓取已存在的案件
+
+  - 子命令 `stats` : 显示统计
+    - `--year <year>` : 指定年份
+
+  - 子命令 `purge <year>` : 年度清理（破坏性）
+    - `year` (位置参数)
+    - `--dry-run` : 列出将要删除的项目（不会做任何删除）
+    - `--yes` : 非交互式确认（跳过提示）
+    - `--backup <path>` : 备份目标路径
+    - `--no-backup` : 跳过备份
+    - `--files-only` : 仅处理文件系统，不触及数据库
+    - `--db-only` : 仅处理数据库，不触及文件系统
+    - `--sql-year-filter on|off|auto` : 控制是否在 SQL 查询层使用 YEAR() 过滤（`auto` 默认尝试 SQL；失败回退到 Python 过滤）
+    - `--force-files` : 在 DB 删除失败时仍继续删除文件（需谨慎）
+
+  - 典型用法示例：
+    ```bash
+    # 抓取单个案件
+    python -m src.cli.main single IMM-12345-25
+
+    # 批量抓取 2025 年，最多 50 个案件
+    python -m src.cli.main batch 2025 --max-cases 50
+
+    # 先做 dry-run 审计，再执行真正删除（非交互）
+    python -m src.cli.main purge 2025 --dry-run
+    python -m src.cli.main purge 2025 --yes --force-files
+    ```
+
+2) `python main.py` （轻量/演示入口）
+
+  - 位置参数 `url`（可选）: 单个案件 URL，例如 `https://www.fct-cf.ca/en/court-files-and-decisions/IMM-12345-22`。
+  - 选项:
+    - `--batch <file>` : 指定包含 URL 的文件（每行一个 URL）
+    - `--output <dir>` : 输出目录（默认 `./output`）
+    - `--format json` : 导出格式（当前仅支持 `json`）
+    - `--headless` / `--no-headless` : 控制浏览器是否以无头模式运行（`--headless` 默认为启用）
+
+  - 示例：
+    ```bash
+    python main.py "https://www.fct-cf.ca/en/court-files-and-decisions/IMM-12345-22"
+    python main.py --batch urls.txt --output ./results --format json
+    ```
+
+3) 调试脚本 `scripts/auto_click_more.py`
+
+  - 常用参数:
+    - `--yes`, `-y` : 非交互式运行，跳过确认提示
+    - `--non-interactive` : 与 `--yes` 等价
+    - `--service-class <dotted_or_path:Class>` : 注入替代 Service 类（便于在 CI 中使用 FakeService）
+      - 支持 `package.module.ClassName` 或 `path/to/file.py:ClassName` 两种格式
+    - `--case <case_number>` : 指定要查询的案件编号（覆盖默认）
+
+  - 行为说明：脚本会尝试调用注入服务的 `fetch_case_and_docket(case, non_interactive)`，若实现则直接使用结构化结果并退出；否则使用浏览器驱动流程打开搜索、点击“More”、解析 modal、并把 JSON 写入 `output/`。
+
+4) 环境变量（有用的快捷配置）
+
+  - `AUTO_CONFIRM=1` : 旧的跳过确认方式（被命令行 `--yes` 覆盖）
+  - `CASE_NUMBER` : 当使用 `scripts/auto_click_more.py` 时作为默认 case
+  - 配置相关的环境变量详见上方配置键一节（例如 `FCT_OUTPUT_DIR`, `FCT_MAX_RETRIES`, `FCT_DOCKET_PARSE_MAX_ERRORS` 等）
+
+说明：以上参数来源于 `src/cli/main.py`、`main.py` 与 `scripts/auto_click_more.py` 的 argparse 定义，已经在本仓库代码中列出并在 docs 中同步。

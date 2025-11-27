@@ -43,9 +43,10 @@ DEFAULT_DB_NAME = "fct_db"
 DEFAULT_DB_USER = "fct_user"
 DEFAULT_DB_PASSWORD = "fctpass"
 
-DEFAULT_SAVE_MODAL_HTML = True
+DEFAULT_SAVE_MODAL_HTML = False
 DEFAULT_ENABLE_RUN_LOGGER = True
-DEFAULT_WRITE_AUDIT = True
+DEFAULT_WRITE_AUDIT = False
+DEFAULT_DOCKET_PARSE_MAX_ERRORS = 3
 
 
 def _load_toml_config() -> dict:
@@ -155,6 +156,14 @@ class Config:
             _get_from_config("app", "max_driver_restarts")
             or os.getenv("FCT_MAX_DRIVER_RESTARTS")
             or DEFAULT_MAX_DRIVER_RESTARTS
+        )
+
+    @classmethod
+    def get_docket_parse_max_errors(cls) -> int:
+        return int(
+            _get_from_config("app", "docket_parse_max_errors")
+            or os.getenv("FCT_DOCKET_PARSE_MAX_ERRORS")
+            or DEFAULT_DOCKET_PARSE_MAX_ERRORS
         )
 
     @classmethod
