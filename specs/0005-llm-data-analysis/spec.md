@@ -24,21 +24,24 @@
 ---
 
 ## 2. 数据源说明
-*   **输入格式**：采集输出的JSON 文件（数组结构）。
-*   **核心字段**：
-    *   `case_number`: 案件编号
-    *   `filing_date`: 立案日期
-    *   `title`: 案件标题
-    *   `office`: 法院办事处（如 Toronto, Vancouver）
-    *   `docket_entries`: 案卷记录列表（包含 `summary` 摘要和 `entry_date` 日期）
+*   **输入格式**：使用现有采集器导出的 JSON 文件（数组结构）。下游分析应直接重用导出格式，而非重新设计新的 case 对象。
+*   **导出器形状（参考 `ExportService` / `Case.to_dict()`）——核心字段**：
+    *   `case_id` / `case_number`: 案件编号（例如 `IMM-2-23`）
+    *   `filing_date` / `date`: 立案日期（ISO 格式 YYYY-MM-DD，当可用时）
+    *   `title` / `style_of_cause`: 案件标题
+    *   `office` / `court`: 法院办事处（如 `Toronto`, `Vancouver`）
+    *   `docket_entries`: 案卷记录数组（每项遵循 `DocketEntry.to_dict()`：含 `summary` 与 `entry_date`）
+    *   `html_content`, `scraped_at`, `url` 等字段可用于 LLM 上下文或审计
+
+注意：实现不得设计与导出器不兼容的新结构。所有 parser / rules / metrics 模块必须接受并处理导出器产生的 JSON（数组）作为输入。
 
 ---
 
 ## 3. 功能需求 (Functional Requirements)
 
 ### 3.1 数据清洗与预处理 (Data Preprocessing)
-*   **P0 (最高优先级)**: 解析 JSON 文件，处理日期格式（YYYY-MM-DD）。
-*   **P0**: 处理缺失数据（如无立案日期的记录需剔除或标记）。
+    *   **P0 (最高优先级)**: 解析导出器产生的 JSON 文件，处理并标准化所有日期字段为 ISO 格式（YYYY-MM-DD）。
+    *   **P0**: 处理缺失数据（如无 `filing_date` 的记录需标记并在统计中按规则处理；但不得假设不同的输入模式）。
 
 ### 3.2 案件分类逻辑 (Classification Logic)
 系统需支持两种分类模式：**快速模式（规则匹配）** 和 **精准模式（LLM分析）**。
@@ -58,8 +61,8 @@
 4.  **Ongoing (进行中)**: 无上述终局状态。
 
 ### 3.3 实体提取 (Entity Extraction) - **需使用 LLM**
-*   **P1**: **Visa Office (签证处)**: 从 Docket 文本中提取具体的签证中心地点（如 Beijing, Ankara, New Delhi），而非仅仅使用法院的 Office。
-*   **P2**: **Judge (法官)**: 提取做出最终裁决的法官姓名。
+*   **P1**: **Visa Office (签证处)**: 从 `docket_entries[].summary` 或 `html_content` 中提取签证处（如 `Beijing`, `Ankara`, `New Delhi`）；首选使用导出器提供的 `docket_entries` 字段作为 LLM /规则匹配的上下文。
+*   **P2**: **Judge (法官)**: 提取做出最终裁决的法官姓名（来自 `docket_entries[].summary`、`style_of_cause` 或 `html_content`）。
 
 ---
 
@@ -69,7 +72,7 @@
 需计算以下时间指标（单位：天）：
 *   **结案时长 (Time to Close)**: `结案日期` - `立案日期`（仅针对已结案）。
 *   **当前案龄 (Age of Case)**: `当前日期` - `立案日期`（仅针对进行中）。
-*   **Rule 9 等待期**: `立案日期` 到 `Rule 9 记录收到日期` 的时长（衡量移民局移交档案的速度）。
+*   **Rule 9 等待期**: `立案日期` 到 `Rule 9 记录收到日期` 的时长（衡量移民局移交档案的速度）。Rule 9 指示器应基于 `docket_entries[].summary` 的文本匹配（示例：包含 "Rule 9", "Rule 9(2)", "r.9" 等），并以 `entry_date` 为准。
 
 **统计维度**：
 *   平均值 (Mean)

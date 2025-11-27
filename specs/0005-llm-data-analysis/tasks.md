@@ -32,21 +32,21 @@
 
 ## Phase 3: User Story 1 - Rule-mode pipeline & basic reports (Priority: P1) 🎯 MVP
 
-**Goal**: Provide a fast, deterministic pipeline that parses raw JSON, applies keyword rules to classify case type/status, computes duration metrics, and emits CSV + summary JSON.
+**Goal**: Provide a fast, deterministic pipeline that parses the exporter JSON (array of `Case.to_dict()` objects), applies keyword rules to classify case type/status, computes duration metrics, and emits CSV + summary JSON.
 
-**Independent Test**: Run CLI with `--mode rule` on `tests/fixtures/0005_cases.json` and verify `output/federal_cases_0005_details.csv` and `output/federal_cases_0005_summary.json` are produced and contain expected columns.
+**Independent Test**: Run CLI with `--mode rule` on `tests/fixtures/0005_cases.json` (which reuses `ExportService` shape) and verify `output/federal_cases_0005_details.csv` and `output/federal_cases_0005_summary.json` are produced and contain expected columns.
 
 ### Tests (write first)
 
 - [ ] T013 [P] [US1] Add fixture `tests/fixtures/0005_cases.json` with 8-12 representative cases (path: `tests/fixtures/0005_cases.json`)
-- [ ] T014 [P] [US1] Add unit tests for parser: `tests/unit/test_parser_0005.py` (path: `tests/unit/test_parser_0005.py`)
-- [ ] T015 [P] [US1] Add unit tests for rules: `tests/unit/test_rules_0005.py` (path: `tests/unit/test_rules_0005.py`)
+- [ ] T014 [P] [US1] Add unit tests for parser: `tests/unit/test_parser_0005.py` (path: `tests/unit/test_parser_0005.py`) — tests must assert the parser accepts exporter JSON and extracts `case_number`, `filing_date`, and `docket_entries[].summary`.
+- [ ] T015 [P] [US1] Add unit tests for rules: `tests/unit/test_rules_0005.py` (path: `tests/unit/test_rules_0005.py`) — tests must use `tests/fixtures/0005_cases.json` and assert `Mandamus` detection via `style_of_cause` or `docket_entries[].summary`.
 - [ ] T016 [P] [US1] Add integration smoke test `tests/integration/test_pipeline_0005.py` that runs `cli.analyze` in rule mode (path: `tests/integration/test_pipeline_0005.py`)
 
 ### Implementation
 
-- [ ] T017 [US1] Implement `parse_cases(input_path)` in `src/fct_analysis/parser.py` to load JSON and normalize `filing_date` (path: `src/fct_analysis/parser.py`)
-- [ ] T018 [US1] Implement `classify_case_rule(case_obj)` in `src/fct_analysis/rules.py` using keyword rules for `Mandamus|compel|delay` and status priority (path: `src/fct_analysis/rules.py`)
+- [ ] T017 [US1] Implement `parse_cases(input_path)` in `src/fct_analysis/parser.py` to load exporter JSON (array of `Case.to_dict()` objects), normalize `filing_date` and `docket_entries[].entry_date`, and produce a normalized DataFrame.
+- [ ] T018 [US1] Implement `classify_case_rule(case_obj)` in `src/fct_analysis/rules.py` using keyword rules for `Mandamus|compel|delay` applied to `style_of_cause`, `title`, and `docket_entries[].summary`, following the status priority rules (path: `src/fct_analysis/rules.py`)
 - [ ] T019 [US1] Implement metrics: `compute_durations(df)` in `src/fct_analysis/metrics.py` producing `time_to_close`, `age_of_case`, `rule9_wait` fields (path: `src/fct_analysis/metrics.py`)
 - [ ] T020 [US1] Implement exporter: `write_case_details(df, out_csv)` and `write_summary(summary_obj, out_json)` in `src/fct_analysis/export.py` (path: `src/fct_analysis/export.py`)
 - [ ] T021 [US1] Implement CLI command `analyze --input <file> --mode rule --output-dir output/` in `src/fct_analysis/cli.py` wiring parser→rules→metrics→export (path: `src/fct_analysis/cli.py`)
