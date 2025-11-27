@@ -1,3 +1,10 @@
+import pytest
+
+
+@pytest.fixture
+def sample_fixture_path(tmp_path_factory):
+    # convenience fixture if tests prefer temporary copies
+    return None
 """Pytest configuration and fixtures."""
 
 from unittest.mock import MagicMock
