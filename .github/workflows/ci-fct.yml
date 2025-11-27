@@ -21,7 +21,7 @@ jobs:
 
       - name: Create `fct` conda environment and install dependencies
         run: |
-          conda create -n fct python=3.10 -y
+          conda create -n fct python=3.12 -y
           conda run -n fct pip install --upgrade pip
           if [ -f requirements.txt ]; then conda run -n fct pip install -r requirements.txt; fi
 

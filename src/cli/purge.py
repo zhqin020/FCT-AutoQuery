@@ -187,9 +187,11 @@ def purge_year(
     # this logic (skip files when DB fails unless forced).
     do_file_purge = (not dry_run) and (not db_only)
 
-    if db_failure and force_files:
-        audit.setdefault("notes", []).append("file purge forced by operator via --force-files despite DB errors")
-    elif db_failure:
+    # Record operator-forced file purge note when requested
+    if force_files:
+        audit.setdefault("notes", []).append("file purge forced by operator via --force-files")
+
+    if db_failure and not force_files:
         audit.setdefault("notes", []).append("DB purge failed; proceeding with file purge by default")
 
     if do_file_purge:
@@ -218,6 +220,19 @@ def purge_year(
             summary.setdefault("files_removed", {})["modal_html"] = modal_info
         except Exception as e:
             audit.setdefault("errors", []).append(f"modal_purge_failed: {e}")
+
+        # Aggregate output removals into a single `output` summary expected by tests
+        try:
+            top = del_info.get("output_top", {"removed_files": 0, "removed_dirs": 0})
+            sub = del_info.get("output_per_case", {"removed_files": 0, "removed_dirs": 0})
+            combined = {
+                "removed_files": int(top.get("removed_files", 0)) + int(sub.get("removed_files", 0)),
+                "removed_dirs": int(top.get("removed_dirs", 0)) + int(sub.get("removed_dirs", 0)),
+            }
+            summary.setdefault("files_removed", {})["output"] = combined
+            audit["files"]["output_removed_combined"] = combined
+        except Exception:
+            pass
     else:
         if not dry_run and not db_only and not db_success:
             audit.setdefault("errors", []).append("skipped_file_purge_due_to_db_failure")
