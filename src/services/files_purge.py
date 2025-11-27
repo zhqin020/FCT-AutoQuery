@@ -9,6 +9,53 @@ import tarfile
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+import shutil
+
+
+def purge_output_year(output_dir: Path, year: int) -> Dict[str, int]:
+    """Atomically remove the `output/<year>` directory by renaming then deleting.
+
+    Returns a dict with counts: {'removed_files': n, 'removed_dirs': m}
+    """
+    year_dir = output_dir / str(year)
+    if not year_dir.exists():
+        return {"removed_files": 0, "removed_dirs": 0}
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    temp_name = output_dir / f"{year}_to_delete_{ts}"
+    # Rename (atomic on same filesystem)
+    year_dir.replace(temp_name)
+
+    removed_files = 0
+    removed_dirs = 0
+    # Now remove recursively
+    for root, dirs, files in os.walk(temp_name):
+        removed_files += len(files)
+        removed_dirs += len(dirs)
+    shutil.rmtree(temp_name)
+
+    return {"removed_files": removed_files, "removed_dirs": removed_dirs}
+
+
+def remove_modal_html_for_year(logs_dir: Path, year: int) -> Dict[str, int]:
+    """Remove modal HTML files matching the year token in filename.
+
+    Returns counts {'removed': n, 'skipped': m}
+    """
+    removed = 0
+    skipped = 0
+    if not logs_dir.exists():
+        return {"removed": 0, "skipped": 0}
+    year_token = str(year)
+    for p in logs_dir.iterdir():
+        if p.is_file() and year_token in p.name and p.suffix.lower() in (".html", ".htm"):
+            try:
+                p.unlink()
+                removed += 1
+            except Exception:
+                skipped += 1
+    return {"removed": removed, "skipped": skipped}
+
 
 
 def backup_output_year(output_dir: Path, year: int, dest_dir: Optional[Path] = None) -> Path:

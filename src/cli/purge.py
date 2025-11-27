@@ -13,6 +13,9 @@ from typing import Any, Dict, List, Optional
 
 from src.lib.config import Config
 from src.services.files_purge import backup_output_year
+from src.services.files_purge import purge_output_year, remove_modal_html_for_year
+import os
+from typing import Dict
 
 
 def _find_output_files_for_year(output_dir: Path, year: int) -> List[Path]:
@@ -123,6 +126,22 @@ def purge_year(
         except Exception as e:
             audit.setdefault("errors", []).append(f"backup_failed: {e}")
             summary["backup_path"] = None
+
+    # If this is a real run, perform filesystem deletions (unless db_only)
+    if not dry_run and not db_only:
+        try:
+            del_info = purge_output_year(out_dir, year)
+            audit["files"]["output_removed"] = del_info
+            summary.setdefault("files_removed", {})["output"] = del_info
+        except Exception as e:
+            audit.setdefault("errors", []).append(f"output_purge_failed: {e}")
+
+        try:
+            modal_info = remove_modal_html_for_year(logs_path, year)
+            audit["files"]["modal_removed"] = modal_info
+            summary.setdefault("files_removed", {})["modal_html"] = modal_info
+        except Exception as e:
+            audit.setdefault("errors", []).append(f"modal_purge_failed: {e}")
 
     audit_path = _write_audit(audit, out_dir, year)
     summary["audit_path"] = str(audit_path)
