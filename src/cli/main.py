@@ -12,6 +12,7 @@ from src.services.case_scraper_service import CaseScraperService
 from src.services.export_service import ExportService
 from src.services.url_discovery_service import UrlDiscoveryService
 from src.lib.run_logger import RunLogger
+from src.cli.purge import purge_year
 
 logger = get_logger()
 
@@ -336,6 +337,41 @@ Examples:
             help="Year to show stats for (shows total if not specified)",
         )
 
+        # Purge command
+        purge_parser = subparsers.add_parser(
+            "purge", help="Purge data for a given year (destructive)"
+        )
+        purge_parser.add_argument("year", type=int, help="Year to purge")
+        purge_parser.add_argument(
+            "--dry-run",
+            action="store_true",
+            help="List items that would be deleted without performing deletion",
+        )
+        purge_parser.add_argument(
+            "--yes",
+            action="store_true",
+            help="Non-interactive confirmation to proceed with purge",
+        )
+        purge_parser.add_argument(
+            "--backup",
+            help="Optional backup path (if not provided, default backup location used)",
+        )
+        purge_parser.add_argument(
+            "--no-backup",
+            action="store_true",
+            help="Skip backup creation even if backups are enabled by default",
+        )
+        purge_parser.add_argument(
+            "--files-only",
+            action="store_true",
+            help="Only operate on filesystem artifacts, not DB",
+        )
+        purge_parser.add_argument(
+            "--db-only",
+            action="store_true",
+            help="Only operate on database records, not filesystem artifacts",
+        )
+
         args = parser.parse_args()
 
         # Set force flag on CLI object
@@ -431,6 +467,33 @@ Examples:
 
             elif args.command == "stats":
                 self.show_stats(args.year)
+            elif args.command == "purge":
+                # Purge flow: do dry-run first or ask for confirmation
+                year = args.year
+                dry_run = getattr(args, "dry_run", False)
+                no_backup = getattr(args, "no_backup", False)
+                backup = getattr(args, "backup", None)
+                files_only = getattr(args, "files_only", False)
+                db_only = getattr(args, "db_only", False)
+
+                if not dry_run and not args.yes:
+                    # Interactive confirmation required
+                    resp = input(
+                        f"This will permanently delete data for year {year}. Type 'YES' to continue: "
+                    )
+                    if resp.strip() != "YES":
+                        print("Purge cancelled")
+                        return
+
+                result = purge_year(
+                    year,
+                    dry_run=dry_run,
+                    backup=backup,
+                    no_backup=no_backup,
+                    files_only=files_only,
+                    db_only=db_only,
+                )
+                print("Purge summary written to:", result.get("audit_path"))
 
         except KeyboardInterrupt:
             logger.info("Operation cancelled by user")
