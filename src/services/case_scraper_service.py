@@ -7,6 +7,7 @@ from typing import Optional
 
 from selenium import webdriver
 from selenium.common.exceptions import NoSuchElementException
+from selenium.common.exceptions import StaleElementReferenceException
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
@@ -845,14 +846,63 @@ class CaseScraperService:
             if more_link is None and prefound_modal is None:
                 raise Exception("Could not find 'More' link/button for case")
 
-            # Try normal click first, then JS click fallback
-            try:
-                more_link.click()
-            except Exception:
+            # Try normal click first, then JS click fallback. Handle
+            # StaleElementReferenceException by re-finding the control and
+            # retrying a few times (the page may re-render while we inspect it).
+            click_attempts = 3
+            clicked = False
+            for attempt in range(click_attempts):
                 try:
-                    driver.execute_script("arguments[0].click();", more_link)
-                except Exception as click_err:
-                    raise click_err
+                    more_link.click()
+                    clicked = True
+                    break
+                except StaleElementReferenceException:
+                    logger.info(f"More element became stale on click attempt {attempt+1}, retrying")
+                    # Re-find the element before retrying
+                    more_link = None
+                    if target_row is not None:
+                        for xp in candidate_xpaths:
+                            try:
+                                more_link = target_row.find_element(By.XPATH, xp)
+                                logger.debug(f"Re-found More element via {xp}")
+                                break
+                            except Exception:
+                                continue
+                    if more_link is None:
+                        try:
+                            more_link = WebDriverWait(driver, 3).until(
+                                EC.element_to_be_clickable((By.LINK_TEXT, "More"))
+                            )
+                        except Exception:
+                            try:
+                                more_link = WebDriverWait(driver, 3).until(
+                                    EC.element_to_be_clickable(
+                                        (
+                                            By.XPATH,
+                                            "//a[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'more')]|//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'more')]",
+                                        )
+                                    )
+                                )
+                            except Exception:
+                                more_link = None
+                    time.sleep(1)
+                    continue
+                except Exception:
+                    try:
+                        driver.execute_script("arguments[0].click();", more_link)
+                        clicked = True
+                        break
+                    except StaleElementReferenceException:
+                        logger.info("More element became stale during JS click, retrying")
+                        # clear and let the loop re-find
+                        more_link = None
+                        time.sleep(1)
+                        continue
+                    except Exception as click_err:
+                        raise click_err
+
+            if not clicked:
+                raise Exception("Failed to click 'More' control after retries")
 
             # Wait for modal to appear. Accept several common modal patterns
             modal = None
@@ -924,15 +974,21 @@ class CaseScraperService:
                 safe_id = (header_case_id or case_number).replace("/", "_")
                 modal_path = logs / f"modal_{safe_id}_{ts}.html"
                 try:
-                    html = (
-                        modal.get_attribute("outerHTML")
-                        or modal.get_attribute("innerHTML")
-                        or ""
-                    )
-                    with open(modal_path, "w", encoding="utf-8") as mf:
-                        mf.write(html)
-                    case_data["html_path"] = str(modal_path)
-                    logger.info(f"Saved modal HTML to {modal_path}")
+                    # Respect configuration: allow disabling modal HTML capture
+                    from src.lib.config import Config
+
+                    if Config.get_save_modal_html():
+                        html = (
+                            modal.get_attribute("outerHTML")
+                            or modal.get_attribute("innerHTML")
+                            or ""
+                        )
+                        with open(modal_path, "w", encoding="utf-8") as mf:
+                            mf.write(html)
+                        case_data["html_path"] = str(modal_path)
+                        logger.info(f"Saved modal HTML to {modal_path}")
+                    else:
+                        case_data["html_path"] = None
                 except Exception:
                     case_data["html_path"] = None
             except Exception:
@@ -1598,14 +1654,19 @@ class CaseScraperService:
 
             # Choose best scored candidate (highest score); if none, fallback to first table
             if candidates:
+                # Prefer highest score, but if all scores are non-positive
+                # choose the candidate with the most data rows (more likely real data)
                 candidates.sort(key=lambda it: it[0], reverse=True)
                 best_score, best_table, best_nrows = candidates[0]
                 if best_score <= 0:
-                    # all candidates scored poorly (likely only templates); fallback to first table
+                    # choose the candidate that has the most rows as a better fallback
                     try:
-                        table = modal_element.find_element(By.XPATH, ".//table")
+                        _, table, _ = max(candidates, key=lambda it: it[2])
                     except Exception:
-                        table = None
+                        try:
+                            table = modal_element.find_element(By.XPATH, ".//table")
+                        except Exception:
+                            table = None
                 else:
                     table = best_table
             else:
@@ -1669,6 +1730,10 @@ class CaseScraperService:
             rows = table.find_elements(By.TAG_NAME, "tr")
             # If header row present, skip it when it contains th elements
             start_idx = 1 if rows and rows[0].find_elements(By.TAG_NAME, "th") else 0
+
+            # Track parsing errors and abort on repeated failures to avoid saving partial/incorrect data
+            parse_error_count = 0
+            max_parse_errors = Config.get_docket_parse_max_errors()
 
             for r_idx, row in enumerate(rows[start_idx:], 1):
                 try:
@@ -1743,7 +1808,15 @@ class CaseScraperService:
                     )
                     entries.append(entry)
                 except Exception as e:
-                    logger.warning(f"Error parsing docket entry row {r_idx}: {e}")
+                    # If element became stale, abort so higher-level logic can re-run the search and retry
+                    if isinstance(e, StaleElementReferenceException):
+                        logger.warning(f"StaleElementReference while parsing docket row {r_idx}: {e}")
+                        raise
+                    # Count other parsing errors and escalate if too many occur
+                    parse_error_count += 1
+                    logger.warning(f"Error parsing docket entry row {r_idx}: {e} (count={parse_error_count})")
+                    if parse_error_count >= max_parse_errors:
+                        raise Exception(f"Too many docket parsing errors ({parse_error_count}), aborting to allow retry")
                     continue
         except NoSuchElementException:
             logger.warning("No docket entries table found")

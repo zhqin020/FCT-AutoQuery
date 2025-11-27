@@ -2,6 +2,7 @@
 
 import argparse
 import sys
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -12,6 +13,7 @@ from src.services.case_scraper_service import CaseScraperService
 from src.services.export_service import ExportService
 from src.services.url_discovery_service import UrlDiscoveryService
 from src.lib.run_logger import RunLogger
+from src.cli.purge import purge_year
 
 logger = get_logger()
 
@@ -77,13 +79,62 @@ class FederalCourtScraperCLI:
                 self.consecutive_failures += 1
                 return None
 
-            # Scrape the case data
-            case = self.scraper.scrape_case_data(case_number)
+            # Scrape the case data with retries that re-run the search page
+            case = None
+            # Use runtime-configurable retry count from Config
+            try:
+                max_scrape_attempts = int(Config.get_max_retries())
+            except Exception:
+                max_scrape_attempts = 3
+            for attempt in range(1, max_scrape_attempts + 1):
+                try:
+                    case = self.scraper.scrape_case_data(case_number)
+                except Exception as e:
+                    logger.error(
+                        f"Exception during scrape_case_data attempt {attempt} for {case_number}: {e}",
+                        exc_info=True,
+                    )
+                    case = None
+
+                if case:
+                    logger.info(f"Successfully scraped case: {case.case_id} (attempt {attempt})")
+                    self.consecutive_failures = 0
+                    break
+                logger.warning(f"Scrape attempt {attempt} failed for case: {case_number}")
+                if attempt < max_scrape_attempts:
+                    # Re-run the search from the search page to recover from transient DOM state
+                    try:
+                        logger.info("Re-running search on search page before retry")
+                        # Re-initialize the page if necessary, then search
+                        try:
+                            if not getattr(self.scraper, "_initialized", False):
+                                self.scraper.initialize_page()
+                        except Exception as e:
+                            logger.debug(f"initialize_page during retry failed: {e}", exc_info=True)
+
+                        try:
+                            found = self.scraper.search_case(case_number)
+                        except Exception as e:
+                            logger.error(
+                                f"Exception during search_case retry for {case_number}: {e}",
+                                exc_info=True,
+                            )
+                            found = False
+
+                        if not found:
+                            logger.debug(
+                                "Re-search did not find the case; will re-initialize and retry",
+                                exc_info=False,
+                            )
+                            try:
+                                self.scraper.initialize_page()
+                            except Exception:
+                                pass
+                    except Exception as e:
+                        logger.debug(f"Error during retry search: {e}", exc_info=True)
+                    time.sleep(1)
 
             if case:
-                logger.info(f"Successfully scraped case: {case.case_id}")
-                self.consecutive_failures = 0  # Reset on success
-
                 # Immediately export per-case JSON and save to DB to ensure
                 # artifacts exist even if a later failure occurs.
                 try:
@@ -100,7 +151,7 @@ class FederalCourtScraperCLI:
 
                 return case
             else:
-                logger.warning(f"Failed to scrape case: {case_number}")
+                logger.warning(f"Failed to scrape case after {max_scrape_attempts} attempts: {case_number}")
                 self.consecutive_failures += 1
                 return None
 
@@ -147,9 +198,10 @@ class FederalCourtScraperCLI:
         processed = 0
         skipped = []
 
-        # Run-level logger to record per-case outcomes
-        run_logger = RunLogger()
-        run_logger.start()
+        # Run-level logger to record per-case outcomes (configurable)
+        run_logger = RunLogger() if Config.get_enable_run_logger() else None
+        if run_logger:
+            run_logger.start()
 
         # Get case numbers to process
         case_numbers = self.discovery.generate_case_numbers_from_last(year, max_cases)
@@ -170,10 +222,11 @@ class FederalCourtScraperCLI:
                     if not self.force and self.exporter.case_exists(case_number):
                         print(f"→ Skipping {case_number}: already in database")
                         skipped.append({"case_number": case_number, "status": "skipped"})
-                        try:
-                            run_logger.record_case(case_number, outcome="skipped", reason="exists_in_db")
-                        except Exception:
-                            pass
+                        if run_logger:
+                            try:
+                                run_logger.record_case(case_number, outcome="skipped", reason="exists_in_db")
+                            except Exception:
+                                pass
                         # still count as processed but not as a success
                         processed += 1
                         # Progress update every 10 cases
@@ -202,24 +255,27 @@ class FederalCourtScraperCLI:
                         cases.append(case)
                         consecutive_failures = 0
                         print(f"✓ Successfully scraped case {case.case_id}")
-                        try:
-                            run_logger.record_case(case_number, outcome="success", case_id=getattr(case, "case_id", None))
-                        except Exception:
-                            pass
+                        if run_logger:
+                            try:
+                                run_logger.record_case(case_number, outcome="success", case_id=getattr(case, "case_id", None))
+                            except Exception:
+                                pass
                     else:
                         consecutive_failures += 1
                         print(f"✗ Failed to scrape case {case_number}")
-                        try:
-                            run_logger.record_case(case_number, outcome="failed")
-                        except Exception:
-                            pass
+                        if run_logger:
+                            try:
+                                run_logger.record_case(case_number, outcome="failed")
+                            except Exception:
+                                pass
                 except Exception as e:
                     # Unexpected exception during scrape; record and continue
                     logger.error(f"Unhandled error scraping case {case_number}: {e}")
-                    try:
-                        run_logger.record_case(case_number, outcome="error", message=str(e))
-                    except Exception:
-                        pass
+                    if run_logger:
+                        try:
+                            run_logger.record_case(case_number, outcome="error", message=str(e))
+                        except Exception:
+                            pass
                     consecutive_failures += 1
 
                 processed += 1
@@ -243,11 +299,12 @@ class FederalCourtScraperCLI:
                     break
 
         finally:
-            try:
-                run_logger.finish()
-                logger.info(f"Run-level NDJSON written: {run_logger.path}")
-            except Exception:
-                pass
+            if run_logger:
+                try:
+                    run_logger.finish()
+                    logger.info(f"Run-level NDJSON written: {run_logger.path}")
+                except Exception:
+                    pass
 
         # Return scraped cases and skipped list for auditing
         return cases, skipped
@@ -330,6 +387,54 @@ Examples:
             help="Year to show stats for (shows total if not specified)",
         )
 
+        # Purge command
+        purge_parser = subparsers.add_parser(
+            "purge", help="Purge data for a given year (destructive)"
+        )
+        purge_parser.add_argument("year", type=int, help="Year to purge")
+        purge_parser.add_argument(
+            "--dry-run",
+            action="store_true",
+            help="List items that would be deleted without performing deletion",
+        )
+        purge_parser.add_argument(
+            "--yes",
+            action="store_true",
+            help="Non-interactive confirmation to proceed with purge",
+        )
+        purge_parser.add_argument(
+            "--backup",
+            help="Optional backup path (if not provided, default backup location used)",
+        )
+        purge_parser.add_argument(
+            "--no-backup",
+            action="store_true",
+            help="Skip backup creation even if backups are enabled by default",
+        )
+        purge_parser.add_argument(
+            "--files-only",
+            action="store_true",
+            help="Only operate on filesystem artifacts, not DB",
+        )
+        purge_parser.add_argument(
+            "--db-only",
+            action="store_true",
+            help="Only operate on database records, not filesystem artifacts",
+        )
+        purge_parser.add_argument(
+            "--sql-year-filter",
+            choices=("auto", "on", "off"),
+            default="auto",
+            help=(
+                "Control SQL-year-filter behavior: 'auto' try SQL then fallback, 'on' force SQL, 'off' force Python filter"
+            ),
+        )
+        purge_parser.add_argument(
+            "--force-files",
+            action="store_true",
+            help="If DB purge fails, proceed with filesystem purge when set (use with caution)",
+        )
+
         args = parser.parse_args()
 
         # Set force flag on CLI object
@@ -342,6 +447,15 @@ Examples:
 
         try:
             if args.command == "single":
+                # If not forcing, skip if case already exists in DB (avoid duplicate scraping)
+                try:
+                    if not self.force and self.exporter.case_exists(args.case_number):
+                        print(f"→ Skipping {args.case_number}: already in database")
+                        return
+                except Exception:
+                    # If existence check failed, proceed with scrape (best-effort)
+                    logger.debug(f"Existence check failed for {args.case_number}; proceeding to scrape")
+
                 case = self.scrape_single_case(args.case_number)
                 if case:
                     # Export the case and save to DB
@@ -389,15 +503,18 @@ Examples:
                         "export": export_result,
                     }
 
-                    # Write audit file to output/
-                    import json
-                    from pathlib import Path
+                    # Write audit file to output/ (configurable)
+                    if Config.get_write_audit():
+                        import json
+                        from pathlib import Path
 
-                    out_dir = Path("output")
-                    out_dir.mkdir(parents=True, exist_ok=True)
-                    audit_path = out_dir / f"audit_{timestamp}.json"
-                    with audit_path.open("w", encoding="utf-8") as fh:
-                        json.dump(audit, fh, indent=2)
+                        out_dir = Path("output")
+                        out_dir.mkdir(parents=True, exist_ok=True)
+                        audit_path = out_dir / f"audit_{timestamp}.json"
+                        with audit_path.open("w", encoding="utf-8") as fh:
+                            json.dump(audit, fh, indent=2)
+                    else:
+                        audit_path = None
 
                     print(f"\nBatch scrape complete:")
                     print(f"  Cases scraped: {len(scraped_cases)}")
@@ -413,6 +530,35 @@ Examples:
 
             elif args.command == "stats":
                 self.show_stats(args.year)
+            elif args.command == "purge":
+                # Purge flow: do dry-run first or ask for confirmation
+                year = args.year
+                dry_run = getattr(args, "dry_run", False)
+                no_backup = getattr(args, "no_backup", False)
+                backup = getattr(args, "backup", None)
+                files_only = getattr(args, "files_only", False)
+                db_only = getattr(args, "db_only", False)
+
+                if not dry_run and not args.yes:
+                    # Interactive confirmation required
+                    resp = input(
+                        f"This will permanently delete data for year {year}. Type 'YES' to continue: "
+                    )
+                    if resp.strip() != "YES":
+                        print("Purge cancelled")
+                        return
+
+                result = purge_year(
+                    year,
+                    dry_run=dry_run,
+                    backup=backup,
+                    no_backup=no_backup,
+                    files_only=files_only,
+                    db_only=db_only,
+                    sql_year_filter=(None if args.sql_year_filter == "auto" else (True if args.sql_year_filter == "on" else False)),
+                    force_files=getattr(args, "force_files", False),
+                )
+                print("Purge summary written to:", result.get("audit_path"))
 
         except KeyboardInterrupt:
             logger.info("Operation cancelled by user")

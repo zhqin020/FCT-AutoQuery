@@ -1,0 +1,32 @@
+name: 'Constitution Check'
+
+on:
+  push:
+    paths:
+      - 'CONSTITUTION.md'
+      - '.github/workflows/**'
+  pull_request:
+    paths:
+      - 'CONSTITUTION.md'
+      - '.github/workflows/**'
+
+jobs:
+  check-constitution:
+    runs-on: ubuntu-latest
+    name: Verify CONSTITUTION.md contains required activation rule
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check for `conda activate fct` requirement
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -i "conda activate fct" CONSTITUTION.md >/dev/null; then
+            echo "Found required environment activation text in CONSTITUTION.md"
+            exit 0
+          else
+            echo "ERROR: CONSTITUTION.md must include the phrase 'conda activate fct' as the highest-priority environment activation requirement." >&2
+            echo "Please update CONSTITUTION.md to include the rule before merging." >&2
+            exit 1
+          fi
