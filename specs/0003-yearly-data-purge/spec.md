@@ -26,7 +26,7 @@ An operator needs to permanently remove all data for year 2023.
 
 **Why this priority**: Data removal is required for compliance/data lifecycle management and to free storage.
 
-**Independent Test**: Run `python -m src.cli.main purge 2023 --dry-run` to verify what would be deleted; then run `python -m src.cli.main purge 2023 --yes` on a test environment and assert that DB rows, `output/2023`, and log artifacts are removed and an audit file exists.
+**Independent Test**: Run the CLI tool in `--dry-run` mode to verify what would be deleted; then run the CLI in confirmed mode (non-interactive confirm flag) on a test environment and assert that DB rows, `output/2023`, and log artifacts are removed and an audit file exists.
 
 **Acceptance Scenarios**:
 
@@ -41,7 +41,7 @@ An automated job should be able to run the purge non-interactively at off-peak h
 
 **Why this priority**: Enables regular maintenance without human intervention.
 
-**Independent Test**: Run the CLI with `--yes` and a `--backup` option from a headless environment and assert no interactive prompts are emitted and expected artifacts are removed/archived.
+**Independent Test**: Invoke the CLI with non-interactive confirmation and a `--backup` option from an automated job and assert no interactive prompts are emitted and expected artifacts are removed/archived.
 
 **Acceptance Scenarios**:
 
@@ -55,7 +55,7 @@ Operators sometimes want to purge only files (not DB) or only DB rows; the CLI s
 
 **Why this priority**: Provides flexibility and reduces risk for partial workflows.
 
-**Independent Test**: Run `purge YEAR --files-only --dry-run` and verify DB is untouched while files listed for deletion match expectations.
+**Independent Test**: Run the CLI tool with the scoped flags `--files-only --dry-run` and verify DB is untouched while files listed for deletion match expectations.
 
 **Acceptance Scenarios**:
 
@@ -80,11 +80,11 @@ Operators sometimes want to purge only files (not DB) or only DB rows; the CLI s
 - **FR-007**: The command MUST remove filesystem artifacts matching the year: `output/<YEAR>/**` and `logs/` files whose names contain the year or whose metadata indicate they relate to that year (e.g., run_logger NDJSON entries referencing that year). Files not owned/accessible MUST be reported but not cause whole-run failure.
 - **FR-008**: The command MUST exit with a non-zero status when critical failures occur (e.g., DB delete partially applied and rollback not possible), and write a partial audit indicating what succeeded/failed.
 
-*Marked unclear requirements (need operator decision):*
+*Clarifications and decisions (applied):*
 
-- **FR-009**: [NEEDS CLARIFICATION: Backup policy] Should the purge command create a backup by default before deletion, or only when `--backup` is explicitly provided? (See Clarification Q1)
-- **FR-010**: [NEEDS CLARIFICATION: DB table scope] Which exact database tables and records must be purged for a given year (e.g., `cases`, `docket_entries`, `attachments`, audit tables)? Provide canonical SQL `WHERE` logic or table list. (See Clarification Q2)
-- **FR-011**: [NEEDS CLARIFICATION: Log selection] Should the purge remove only `run_logger` NDJSON files and modal HTML files that encode the year in filename, or should it parse NDJSON to remove only entries referencing that year and keep the file if it contains other years? (See Clarification Q3)
+- **FR-009**: Backup policy — Backups are created by default before deletion (operator choice: A). Implication: purge will attempt to create backups automatically unless `--no-backup` is provided; backups will be stored in the configured backup location or the provided `--backup` path. This increases run time and storage usage but simplifies recovery.
+- **FR-010**: Database scope — Purge `cases` and cascade to related tables (operator choice: A). Implication: the implementation will remove `cases` for the target year and rely on DB cascade rules or explicit cascaded deletes for `docket_entries` and attachments to ensure referential integrity.
+- **FR-011**: Log selection strategy — Remove modal HTML files by filename only and leave run NDJSON files untouched (operator choice: C). Implication: modal HTML artifacts will be removed by filename matching for the year; run-level NDJSON files will be preserved to avoid complex in-place edits to log files, and audit will note any references to removed HTML.
 
 ### Key Entities *(include if feature involves data)*
 

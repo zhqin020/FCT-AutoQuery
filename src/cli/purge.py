@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from src.lib.config import Config
+from src.services.files_purge import backup_output_year
 
 
 def _find_output_files_for_year(output_dir: Path, year: int) -> List[Path]:
@@ -111,6 +112,17 @@ def purge_year(
         "db": summary["db"],
         "notes": "dry_run only; no deletions performed by this implementation",
     }
+
+    # If this is a real run (not dry-run) and backups are enabled, create backup
+    if not dry_run and not no_backup:
+        try:
+            dest = Path(backup) if backup else None
+            archive = backup_output_year(out_dir, year, dest)
+            audit["backup_created"] = str(archive)
+            summary["backup_path"] = str(archive)
+        except Exception as e:
+            audit.setdefault("errors", []).append(f"backup_failed: {e}")
+            summary["backup_path"] = None
 
     audit_path = _write_audit(audit, out_dir, year)
     summary["audit_path"] = str(audit_path)
