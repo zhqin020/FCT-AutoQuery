@@ -224,3 +224,5 @@ output/
 *.csv
 *.json
 !contracts/*.json
+
+token/
