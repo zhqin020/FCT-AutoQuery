@@ -12,6 +12,7 @@ from src.models.case import Case
 from src.services.case_scraper_service import CaseScraperService
 from src.services.export_service import ExportService
 from src.services.url_discovery_service import UrlDiscoveryService
+from src.services.batch_service import BatchService
 from src.lib.run_logger import RunLogger
 from src.cli.purge import purge_year
 
@@ -179,7 +180,7 @@ class FederalCourtScraperCLI:
         except Exception:
             pass
     def scrape_batch_cases(
-        self, year: int, max_cases: Optional[int] = None
+        self, year: int, max_cases: Optional[int] = None, start: Optional[int] = None
     ) -> tuple[list, list]:
         """
         Scrape multiple cases for a given year.
@@ -203,8 +204,12 @@ class FederalCourtScraperCLI:
         if run_logger:
             run_logger.start()
 
-        # Get case numbers to process
-        case_numbers = self.discovery.generate_case_numbers_from_last(year, max_cases)
+        # Get case numbers to process. If a start index is provided and the discovery
+        # service supports generation from a start, use that method.
+        if start is not None and hasattr(self.discovery, "generate_case_numbers_from_start"):
+            case_numbers = self.discovery.generate_case_numbers_from_start(year, start, max_cases)
+        else:
+            case_numbers = self.discovery.generate_case_numbers_from_last(year, max_cases)
         total_to_process = len(case_numbers)
 
         print(f"Processing {total_to_process} case numbers for year {year}...")
@@ -372,11 +377,61 @@ Examples:
         batch_parser.add_argument(
             "--max-cases", type=int, help="Maximum number of cases to scrape"
         )
+        batch_parser.add_argument(
+            "--start",
+            type=int,
+            default=1,
+            help="Start numeric id (default 1). Example: --start 30 starts at IMM-30-<yy>",
+        )
         # Accept --force after the 'batch' subcommand as well
         batch_parser.add_argument(
             "--force",
             action="store_true",
             help="Force re-scraping of cases even if they exist in the database",
+        )
+
+        # Probe command: find an approximate upper numeric id for a given year
+        probe_parser = subparsers.add_parser(
+            "probe", help="Probe numeric IDs to discover an approximate upper bound"
+        )
+        probe_parser.add_argument("year", type=int, help="Year to probe (two-digit suffix used in case numbers)")
+        probe_parser.add_argument(
+            "--start", type=int, default=1, help="Starting numeric id for probing (default: 1)"
+        )
+        probe_parser.add_argument(
+            "--initial-high",
+            type=int,
+            default=1000,
+            help="Initial high guess for exponential probing (default: 1000)",
+        )
+        probe_parser.add_argument(
+            "--probe-budget",
+            type=int,
+            default=200,
+            help="Maximum number of probes allowed (default: 200)",
+        )
+        probe_parser.add_argument(
+            "--max-limit",
+            type=int,
+            default=100000,
+            help="Hard upper limit for numeric ids (default: 100000)",
+        )
+        probe_parser.add_argument(
+            "--coarse-step",
+            type=int,
+            default=100,
+            help="Coarse backward scan step (default: 100)",
+        )
+        probe_parser.add_argument(
+            "--refine-range",
+            type=int,
+            default=200,
+            help="Forward refinement window (default: 200)",
+        )
+        probe_parser.add_argument(
+            "--live",
+            action="store_true",
+            help="Perform live HTTP probing using the scraper (use with caution)",
         )
 
         # Stats command
@@ -480,8 +535,58 @@ Examples:
                     sys.exit(1)
 
                 scraped_cases, skipped = self.scrape_batch_cases(
-                    args.year, args.max_cases
+                    args.year, args.max_cases, start=getattr(args, "start", None)
                 )
+            elif args.command == "probe":
+                # Probe CLI: will run the probing algorithm. By default this is a dry-run that
+                # prints parameters; to perform real HTTP probes pass --live.
+                if getattr(args, "live", False):
+                    # Live probing: create a scraper and use it to search for constructed case numbers.
+                    try:
+                        scraper = CaseScraperService(headless=True)
+                        # initialize page for faster repeated searches
+                        try:
+                            scraper.initialize_page()
+                        except Exception:
+                            pass
+
+                        def check_case_exists(n: int) -> bool:
+                            # Build case number using IMM-<n>-<yy> pattern by default
+                            try:
+                                yy = str(args.year)[-2:]
+                                case_number = f"IMM-{n}-{yy}"
+                                found = scraper.search_case(case_number)
+                                return bool(found)
+                            except Exception:
+                                return False
+
+                        print("Starting live probe (this will perform HTTP requests).")
+                    except Exception as e:
+                        print(f"Failed to initialize live scraper for probing: {e}")
+                        sys.exit(1)
+                else:
+                    # Dry-run adapter: warn and create a faux-check that always returns False so
+                    # the algorithm will exercise growth behavior without making network calls.
+                    def check_case_exists(n: int) -> bool:
+                        print(f"[dry-run] would check ID: {n}")
+                        return False
+
+                # Run the probe
+                upper, probes = BatchService.find_upper_bound(
+                    check_case_exists=check_case_exists,
+                    start=getattr(args, "start", 1),
+                    initial_high=getattr(args, "initial_high", 1000),
+                    max_limit=getattr(args, "max_limit", 100000),
+                    coarse_step=getattr(args, "coarse_step", 100),
+                    refine_range=getattr(args, "refine_range", 200),
+                    probe_budget=getattr(args, "probe_budget", 200),
+                )
+
+                print("\nProbe result:")
+                print(f"  Approx upper numeric id: {upper}")
+                print(f"  Probes used: {probes}")
+                # Stop processing after probe results — do not fall through to batch audit/export logic
+                return
                 if scraped_cases or skipped:
                     # Export scraped cases and save to DB (only if there are scraped cases)
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

@@ -26,6 +26,39 @@ from src.models.docket_entry import DocketEntry
 logger = get_logger()
 
 
+def _parse_date_str(s: str):
+    """Parse a date string into a date object or return None.
+
+    This function mirrors the parsing logic previously embedded inside
+    `_extract_case_header` and is extracted to allow unit testing.
+    """
+    if not s:
+        return None
+    s = s.strip()
+    # Try ISO first
+    try:
+        return date.fromisoformat(s)
+    except Exception:
+        pass
+
+    # Try common formats
+    fmts = [
+        "%Y-%m-%d",
+        "%d-%m-%Y",
+        "%d/%m/%Y",
+        "%B %d, %Y",
+        "%d %B %Y",
+        "%Y/%m/%d",
+    ]
+    for fmt in fmts:
+        try:
+            return datetime.strptime(s, fmt).date()
+        except Exception:
+            continue
+
+    return None
+
+
 class CaseScraperService:
     """Service for scraping Federal Court cases using search form."""
 
@@ -376,6 +409,39 @@ class CaseScraperService:
         except Exception as e:
             logger.exception(f"Failed to restart WebDriver: {e}")
             raise
+
+    def _parse_label_value_table(self, modal_element, label_variants: dict) -> dict:
+        """Parse tables where first cell is label and second cell is value.
+
+        Returns a dict of canonical fields found.
+        """
+        data_out = {}
+        try:
+            tables = modal_element.find_elements(By.XPATH, ".//table")
+            for t in tables:
+                try:
+                    rows = t.find_elements(By.TAG_NAME, "tr")
+                    for r in rows:
+                        try:
+                            cells = r.find_elements(By.TAG_NAME, "td")
+                            if len(cells) >= 2:
+                                label = cells[0].text.strip().lower()
+                                val = cells[1].text.strip()
+                                for key, fld in label_variants.items():
+                                    if key in label:
+                                        if fld == "filing_date":
+                                            data_out[fld] = _parse_date_str(val)
+                                        else:
+                                            data_out[fld] = val or None
+                                        break
+                        except Exception:
+                            continue
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        return data_out
 
     def search_case(self, case_number: str) -> bool:
         """Search for a specific case number.
@@ -1158,56 +1224,14 @@ class CaseScraperService:
             "language": "language",
         }
 
-        def parse_date_str(s: str):
-            if not s:
-                return None
-            s = s.strip()
-            # Try ISO first
-            try:
-                return date.fromisoformat(s)
-            except Exception:
-                pass
-
-            # Try common formats
-            fmts = [
-                "%Y-%m-%d",
-                "%d-%m-%Y",
-                "%d/%m/%Y",
-                "%B %d, %Y",
-                "%d %B %Y",
-                "%Y/%m/%d",
-            ]
-            for fmt in fmts:
-                try:
-                    return datetime.strptime(s, fmt).date()
-                except Exception:
-                    continue
-
-            return None
+        # Use module-level date parser for consistency and testability
+        from src.services.case_scraper_service import _parse_date_str  # type: ignore
 
         # Strategy 1: look for table rows where first cell is label and second cell is value
         try:
-            tables = modal_element.find_elements(By.XPATH, ".//table")
-            for t in tables:
-                try:
-                    rows = t.find_elements(By.TAG_NAME, "tr")
-                    for r in rows:
-                        try:
-                            cells = r.find_elements(By.TAG_NAME, "td")
-                            if len(cells) >= 2:
-                                label = cells[0].text.strip().lower()
-                                val = cells[1].text.strip()
-                                for key, fld in label_variants.items():
-                                    if key in label:
-                                        if fld == "filing_date":
-                                            data[fld] = parse_date_str(val)
-                                        else:
-                                            data[fld] = val or None
-                                        break
-                        except Exception:
-                            continue
-                except Exception:
-                    continue
+            parsed = self._parse_label_value_table(modal_element, label_variants)
+            for k, v in parsed.items():
+                data[k] = v
         except Exception:
             pass
 
@@ -1222,7 +1246,7 @@ class CaseScraperService:
                     for key, fld in label_variants.items():
                         if key in key_text:
                             if fld == "filing_date":
-                                data[fld] = parse_date_str(val)
+                                data[fld] = _parse_date_str(val)
                             else:
                                 data[fld] = val or None
                             break
@@ -1277,7 +1301,7 @@ class CaseScraperService:
                     for key, fld in sorted_labels:
                         if key == label or key in label:
                             if fld == "filing_date":
-                                data[fld] = parse_date_str(sval)
+                                data[fld] = _parse_date_str(sval)
                             else:
                                 data[fld] = sval or None
                             break

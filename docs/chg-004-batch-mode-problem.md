@@ -6,7 +6,7 @@
 我需要用python程序自动生成编号，依次查询，但是要检测到最后一个编号，以及中间跳空的区间，避免无限测试被网站视为恶意攻击。
 
 需要对现有的查询进行修改，尽量降低对网站的无效访问，尽快探测到边界
-
+pytest --cov=src --cov-report=term --cov-report=html:coverage_html --cov-report=xml:coverage.xml -q
 # Summary
 -------
 批量采集有以下问题需要解决：
