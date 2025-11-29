@@ -14,6 +14,7 @@ from src.services.export_service import ExportService
 from src.services.url_discovery_service import UrlDiscoveryService
 from src.services.batch_service import BatchService
 from src.lib.run_logger import RunLogger
+from metrics_emitter import emit_metric
 from src.cli.purge import purge_year
 from src.lib.rate_limiter import EthicalRateLimiter
 
@@ -64,6 +65,12 @@ class FederalCourtScraperCLI:
             return None
 
         logger.info(f"Starting scrape of case: {case_number}")
+        # Emit job start metric (timestamped) and record start time for duration
+        job_start_ts = time.time()
+        try:
+            emit_metric("batch.job.start", job_start_ts)
+        except Exception:
+            pass
 
         try:
             # Lazily create scraper if not initialized
@@ -116,6 +123,12 @@ class FederalCourtScraperCLI:
                     self.consecutive_failures = 0
                     try:
                         self.rate_limiter.reset_failures()
+                    except Exception:
+                        pass
+                    # Emit job success metrics: duration and retry count
+                    try:
+                        emit_metric("batch.job.duration_seconds", time.time() - job_start_ts)
+                        emit_metric("batch.job.retry_count", float(attempt))
                     except Exception:
                         pass
                     break
@@ -184,6 +197,12 @@ class FederalCourtScraperCLI:
                 except Exception:
                     time.sleep(0.1)
                 self.consecutive_failures += 1
+                # Emit job failure metrics: duration and retry count
+                try:
+                    emit_metric("batch.job.duration_seconds", time.time() - job_start_ts)
+                    emit_metric("batch.job.retry_count", float(max_scrape_attempts))
+                except Exception:
+                    pass
                 return None
 
         except Exception as e:
@@ -223,7 +242,11 @@ class FederalCourtScraperCLI:
             List of scraped Case objects
         """
         logger.info(f"Starting batch scrape for year {year}")
-
+        run_start_ts = time.time()
+        try:
+            emit_metric("batch.run.start", run_start_ts)
+        except Exception:
+            pass
         cases = []
         consecutive_failures = 0
         processed = 0
@@ -300,12 +323,14 @@ class FederalCourtScraperCLI:
                             except Exception:
                                 pass
                     else:
-                        # record transient failure/backoff
+                        # `scrape_single_case` already records/backoffs on failure.
+                        # Avoid double-calling `record_failure()` here which can
+                        # exponentially increase delays (causing multi-10s gaps).
+                        # Use a short pause to avoid tight retry loops.
                         try:
-                            delay = self.rate_limiter.record_failure()
-                            time.sleep(delay)
-                        except Exception:
                             time.sleep(0.1)
+                        except Exception:
+                            pass
                         consecutive_failures += 1
                         print(f"✗ Failed to scrape case {case_number}")
                         if run_logger:
@@ -351,6 +376,17 @@ class FederalCourtScraperCLI:
                 except Exception:
                     pass
 
+            # Emit run-level metrics: duration and failure rate
+            try:
+                run_duration = time.time() - run_start_ts
+                emit_metric("batch.run.duration_seconds", run_duration)
+                processed = processed if 'processed' in locals() else 0
+                failures = processed - len(cases) if processed else 0
+                failure_rate = (failures / processed) if processed else 0.0
+                emit_metric("batch.run.failure_rate", float(failure_rate))
+            except Exception:
+                pass
+
         # Return scraped cases and skipped list for auditing
         return cases, skipped
 
@@ -376,22 +412,46 @@ class FederalCourtScraperCLI:
             description="Federal Court Case Scraper",
             formatter_class=argparse.RawDescriptionHelpFormatter,
             epilog="""
-Examples:
-  # Scrape a single case
-  python -m src.cli.main single IMM-12345-25
-            # Do not initialize browser here; initialize lazily in `scrape_single_case`
-  # Scrape batch cases for 2025
-  python -m src.cli.main batch 2025 --max-cases 10
+Examples (expanded):
+  # Scrape a single case (force re-scrape)
+  python -m src.cli.main single IMM-12345-25 --force
 
-  # Show statistics
-  python -m src.cli.main stats --year 2025
-            """,
+  # Batch: start from numeric id 30 and scrape up to 10 cases
+  python -m src.cli.main batch 2025 --start 30 --max-cases 10
+
+  # Batch with tuned rate and backoff (faster but polite)
+  python -m src.cli.main batch 2025 --max-cases 100 --rate-interval 0.5 --backoff-factor 1.5
+
+  # Probe (dry-run; no network calls)
+  python -m src.cli.main probe 2025
+
+  # Probe (live; performs HTTP requests — use with caution)
+  python -m src.cli.main probe 2025 --live --initial-high 2000
+
+  # Purge dry-run (audit only)
+  python -m src.cli.main purge 2024 --dry-run
+
+  # Purge actual run (destructive) with backup
+  python -m src.cli.main purge 2024 --yes --backup /tmp/fct_backup_2024.tar.gz
+
+Notes:
+  - Use `--dry-run` to validate purge actions before running destructive operations.
+  - Probe `--live` will perform network calls; respect rate limits and legal constraints.
+""",
         )
 
         subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
         # Single case command
-        single_parser = subparsers.add_parser("single", help="Scrape a single case")
+        single_parser = subparsers.add_parser(
+            "single",
+            help="Scrape a single case",
+            description=(
+                "Scrape a single Federal Court case by case number (e.g., IMM-12345-25). "
+                "This command initializes the scraper lazily and will export/save the result. "
+                "Use --force to re-scrape even if the case exists in the database."
+            ),
+        )
         single_parser.add_argument(
             "case_number", help="Case number (e.g., IMM-12345-25)"
         )
@@ -414,24 +474,30 @@ Examples:
             "--rate-interval",
             type=float,
             default=Config.get_rate_limit_seconds(),
-            help="Fixed interval in seconds between requests (default from config)",
+            help="Fixed interval in seconds between requests (default: %(default)s)",
         )
         parser.add_argument(
             "--backoff-factor",
             type=float,
             default=Config.get_backoff_factor(),
-            help="Exponential backoff base multiplier for failures (default from config)",
+            help="Exponential backoff base multiplier for failures (default: %(default)s)",
         )
         parser.add_argument(
             "--max-backoff-seconds",
             type=float,
             default=Config.get_max_backoff_seconds(),
-            help="Maximum backoff delay in seconds (default from config)",
+            help="Maximum backoff delay in seconds (default: %(default)s)",
         )
 
         # Batch command
         batch_parser = subparsers.add_parser(
-            "batch", help="Scrape multiple cases for a year"
+            "batch",
+            help="Scrape multiple cases for a year",
+            description=(
+                "Batch-scrape multiple cases for a given year. The discovery service will "
+                "generate case numbers; use --start and --max-cases to bound the run. "
+                "Defaults are read from configuration where applicable."
+            ),
         )
         batch_parser.add_argument("year", type=int, help="Year to scrape cases for")
         batch_parser.add_argument(
@@ -441,7 +507,7 @@ Examples:
             "--start",
             type=int,
             default=1,
-            help="Start numeric id (default 1). Example: --start 30 starts at IMM-30-<yy>",
+            help="Start numeric id (default: %(default)s). Example: --start 30 starts at IMM-30-<yy>",
         )
         # Accept --force after the 'batch' subcommand as well
         batch_parser.add_argument(
@@ -452,41 +518,46 @@ Examples:
 
         # Probe command: find an approximate upper numeric id for a given year
         probe_parser = subparsers.add_parser(
-            "probe", help="Probe numeric IDs to discover an approximate upper bound"
+            "probe",
+            help="Probe numeric IDs to discover an approximate upper bound",
+            description=(
+                "Run an exponential probe to discover an approximate upper numeric id for a year. "
+                "By default this is a dry-run (no network). Use --live to perform actual requests (use with caution)."
+            ),
         )
         probe_parser.add_argument("year", type=int, help="Year to probe (two-digit suffix used in case numbers)")
         probe_parser.add_argument(
-            "--start", type=int, default=1, help="Starting numeric id for probing (default: 1)"
+            "--start", type=int, default=1, help="Starting numeric id for probing (default: %(default)s)"
         )
         probe_parser.add_argument(
             "--initial-high",
             type=int,
             default=1000,
-            help="Initial high guess for exponential probing (default: 1000)",
+            help="Initial high guess for exponential probing (default: %(default)s)",
         )
         probe_parser.add_argument(
             "--probe-budget",
             type=int,
             default=200,
-            help="Maximum number of probes allowed (default: 200)",
+            help="Maximum number of probes allowed (default: %(default)s)",
         )
         probe_parser.add_argument(
             "--max-limit",
             type=int,
             default=100000,
-            help="Hard upper limit for numeric ids (default: 100000)",
+            help="Hard upper limit for numeric ids (default: %(default)s)",
         )
         probe_parser.add_argument(
             "--coarse-step",
             type=int,
             default=100,
-            help="Coarse backward scan step (default: 100)",
+            help="Coarse backward scan step (default: %(default)s)",
         )
         probe_parser.add_argument(
             "--refine-range",
             type=int,
             default=200,
-            help="Forward refinement window (default: 200)",
+            help="Forward refinement window (default: %(default)s)",
         )
         probe_parser.add_argument(
             "--live",
@@ -495,7 +566,13 @@ Examples:
         )
 
         # Stats command
-        stats_parser = subparsers.add_parser("stats", help="Show scraping statistics")
+        stats_parser = subparsers.add_parser(
+            "stats",
+            help="Show scraping statistics",
+            description=(
+                "Show scraping statistics. If --year is provided, show stats for that year; otherwise show overall counts."
+            ),
+        )
         stats_parser.add_argument(
             "--year",
             type=int,
@@ -504,7 +581,12 @@ Examples:
 
         # Purge command
         purge_parser = subparsers.add_parser(
-            "purge", help="Purge data for a given year (destructive)"
+            "purge",
+            help="Purge data for a given year (destructive)",
+            description=(
+                "Purge data for a given year. This is a destructive operation that deletes files and/or DB records. "
+                "Use --dry-run to perform an audit-only run. If performing a real purge, pass --yes and consider --backup."
+            ),
         )
         purge_parser.add_argument("year", type=int, help="Year to purge")
         purge_parser.add_argument(
@@ -541,7 +623,7 @@ Examples:
             choices=("auto", "on", "off"),
             default="auto",
             help=(
-                "Control SQL-year-filter behavior: 'auto' try SQL then fallback, 'on' force SQL, 'off' force Python filter"
+                "Control SQL-year-filter behavior: 'auto' try SQL then fallback, 'on' force SQL, 'off' force Python filter (default: %(default)s)"
             ),
         )
         purge_parser.add_argument(

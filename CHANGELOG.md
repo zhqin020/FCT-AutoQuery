@@ -27,6 +27,14 @@ All notable changes to this project will be documented in this file.
   `--force-files`, and an audit JSON at `output/purge_audit_<TS>_<YEAR>.json`.
   (Spec: `specs/0003-yearly-data-purge/`)
 
+- CLI: improve help text and examples — expanded subcommand descriptions, an
+  expanded examples epilog in `src/cli/main.py`, and explicit default values in
+  argument help strings (e.g. `--rate-interval`, `--backoff-factor`, `probe` and
+  `purge` options). This improves discoverability and safer usage of
+  destructive commands such as `purge` (2025-11-29).
+
+- Docs: recorded README and CHANGELOG updates for CLI help improvements (2025-11-29).
+
 ---
 
 For full history, create tags and release notes following semantic versioning.

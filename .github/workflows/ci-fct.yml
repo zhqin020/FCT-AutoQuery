@@ -34,31 +34,11 @@ jobs:
       - name: CI diagnostics (validate editable install & imports)
         run: |
           echo "--- Python info ---"
-          conda run -n fct python -c "import sys, importlib, pprint; pprint.pprint(sys.version); pprint.pprint(sys.executable); pprint.pprint(sys.path[:6])"
+          conda run -n fct python -c "import sys,pprint; pprint.pprint({'version':sys.version, 'executable':sys.executable}); pprint.pprint(sys.path[:6])"
           echo "--- pip show fct-autoquery ---"
           conda run -n fct pip show fct-autoquery || true
-            echo "--- import checks ---"
-            # Verbose diagnostics to determine what `importlib` object is loaded
-            # and whether the stdlib `importlib.util` can be imported. This
-            # prints importlib repr, __file__, sys.modules entry, sys.path and
-            # any files in the checkout that include 'importlib' in their name.
-            conda run -n fct python - <<'PY'
-      import importlib, sys, pprint, traceback, os
-      print('repr(importlib) ->', repr(importlib))
-      print('importlib.__file__ ->', getattr(importlib, '__file__', None))
-      print('sys.modules["importlib"] ->')
-      pprint.pprint(sys.modules.get('importlib'))
-      try:
-        import importlib.util as ilutil
-        print('importlib.util imported OK ->', ilutil)
-      except Exception:
-        print('importlib.util import failed ->')
-        traceback.print_exc()
-      print('sys.path (first 20) ->')
-      pprint.pprint(sys.path[:20])
-      print('cwd listings with importlib ->')
-      pprint.pprint([f for f in os.listdir('.') if 'importlib' in f])
-      PY
+          echo "--- import checks ---"
+          conda run -n fct python -c "import importlib,sys,pprint,traceback; print('repr(importlib) ->', repr(importlib)); print('importlib.__file__ ->', getattr(importlib,'__file__',None)); pprint.pprint(sys.modules.get('importlib'));\ntry:\n  import importlib.util as ilutil\n  print('importlib.util imported OK ->', ilutil)\nexcept Exception:\n  traceback.print_exc()"
 
       - name: Run tests
         run: |
@@ -67,3 +47,24 @@ jobs:
           export PYTHONPATH="$PWD:$PYTHONPATH"
           # Use the environment's Python to invoke pytest (avoids runner isolation differences)
           conda run -n fct python -m pytest -q
+
+      - name: Run metric tests (fast-fail with coverage)
+        run: |
+          export PYTHONPATH="$PWD:$PYTHONPATH"
+          # Ensure pytest-cov is available for coverage reporting
+          conda run -n fct pip install pytest-cov
+          # Run metric-focused tests with coverage and JUnit XML for CI analysis
+          conda run -n fct python -m pytest \
+            --maxfail=1 --disable-warnings -q \
+            --cov=src --cov-report=xml:coverage_metrics.xml \
+            --junitxml=metrics_tests.xml \
+            tests/test_metrics_emission.py tests/test_cli_metrics_integration.py
+
+      - name: Upload metric test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: metric-test-artifacts
+          path: |
+            coverage_metrics.xml
+            metrics_tests.xml

@@ -1,6 +1,57 @@
+# Plan: Batch Mode Problem (0004)
+
+## Goal
+Make batch runs reliable and safely interruptible with clear observability and measurable SLAs.
+
+## Architecture / Stack
+- Language: Python 3.12 (project).
+- Components:
+  - `batch_runner`: Orchestrates job queue, workers, concurrency, and signal handling.
+  - `job_worker`: Executes a single job (browser init, scrape, store).
+  - `checkpoint_store`: Writes/reads checkpoint state to disk (JSON) or configured storage.
+  - `metrics_emitter`: Reuse existing run_logger/metrics modules (see `src/.../run_logger.py`).
+- Use existing modules: `run_logger`, `rate_limiter`, `url_validator` where applicable.
+
+## Data Model References
+- See `data-model.md` for job and checkpoint schema.
+
+## Phases & Tasks (minimal, actionable)
+Phase 1 — Reproduce & Instrument
+- P1-T1: Add additional logging around page init and browser startup (`batch_runner` & `job_worker`). (file: `src/batch_service.py` or existing module)
+- P1-T2: Add test harness to reproduce hang locally (tests/harness/test_hang_repro.py).
+
+Phase 2 — Implement Fixes
+- P2-T1: Implement `max_retries` + exponential backoff in `job_worker`.
+- P2-T2: Implement per-job timeout and forced cleanup.
+- P2-T3: Implement graceful shutdown: SIGTERM handler in `batch_runner` to checkpoint and stop accepting new jobs.
+
+Phase 3 — Tests & Validation
+- P3-T1: Unit tests for retry/backoff.
+- P3-T2: Integration test for SIGTERM checkpoint/resume.
+- P3-T3: Benchmark test for 100-job run.
+
+Phase 4 — Docs & Release
+- P4-T1: Publish `docs/chg-004-batch-mode-problem.md`.
+- P4-T2: Update README/USAGE_GUIDE for new flags/config.
+
+## Technical Constraints and Decisions
+- Prefer non-blocking concurrency model (threadpool/process pool or asyncio with workers) consistent with existing code style.
+- Reuse existing logging/metrics APIs; do not introduce new external backends.
+- Checkpoint files should be placed under `output/checkpoints/feature-0004/`.
+
+## Risks & Mitigations
+- Risk: Retry storms on systemic failures — Mitigation: Add global circuit breaker if failure rate above threshold (e.g., stop the run).
+- Risk: Existing tests flake — Mitigation: Add deterministic mocks to integration tests for network/browser.
+
+## Files to Change (specific)
+- `src/batch_service.py` (or repo equivalent) — core runner changes.
+- `src/worker.py` (or job execution module) — retry, timeout.
+- `src/checkpoint.py` — atomic checkpoint write/read.
+- `tests/test_batch_retry.py`, `tests/test_sigterm_checkpoint.py`
+- `docs/chg-004-batch-mode-problem.md`
 ## Implementation Plan: 0004-batch-mode-problem
 
-**Branch**: `0004-batch-mode-problem` | **Date**: 2025-11-28 | **Spec**: `specs/0004-batch-mode-problem/spec.md`
+**Branch**: `feat/0004-batch-mode-problem` | **Date**: 2025-11-28 | **Spec**: `specs/0004-batch-mode-problem/spec.md`
 **Input**: Feature specification from `/specs/0004-batch-mode-problem/spec.md`
 
 **Note**: This template is filled in by the `/speckit.plan` command. See `.specify/templates/commands/plan.md` for the execution workflow.

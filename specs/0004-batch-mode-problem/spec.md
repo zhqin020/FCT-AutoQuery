@@ -1,3 +1,64 @@
+# Feature: Batch Mode Problem (0004)
+
+## Overview / Context
+Brief: Batch-mode runs intermittently hang or fail during page initialization and scraping. This feature tracks investigation and fixes to make batch runs reliable, observable, and gracefully stoppable. The scope focuses on the batch runner behavior, job lifecycle, retries, checkpointing, and signal handling.
+
+## Functional Requirements (each with acceptance criteria)
+- user-can-run-batch-jobs
+  - Description: System accepts and executes batch scraping jobs from CLI or scheduled runs.
+  - Acceptance: `fct-scraper --batch --config <cfg>` starts a run; run terminates normally and exit code is 0 on success.
+
+- batch-job-retries
+  - Description: Per-job transient failures trigger retry attempts with exponential backoff.
+  - Acceptance: Retries occur up to `max_retries` (default 3), with backoff factor configurable; verify via test that a transient failure is retried and final state is success if intermittent error resolved.
+
+- fr-final-summary (FR-004)
+  - Description: Batch runs produce a canonical run-level summary (JSON and/or console) that includes totals, durations, and error samples. This is the single authoritative requirement for run reporting and replaces any duplicate entries.
+  - Acceptance: After run completes (or is stopped), a `report-<timestamp>.json` or console summary is produced with keys `run_id`, `start`, `end`, `total`, `succeeded`, `no_record`, `failed`, `duration_seconds`, `errors` (sample). This requirement is referenced as `FR-004` in the plan.
+
+- graceful-shutdown
+  - Description: On SIGTERM/SIGINT, the runner finishes/pauses current job(s), writes checkpoint(s), and exits within `graceful_shutdown_timeout` (default 30s).
+  - Acceptance: Sending SIGTERM to a running batch results in exit within timeout and presence of checkpoint files/state.
+
+- per-job-timeout
+  - Description: Each job may be configured with a maximum runtime; jobs exceeding timeout are killed and marked failed with retry rules applied.
+  - Acceptance: A job that exceeds `job_timeout` is stopped and treated as a failure for retry logic.
+  - Default: `job_timeout` = 300  # seconds (5 minutes). Tests should assert timeout behavior and cleanup.
+
+## Non-Functional Requirements
+- performance (measurable): Default concurrency `concurrency=4`. System must complete 100 small jobs in under 10 minutes on a defined runner profile (see below) for CI benchmarking.
+- observability (measurable): Logs include `batch.run.start`, `batch.job.start`, `batch.job.end`, `batch.run.end` events at INFO. Emit metrics: `batch.run.duration_seconds`, `batch.job.duration_seconds`, `batch.job.retry_count`, `batch.run.failure_rate`.
+- reliability (measurable): For short runs (<10 minutes), target success rate >= 99% when executed on the defined runner profile.
+- configurability: `max_retries`, `concurrency`, `job_timeout`, `graceful_shutdown_timeout` must be configurable via existing config (e.g., `config.toml` or env vars).
+
+### CI Runner Profile (for measurable NFRs)
+- `os`: Ubuntu-latest (GitHub Actions / CI equivalent)
+- `cpu`: 2 vCPU
+- `memory`: 4 GB RAM
+- `network`: CI default network conditions (no special bandwidth guarantees)
+
+Use this runner profile as the baseline for any benchmark acceptance tests and document any deviations when reporting performance numbers.
+
+## User Stories (with acceptance)
+- As an operator, I can start a batch run and receive a report when it completes.
+  - Acceptance: CLI command exists and writes `report-*.json` with expected keys.
+
+- As an operator, I can stop a batch run and see checkpointed progress.
+  - Acceptance: SIGTERM triggers checkpoint; restart resumes from checkpoint.
+
+- As a developer, I can reproduce the hang in a test harness.
+  - Acceptance: A deterministic test simulates transient network errors and verifies retry and checkpoint behaviors.
+
+## Edge Cases / Failure Modes
+- Flaky network: ensure retries, exponential backoff, and circuit-breaker-style protection to avoid infinite retries.
+- Partial write/atomicity: checkpointing must ensure atomic state updates (temporary-file then rename).
+- Very long single-job durations: ensure per-job timeout enforces resource limits; allow operator override.
+- Resource leak in browser drivers: ensure drivers/processes are always cleaned up even on failure.
+
+## Test/Validation Scenarios
+- Unit tests for retry/backoff logic.
+- Integration test that simulates SIGTERM and verifies checkpoint and resume.
+- Load test for 100 jobs with concurrency=4 measuring run time and failure rate.
 ```markdown
 # Feature Specification: Batch retrieve mode (0004-batch-mode-problem)
 

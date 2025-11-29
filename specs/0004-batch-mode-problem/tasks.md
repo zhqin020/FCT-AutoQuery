@@ -76,6 +76,11 @@ Tasks
   - Files: `src/lib/rate_limiter.py` (if not present), `tests/test_rate_limit_backoff.py`
   - Phase: Implementation + Tests
 
+- T13: Implement metrics emission
+  - Description: Emit the defined metrics (`batch.run.duration_seconds`, `batch.job.duration_seconds`, `batch.job.retry_count`, `batch.run.failure_rate`) from the runner and job worker. Add unit tests validating metric names and basic values are emitted (or are available from the metrics-emitter API). Map metric emission points to code locations in `src/`.
+  - Files: `src/metrics_emitter.py` (or reuse `src/run_logger.py`), `tests/test_metrics_emission.py`
+  - Phase: Implementation + Tests
+
 Notes
 
 - Task IDs should be referenced in PR descriptions to provide traceability back to the feature spec.

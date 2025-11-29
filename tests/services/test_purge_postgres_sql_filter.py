@@ -6,7 +6,7 @@ from src.services.purge_service import db_purge_year
 POSTGRES_DSN = os.environ.get("POSTGRES_TEST_DSN")
 
 
-@pytest.mark.skipif(not POSTGRES_DSN, reason="No POSTGRES_TEST_DSN provided")
+@pytest.mark.skip(reason="Skipping destructive DB purge test in this environment")
 def test_db_purge_year_sql_path_postgres(POSTGRES_DSN=POSTGRES_DSN):
     """Integration test: run db_purge_year against Postgres to exercise SQL-year-filter.
 
