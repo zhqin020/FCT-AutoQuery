@@ -31,4 +31,7 @@ jobs:
 
       - name: Run tests
         run: |
+          # Ensure the repository root is on PYTHONPATH so local `src` imports
+          # resolve during test collection in the CI environment.
+          export PYTHONPATH="$PWD:$PYTHONPATH"
           conda run -n fct pytest -q
