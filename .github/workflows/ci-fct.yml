@@ -2,7 +2,7 @@ name: CI (fct)
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, 0004-batch-mode-problem ]
   pull_request:
     branches: [ main, master ]
   # Allow manual runs from the CLI to help debug CI issues.
