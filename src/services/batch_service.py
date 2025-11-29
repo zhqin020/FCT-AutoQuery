@@ -1,4 +1,7 @@
-from typing import Callable, Tuple
+from typing import Callable, Tuple, Optional
+import time
+
+from src.lib.rate_limiter import EthicalRateLimiter
 
 
 class BatchService:
@@ -13,6 +16,7 @@ class BatchService:
         coarse_step: int = 100,
         refine_range: int = 200,
         probe_budget: int = 200,
+        rate_limiter: Optional[EthicalRateLimiter] = None,
     ) -> Tuple[int, int]:
         """
         Find an approximate upper bound (highest existing numeric id) using
@@ -39,13 +43,43 @@ class BatchService:
         while True:
             if probes >= probe_budget:
                 break
-            exists = check_case_exists(high)
-            probes += 1
+            try:
+                exists = check_case_exists(high)
+                probes += 1
+            except Exception as exc:
+                # Treat exceptions from the check as transient; use rate_limiter backoff if available
+                if rate_limiter is not None:
+                    try:
+                        delay = rate_limiter.record_failure()
+                    except Exception:
+                        delay = 0.1
+                    # small sleep to respect backoff
+                    time.sleep(delay)
+                else:
+                    # if no rate limiter, small sleep to avoid tight loop
+                    time.sleep(0.1)
+                # count this as a probe attempt and continue probing
+                probes += 1
+                # continue to next iteration
+                continue
+
             if not exists:
                 # Double-check a bit further to avoid mistaking a sparse hole for end
                 if probes < probe_budget:
-                    exists_next = check_case_exists(min(high + 50, max_limit))
-                    probes += 1
+                    try:
+                        exists_next = check_case_exists(min(high + 50, max_limit))
+                        probes += 1
+                    except Exception:
+                        if rate_limiter is not None:
+                            try:
+                                delay = rate_limiter.record_failure()
+                            except Exception:
+                                delay = 0.1
+                            time.sleep(delay)
+                        else:
+                            time.sleep(0.1)
+                        probes += 1
+                        exists_next = False
                 else:
                     exists_next = False
 
@@ -62,8 +96,22 @@ class BatchService:
         current = high
         final_max = low
         while current > low and probes < probe_budget:
-            exists = check_case_exists(current)
-            probes += 1
+            try:
+                exists = check_case_exists(current)
+                probes += 1
+            except Exception:
+                if rate_limiter is not None:
+                    try:
+                        delay = rate_limiter.record_failure()
+                    except Exception:
+                        delay = 0.1
+                    time.sleep(delay)
+                else:
+                    time.sleep(0.1)
+                probes += 1
+                current -= coarse_step
+                continue
+
             if exists:
                 final_max = current
                 break
@@ -74,8 +122,21 @@ class BatchService:
         for i in range(final_max, min(final_max + refine_range, max_limit) + 1):
             if probes >= probe_budget:
                 break
-            exists = check_case_exists(i)
-            probes += 1
+            try:
+                exists = check_case_exists(i)
+                probes += 1
+            except Exception:
+                if rate_limiter is not None:
+                    try:
+                        delay = rate_limiter.record_failure()
+                    except Exception:
+                        delay = 0.1
+                    time.sleep(delay)
+                else:
+                    time.sleep(0.1)
+                probes += 1
+                continue
+
             if exists:
                 true_end = i
 

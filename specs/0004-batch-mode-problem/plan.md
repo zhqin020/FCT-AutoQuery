@@ -1,7 +1,7 @@
-# Implementation Plan: [FEATURE]
+## Implementation Plan: 0004-batch-mode-problem
 
-**Branch**: `[####-feature-name]` | **Date**: [DATE] | **Spec**: [link]
-**Input**: Feature specification from `/specs/[####-feature-name]/spec.md`
+**Branch**: `0004-batch-mode-problem` | **Date**: 2025-11-28 | **Spec**: `specs/0004-batch-mode-problem/spec.md`
+**Input**: Feature specification from `/specs/0004-batch-mode-problem/spec.md`
 
 **Note**: This template is filled in by the `/speckit.plan` command. See `.specify/templates/commands/plan.md` for the execution workflow.
 
@@ -24,7 +24,7 @@ NDJSON of attempts in `output/`.
 -->
 
 **Language/Version**: Python 3.11
-**Primary Dependencies**: `requests`, `beautifulsoup4`, `pydantic` (for lightweight validation), `loguru` (logging), `pytest`, `pytest-mock`
+**Primary Dependencies**: `selenium`, `webdriver-manager`, `python-dateutil`, `requests` (for optional mock endpoints), `beautifulsoup4` (where needed), `pydantic` (optional validation), `loguru` (logging), `pytest`, `pytest-mock`
 **Storage**: Files + JSON audit artifacts under `output/` (reuse existing repository storage API). No DB required for initial implementation.
 **Testing**: `pytest` with network calls mocked via `pytest-mock` or `responses`.
 **Target Platform**: Linux server (Ubuntu/Debian CI runners)
@@ -37,14 +37,21 @@ NDJSON of attempts in `output/`.
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-- Ensure testing standards are planned (mandatory coverage, TDD, mocking): PASS — tests required for `find_upper_bound`, crawl loop, retry logic; CI tests will be added.
-- Git workflow compliance is incorporated (TBD, issue-driven branches): PASS — feature branch `chg/004-batch-mode-problem` exists and plan was recorded; will open an Issue to link to the PR per constitution.
+- Ensure testing standards are planned (mandatory coverage, TDD, mocking): PASS — tests required for `find_upper_bound`, crawl loop, retry logic; CI tests will be added. Per constitution, any missing `src/*` tests will be created as minimal stubs (see `tasks.md` T11) before merge.
+- Git workflow compliance is incorporated (TBD, issue-driven branches): PASS — numeric-prefixed spec dir `0004-batch-mode-problem` is used and branch name in this plan is `0004-batch-mode-problem` to remain compatible with automation. If branch naming deviates, update `.specify` scripts accordingly.
 - Coding standards are followed (type hinting, ethical scraping): PASS — plan mandates type hints, log levels, and polite crawling.
 - Issue management strategy is adhered to (mandatory issues, lifecycle): NEEDS ACTION — create an issue file under `issues/` (skipped here; next step).
 - Git workflow steps are integrated (test-first, branch naming conventions): PARTIAL — branch name does not use numeric prefix convention; we created a numeric spec dir `0004-...` to satisfy tools. Justification: repo's automation requires numeric prefixes; branch will remain `chg/004-batch-mode-problem` per request but the team should align naming before merge.
 - Environment activation is required (conda activate fct before commands): PASS — noted in quickstart and constitution.
 
 GATE DECISION: Proceed with Phase 0 and Phase 1 outputs. Remaining action: create an Issue file under `issues/` to fully satisfy the Issue Management gate before PR.
+
+## Additional Implementation Tasks
+
+- Implement a dedicated rate-limiting and backoff task that covers 429/503 behavior, configurable randomized delays and exponential backoff, and tests that simulate server-side throttling.
+
+## Template cleanup
+The plan header and metadata were updated to use concrete values and today's date. Remove any remaining template placeholders when iterating further.
 
 ## Project Structure
 

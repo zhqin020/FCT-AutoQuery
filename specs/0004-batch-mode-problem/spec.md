@@ -107,44 +107,25 @@ As an operator, I need failed requests to be classified (no-record vs. transient
 
 - Target site responds with explicit signals that distinguish `no records` (search result empty) from server/network errors. If not, heuristics are required.
 - The repository already contains code to persist successful case data; this feature will reuse the same storage API to check for existing ids.
-- Default safe-stop thresholds: `safe_stop_consecutive_no_record = 500` and `safe_stop_consecutive_fail = 100` unless clarified by stakeholders.
 
-## [NEEDS CLARIFICATION: 1]
+## Decisions
 
-**Topic**: Safe-stop thresholds for long sparse gaps
+1. Safe-stop threshold: the safe-stop threshold is configurable via CLI and defaults to `500` consecutive `no-record` responses. CLI flag: `--safe-stop-no-records` (default `500`). Tests will include lower thresholds (e.g., `100`) to validate behavior under sparse datasets.
 
-**Context**: The spec uses a default of 500 consecutive `no-record` responses to halt the job, which is conservative but may prematurely stop in extremely sparse datasets.
+2. Raw HTML persistence: by default persist raw HTML only for failed attempts. Provide CLI toggle `--persist-raw-html` to enable full persistence of successful fetches. Failure-only persistence will save files to `output/html_failed/<run>/<case_id>.html` and the audit NDJSON will record the path.
 
-**What we need to know**: Should we keep `500` as the default safe-stop threshold, reduce it (e.g., 100), or make it configurable per-run (recommended)?
+3. Probe budget and detection goal: expose a configurable `probe_budget` (default `200`) as an upper bound for probe attempts; the empirical typical-case goal for high-water detection is ≤50 probes. Tests should assert typical-case behavior while enforcing the configured `probe_budget` as the hard upper limit.
 
-Suggested answers:
+## Configuration Defaults (canonical)
 
-| Option | Answer | Implications |
-|--------|--------|--------------|
-| A | Keep default 500 | Safer against false termination; may issue more no-record requests before stopping |
-| B | Reduce to 100 | Quicker stop for sparse datasets; risk missing far-out valid ids in very sparse datasets |
-| C | Make it configurable per-run (default 500) | Most flexible; requires CLI flag and tests; preferred for operators |
+The following canonical defaults are authoritative for this feature and should be referenced by implementation and tests. Tests and tasks MUST reference these values rather than re-stating ad-hoc numbers.
 
-Your choice: _[Wait for user response]_
+- `safe_stop_no_records`: 500 (default consecutive `no-record` responses to trigger safe-stop)
+- `probe_budget`: 200 (hard upper limit on probe attempts during upper-bound detection)
+- `probe_typical_goal`: 50 (typical-case target for probe attempts; not a hard limit but used for acceptance tests)
+- `persist_raw_html`: false (default; raw HTML persisted only for failures unless CLI toggled)
 
-## [NEEDS CLARIFICATION: 2]
-
-**Topic**: Persisting raw HTML for failed or successful fetches
-
-**Context**: Storing raw HTML for every successful fetch increases storage but eases debugging; storing only parsed JSON reduces storage needs.
-
-**What we need to know**: Should raw HTML be persisted for all successful fetches, only for failed attempts, or not at all by default?
-
-Suggested answers:
-
-| Option | Answer | Implications |
-|--------|--------|--------------|
-| A | Persist raw HTML for all successes | Maximum debugability; increased storage and GDPR/TA concerns for scraped content |
-| B | Persist raw HTML only for failures | Moderate storage; useful for debugging problematic ids |
-| C | Do not persist raw HTML by default (optionally enable) | Minimal storage; harder to debug historic issues unless re-crawled |
-
-Your choice: _[Wait for user response]_
-
+Per the project constitution, every `src/*` module MUST have corresponding tests. If any `src/*` module is missing test coverage at merge time, the following remediation task will be required (see `tasks.md` T11): create minimal test stubs that assert importability and critical public API surface to satisfy the constitution. This is a required step and not optional.
 ## Testing / User Scenarios (expanded)
 
 - Unit tests for `find_upper_bound` using a mocked endpoint that returns `no-record`/`has-record` patterns.

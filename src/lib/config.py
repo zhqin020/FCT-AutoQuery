@@ -47,6 +47,11 @@ DEFAULT_SAVE_MODAL_HTML = False
 DEFAULT_ENABLE_RUN_LOGGER = True
 DEFAULT_WRITE_AUDIT = False
 DEFAULT_DOCKET_PARSE_MAX_ERRORS = 3
+DEFAULT_SAFE_STOP_NO_RECORDS = 500
+DEFAULT_PERSIST_RAW_HTML = False
+DEFAULT_PROBE_BUDGET = 200
+DEFAULT_BACKOFF_FACTOR = 1.0
+DEFAULT_MAX_BACKOFF_SECONDS = 60.0
 
 
 def _load_toml_config() -> dict:
@@ -234,6 +239,47 @@ class Config:
         if isinstance(val, str):
             return val.lower() == "true"
         return bool(val) if val is not None else DEFAULT_SAVE_MODAL_HTML
+
+    @classmethod
+    def get_safe_stop_no_records(cls) -> int:
+        return int(
+            _get_from_config("app", "safe_stop_no_records")
+            or os.getenv("FCT_SAFE_STOP_NO_RECORDS")
+            or DEFAULT_SAFE_STOP_NO_RECORDS
+        )
+
+    @classmethod
+    def get_persist_raw_html(cls) -> bool:
+        val = _get_from_config("app", "persist_raw_html")
+        if val is None:
+            val = os.getenv("FCT_PERSIST_RAW_HTML")
+        if isinstance(val, str):
+            return val.lower() == "true"
+        return bool(val) if val is not None else DEFAULT_PERSIST_RAW_HTML
+
+    @classmethod
+    def get_probe_budget(cls) -> int:
+        return int(
+            _get_from_config("app", "probe_budget")
+            or os.getenv("FCT_PROBE_BUDGET")
+            or DEFAULT_PROBE_BUDGET
+        )
+
+    @classmethod
+    def get_backoff_factor(cls) -> float:
+        return float(
+            _get_from_config("app", "backoff_factor")
+            or os.getenv("FCT_BACKOFF_FACTOR")
+            or DEFAULT_BACKOFF_FACTOR
+        )
+
+    @classmethod
+    def get_max_backoff_seconds(cls) -> float:
+        return float(
+            _get_from_config("app", "max_backoff_seconds")
+            or os.getenv("FCT_MAX_BACKOFF_SECONDS")
+            or DEFAULT_MAX_BACKOFF_SECONDS
+        )
 
     @classmethod
     def get_enable_run_logger(cls) -> bool:

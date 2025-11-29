@@ -39,6 +39,8 @@ Follow-up TODOs: None
 * `fix/issue-description` (Bug fixes)
 * `test/description` (Adding missing tests)
 
+**Tooling Note:** Some repository automation and the `.specify` helper scripts expect or prefer a numeric-prefixed feature identifier that maps to `specs/` directories (for example `0004-batch-mode-problem` or `004-batch-mode-problem`). When a feature is driven by `specs/00NN-...`, prefer creating a branch that includes the same 4-digit prefix (e.g., `0004-batch-mode-problem`) so the automation can locate the corresponding `specs/` entry. This numeric prefixing is compatible with the `feat/` style (you may use `feat/0004-batch-mode-problem` if desired), but the numeric prefix is the primary signal consumed by tooling. If your workflow must use a different branch naming convention, update the `.specify` scripts and relevant CI configuration accordingly.
+
 ### III.Coding Standards (编码规范)
 1. **Testing (Highest Priority)**
 * **Coverage:** 100% coverage for the specific Issue scope.

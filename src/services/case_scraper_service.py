@@ -71,7 +71,11 @@ class CaseScraperService:
             headless: Whether to run browser in headless mode
         """
         self.headless = headless
-        self.rate_limiter = EthicalRateLimiter()  # 3-6s random delay
+        self.rate_limiter = EthicalRateLimiter(
+            interval_seconds=Config.get_rate_limit_seconds(),
+            backoff_factor=Config.get_backoff_factor(),
+            max_backoff_seconds=Config.get_max_backoff_seconds(),
+        )  # 3-6s random delay
         self._driver: Optional[webdriver.Chrome] = None
         self._initialized = False
         # Restart tracking
