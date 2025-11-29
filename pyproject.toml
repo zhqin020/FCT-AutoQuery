@@ -38,11 +38,12 @@ dev = [
 fct-scraper = "src.cli.scraper:main"
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["src", "src.*"]
+where = ["src"]
+include = ["*"]
 
 [tool.setuptools]
-# Ensure setuptools picks up the `src` package directory explicitly.
+# Ensure setuptools picks up the `src` package directory explicitly for a src/ layout.
+package-dir = {"" = "src"}
 include-package-data = true
 
 [tool.black]
