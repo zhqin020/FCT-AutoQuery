@@ -37,8 +37,28 @@ jobs:
           conda run -n fct python -c "import sys, importlib, pprint; pprint.pprint(sys.version); pprint.pprint(sys.executable); pprint.pprint(sys.path[:6])"
           echo "--- pip show fct-autoquery ---"
           conda run -n fct pip show fct-autoquery || true
-          echo "--- import checks ---"
-          conda run -n fct python -c "import importlib; print('spec(src) ->', importlib.util.find_spec('src')); print('spec(src.lib.logging_config) ->', importlib.util.find_spec('src.lib.logging_config')); print('spec(src.lib.rate_limiter) ->', importlib.util.find_spec('src.lib.rate_limiter'))"
+            echo "--- import checks ---"
+            # Verbose diagnostics to determine what `importlib` object is loaded
+            # and whether the stdlib `importlib.util` can be imported. This
+            # prints importlib repr, __file__, sys.modules entry, sys.path and
+            # any files in the checkout that include 'importlib' in their name.
+            conda run -n fct python - <<'PY'
+      import importlib, sys, pprint, traceback, os
+      print('repr(importlib) ->', repr(importlib))
+      print('importlib.__file__ ->', getattr(importlib, '__file__', None))
+      print('sys.modules["importlib"] ->')
+      pprint.pprint(sys.modules.get('importlib'))
+      try:
+        import importlib.util as ilutil
+        print('importlib.util imported OK ->', ilutil)
+      except Exception:
+        print('importlib.util import failed ->')
+        traceback.print_exc()
+      print('sys.path (first 20) ->')
+      pprint.pprint(sys.path[:20])
+      print('cwd listings with importlib ->')
+      pprint.pprint([f for f in os.listdir('.') if 'importlib' in f])
+      PY
 
       - name: Run tests
         run: |
