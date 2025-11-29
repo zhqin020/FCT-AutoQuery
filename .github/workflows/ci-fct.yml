@@ -29,9 +29,19 @@ jobs:
         run: |
           conda run -n fct pip install -e .
 
+      - name: CI diagnostics (validate editable install & imports)
+        run: |
+          echo "--- Python info ---"
+          conda run -n fct python -c "import sys, importlib, pprint; pprint.pprint(sys.version); pprint.pprint(sys.executable); pprint.pprint(sys.path[:6])"
+          echo "--- pip show fct-autoquery ---"
+          conda run -n fct pip show fct-autoquery || true
+          echo "--- import checks ---"
+          conda run -n fct python -c "import importlib; print('spec(src) ->', importlib.util.find_spec('src')); print('spec(src.lib.logging_config) ->', importlib.util.find_spec('src.lib.logging_config')); print('spec(src.lib.rate_limiter) ->', importlib.util.find_spec('src.lib.rate_limiter'))"
+
       - name: Run tests
         run: |
           # Ensure the repository root is on PYTHONPATH so local `src` imports
           # resolve during test collection in the CI environment.
           export PYTHONPATH="$PWD:$PYTHONPATH"
-          conda run -n fct pytest -q
+          # Use the environment's Python to invoke pytest (avoids runner isolation differences)
+          conda run -n fct python -m pytest -q
