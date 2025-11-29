@@ -1,0 +1,68 @@
+openapi: 3.0.3
+info:
+  title: FCT Batch Retrieve API (spec contract)
+  version: '0.1.0'
+paths:
+  /batch/probe:
+    post:
+      summary: Probe upper bound for a given year
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                year:
+                  type: string
+                  example: '25'
+                probe_budget:
+                  type: integer
+                  example: 200
+      responses:
+        '200':
+          description: Returns an estimated upper bound and probe count
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  upper_bound:
+                    type: integer
+                  probes_used:
+                    type: integer
+
+  /batch/run:
+    post:
+      summary: Run a bounded batch retrieval
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                year:
+                  type: string
+                start:
+                  type: integer
+                max_cases:
+                  type: integer
+                safe_stop_no_records:
+                  type: integer
+                retry_limit:
+                  type: integer
+      responses:
+        '200':
+          description: Returns final crawl stats and artifact locations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stats:
+                    type: object
+                  audit_path:
+                    type: string
+
+components: {}

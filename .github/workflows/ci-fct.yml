@@ -2,9 +2,11 @@ name: CI (fct)
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, 0004-batch-mode-problem ]
   pull_request:
     branches: [ main, master ]
+  # Allow manual runs from the CLI to help debug CI issues.
+  workflow_dispatch: {}
 
 jobs:
   test:
@@ -29,6 +31,40 @@ jobs:
         run: |
           conda run -n fct pip install -e .
 
+      - name: CI diagnostics (validate editable install & imports)
+        run: |
+          echo "--- Python info ---"
+          conda run -n fct python -c "import sys,pprint; pprint.pprint({'version':sys.version, 'executable':sys.executable}); pprint.pprint(sys.path[:6])"
+          echo "--- pip show fct-autoquery ---"
+          conda run -n fct pip show fct-autoquery || true
+          echo "--- import checks ---"
+          conda run -n fct python -c "import importlib,sys,pprint,traceback; print('repr(importlib) ->', repr(importlib)); print('importlib.__file__ ->', getattr(importlib,'__file__',None)); pprint.pprint(sys.modules.get('importlib'));\ntry:\n  import importlib.util as ilutil\n  print('importlib.util imported OK ->', ilutil)\nexcept Exception:\n  traceback.print_exc()"
+
       - name: Run tests
         run: |
-          conda run -n fct pytest -q
+          # Ensure the repository root is on PYTHONPATH so local `src` imports
+          # resolve during test collection in the CI environment.
+          export PYTHONPATH="$PWD:$PYTHONPATH"
+          # Use the environment's Python to invoke pytest (avoids runner isolation differences)
+          conda run -n fct python -m pytest -q
+
+      - name: Run metric tests (fast-fail with coverage)
+        run: |
+          export PYTHONPATH="$PWD:$PYTHONPATH"
+          # Ensure pytest-cov is available for coverage reporting
+          conda run -n fct pip install pytest-cov
+          # Run metric-focused tests with coverage and JUnit XML for CI analysis
+          conda run -n fct python -m pytest \
+            --maxfail=1 --disable-warnings -q \
+            --cov=src --cov-report=xml:coverage_metrics.xml \
+            --junitxml=metrics_tests.xml \
+            tests/test_metrics_emission.py tests/test_cli_metrics_integration.py
+
+      - name: Upload metric test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: metric-test-artifacts
+          path: |
+            coverage_metrics.xml
+            metrics_tests.xml

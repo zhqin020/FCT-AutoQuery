@@ -7,13 +7,16 @@ name = "fct-autoquery"
 version = "0.1.0"
 description = "Federal Court Case Auto-Query System"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.15"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Legal Industry",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
     "selenium>=4.15.0",
@@ -35,8 +38,13 @@ dev = [
 fct-scraper = "src.cli.scraper:main"
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["src*"]
+where = ["src"]
+include = ["*"]
+
+[tool.setuptools]
+# Ensure setuptools picks up the `src` package directory explicitly for a src/ layout.
+package-dir = {"" = "src"}
+include-package-data = true
 
 [tool.black]
 line-length = 88

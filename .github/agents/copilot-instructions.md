@@ -25,9 +25,9 @@ cd src [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLO
 Python 3.11: Follow standard conventions
 
 ## Recent Changes
+- 0004-batch-mode-problem: Added [if applicable, e.g., PostgreSQL, CoreData, files or N/A]
 - 0001-federal-court-scraper: Added Python 3.11+ + Selenium, psycopg2, pytest, dataclasses, loguru
 - 0001-federal-court-scraper: Added Python 3.11+ + Selenium, psycopg2, pytest, dataclasses, loguru
-- 0001-federal-court-scraper: Added [if applicable, e.g., PostgreSQL, CoreData, files or N/A]
 
 
 <!-- MANUAL ADDITIONS START -->
