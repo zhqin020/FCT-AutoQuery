@@ -519,8 +519,24 @@ class CaseScraperService:
                     return False
 
                 # Use robust send keys with JS fallback
+                try:
+                    case_input.clear()
+                except Exception:
+                    pass
                 self._safe_send_keys(driver, case_input, case_number)
 
+                # Diagnostic: log the input element state after typing
+                try:
+                    cur_val = None
+                    try:
+                        cur_val = case_input.get_attribute("value")
+                    except Exception:
+                        cur_val = None
+                    logger.debug(
+                        f"Post-type input state: id={getattr(case_input, 'id', None) or getattr(case_input, 'name', None) or '<anonymous>'} value={cur_val} placeholder={case_input.get_attribute('placeholder') if hasattr(case_input, 'get_attribute') else None}"
+                    )
+                except Exception:
+                    logger.debug("Failed to read input element state after typing")
                 # Small stabilization pause to allow client-side handlers
                 # (e.g. input listeners) to process the entered value before
                 # submitting. Matches the harness behavior which waits after
@@ -528,64 +544,113 @@ class CaseScraperService:
                 time.sleep(2)
 
                 # Try a tab-specific submit first (more reliable on this site)
+                submit_method = None
                 try:
                     tab_submit = driver.find_element(By.ID, "tab02Submit")
                     try:
                         driver.execute_script("arguments[0].click();", tab_submit)
-                        logger.debug("Clicked tab02Submit")
+                        submit_method = "tab02Submit(js)"
+                        logger.debug("Clicked tab02Submit (JS)")
                     except Exception:
                         tab_submit.click()
+                        submit_method = "tab02Submit(native)"
+                        logger.debug("Clicked tab02Submit (native)")
                 except Exception:
                     # Fall back to the generic submit helper
                     try:
                         self._submit_search(driver, case_input)
+                        submit_method = "generic_submit_helper"
                     except Exception as submit_err:
                         logger.warning(f"Submit attempt failed: {submit_err}")
+                        submit_method = "failed_submit"
                         # Continue and let the wait for results determine outcome
+
+                logger.debug(f"Submit method used: {submit_method}")
 
                 # Poll for results: check repeatedly for the case row or an explicit
                 # 'No data available' marker. Polling is often more reliable than
                 # relying on DataTables' async hooks.
                 found_row = False
                 no_data = False
-                for _ in range(40):
-                    if driver.find_elements(
-                        By.XPATH, "//td[contains(text(), 'No data available')]"
-                    ):
+                no_data_streak = 0
+                polls = 0
+                td_match_count = 0
+                table_row_count = 0
+                for i in range(40):
+                    polls += 1
+                    try:
+                        no_data_elems = driver.find_elements(By.XPATH, "//td[contains(text(), 'No data available')]")
+                        td_matches = driver.find_elements(By.XPATH, f"//table//td[contains(normalize-space(.), '{case_number}')]")
+                        table_rows = driver.find_elements(By.XPATH, "//table//tbody//tr")
+                    except Exception:
+                        no_data_elems = []
+                        td_matches = []
+                        table_rows = []
+
+                    if no_data_elems:
+                        # The page may show 'No data available' initially but then load data.
+                        # Set no_data but continue polling to allow for later data appearance.
                         no_data = True
-                        break
-                    if driver.find_elements(
-                        By.XPATH,
-                        f"//table//td[contains(normalize-space(.), '{case_number}')]",
-                    ):
+                        no_data_streak += 1
+                        td_match_count = len(td_matches)
+                        table_row_count = len(table_rows)
+                        logger.warning(f"Poll {i+1}: detected 'No data available' (rows={table_row_count} td_matches={td_match_count})")
+                        break  # Immediately return since no data will load for non-existent cases
+
+                    if td_matches:
+                        # Clear any prior 'no_data' observation: a later poll
+                        # that finds matching rows should override earlier
+                        # transient 'No data available' markers.
+                        no_data = False
                         found_row = True
+                        td_match_count = len(td_matches)
+                        table_row_count = len(table_rows)
+                        logger.debug(f"Poll {i+1}: found {td_match_count} matching td(s) in {table_row_count} table rows")
                         break
+
+                    # periodic debug summary to trace progress (every 5 polls)
+                    if (i + 1) % 5 == 0:
+                        logger.debug(f"Poll {i+1}: no marker, td_matches={len(td_matches)} table_rows={len(table_rows)}")
+
                     time.sleep(0.5)
 
+                if found_row:
+                    # Optionally sample matched cell text for debugging
+                    sample_text = None
+                    try:
+                        sample_text = td_matches[0].text if td_matches else None
+                    except Exception:
+                        sample_text = None
+                    logger.info(f"Results found for case: {case_number} (polls={polls} table_rows={table_row_count} td_matches={td_match_count} sample={sample_text})")
+                    return True
+
                 if no_data:
-                    logger.info(f"No results found for case: {case_number}")
+                    # A stable 'No data available' observation indicates the
+                    # site returned an explicit no-results state. Do NOT retry
+                    # or re-initialize in this case — retries should only be
+                    # attempted when a program error, detection failure, or
+                    # exception occurred. Return no-results immediately so the
+                    # higher-level probing logic can treat it deterministically.
+                    logger.warning(
+                        f"No results found for case: {case_number} (polls={polls} table_rows={table_row_count} td_matches={td_match_count} submit={submit_method})"
+                    )
                     return False
 
-                if found_row:
-                    logger.info(f"Results found for case: {case_number}")
-                    return True
-
                 # As a final fallback, check for any table rows present
-                if driver.find_elements(By.XPATH, "//table//tbody//tr"):
-                    logger.info(f"Table rows present but specific case not detected: {case_number}")
+                table_rows_final = driver.find_elements(By.XPATH, "//table//tbody//tr")
+                if table_rows_final:
+                    try:
+                        nrows_final = len(table_rows_final)
+                    except Exception:
+                        nrows_final = 0
+                    logger.info(f"Table rows present ({nrows_final}) but specific case not detected: {case_number} (submit={submit_method})")
                     return True
 
-                # If first attempt failed, re-initialize and retry
-                if attempt == 0:
-                    try:
-                        logger.info(
-                            "Retrying search: re-initializing page and retrying"
-                        )
-                        self.initialize_page()
-                        driver = self._get_driver()
-                        continue
-                    except Exception:
-                        pass
+                # No automatic retry here. Retries should only occur when we
+                # detect an explicit failure to operate (e.g., couldn't locate
+                # the input element) or an exception is raised which will be
+                # handled by the outer exception path. Proceed to diagnostics
+                # and return.
 
                 # Save diagnostics before giving up
                 try:
@@ -604,7 +669,7 @@ class CaseScraperService:
                         pass
                     logger.info(f"Saved diagnostics to {page_path}")
                 except Exception:
-                    logger.debug("Failed to save search diagnostics", exc_info=True)
+                    logger.warning("Failed to save search diagnostics", exc_info=True)
 
                 logger.warning(f"No results table found for case: {case_number}")
                 return False

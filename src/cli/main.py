@@ -26,8 +26,8 @@ class FederalCourtScraperCLI:
 
     def __init__(self):
         """Initialize the CLI."""
-        # Setup logging to console and file
-        setup_logging(log_level="INFO", log_file="logs/scraper.log")
+        # Setup logging to console and file (respect configured log level)
+        setup_logging(log_level=Config.get_log_level(), log_file="logs/scraper.log")
 
         self.config = Config()
         # Prefer non-headless in CLI runs to match interactive harness behavior
@@ -538,8 +538,8 @@ Notes:
         probe_parser.add_argument(
             "--probe-budget",
             type=int,
-            default=200,
-            help="Maximum number of probes allowed (default: %(default)s)",
+            default=10,
+            help="Maximum exponent n for 2^n steps in probing (default: %(default)s)",
         )
         probe_parser.add_argument(
             "--max-limit",
@@ -634,6 +634,109 @@ Notes:
 
         args = parser.parse_args()
 
+        # Log program startup details so operators can see invocation and inputs
+        try:
+            logger.info(f"Program invocation: {' '.join(sys.argv)}")
+            try:
+                logger.info(f"Parsed args: {vars(args)}")
+            except Exception:
+                logger.info("Parsed args: <unserializable>")
+
+                try:
+                    logger.info(
+                        f"Config: rate_interval={getattr(args, 'rate_interval', Config.get_rate_limit_seconds())} backoff_factor={getattr(args, 'backoff_factor', Config.get_backoff_factor())} max_backoff_seconds={getattr(args, 'max_backoff_seconds', Config.get_max_backoff_seconds())} enable_run_logger={Config.get_enable_run_logger()} write_audit={Config.get_write_audit()}"
+                    )
+                except Exception:
+                    # best-effort logging; do not fail startup if config access errors
+                    pass
+            # Log a small, masked snapshot of environment and process info for diagnostics
+            try:
+                import os
+                from datetime import datetime as _dt
+
+                def _mask(val: str) -> str:
+                    if val is None:
+                        return ""
+                    s = str(val)
+                    if len(s) > 128:
+                        s = s[:128] + "..."
+                    return s
+
+                sensitive_keys = ("KEY", "SECRET", "PASSWORD", "TOKEN", "AWS", "GITHUB", "SSH")
+
+                env_snapshot = {}
+                for k, v in os.environ.items():
+                    if any(sk in k.upper() for sk in sensitive_keys):
+                        env_snapshot[k] = "<redacted>"
+                    else:
+                        env_snapshot[k] = _mask(v)
+
+                proc_info = {
+                    "pid": os.getpid(),
+                    "uid": getattr(os, "getuid", lambda: None)(),
+                    "cwd": os.getcwd(),
+                    "python": _mask(sys.executable),
+                    "started_at": _dt.utcnow().isoformat() + "Z",
+                }
+
+                # Log concise summaries (not flooding logs with full env unless needed).
+                logger.info(f"Process info: pid={proc_info['pid']} uid={proc_info['uid']} cwd={proc_info['cwd']} python={proc_info['python']} started_at={proc_info['started_at']}")
+                # Log a short subset of environment vars (keys only) to help debugging
+                try:
+                    keys_list = ",".join(list(env_snapshot.keys())[:30])
+                    logger.info(f"Env keys (first 30): {keys_list}")
+                except Exception:
+                    logger.debug("Failed to log environment keys summary")
+            except Exception:
+                pass
+
+            # Friendly Initialization Config summary (ordered, masked where needed)
+            try:
+                def _mask_short(val: str) -> str:
+                    if val is None:
+                        return ""
+                    s = str(val)
+                    if len(s) > 64:
+                        return s[:61] + "..."
+                    return s
+
+                db_cfg = Config.get_db_config()
+                db_cfg_masked = dict(db_cfg)
+                if "password" in db_cfg_masked and db_cfg_masked["password"]:
+                    db_cfg_masked["password"] = "<redacted>"
+
+                init_items = [
+                    ("rate_limit_seconds", _mask_short(getattr(args, "rate_interval", Config.get_rate_limit_seconds()))),
+                    ("backoff_factor", _mask_short(getattr(args, "backoff_factor", Config.get_backoff_factor()))),
+                    ("max_backoff_seconds", _mask_short(getattr(args, "max_backoff_seconds", Config.get_max_backoff_seconds()))),
+                    ("max_retries", _mask_short(Config.get_max_retries())),
+                    ("timeout_seconds", _mask_short(Config.get_timeout_seconds())),
+                    ("output_dir", _mask_short(Config.get_output_dir())),
+                    ("per_case_subdir", _mask_short(Config.get_per_case_subdir())),
+                    ("export_json_only", _mask_short(Config.get_export_json_only())),
+                    ("headless", _mask_short(Config.get_headless())),
+                    ("browser", _mask_short(Config.get_browser())),
+                    ("log_level", _mask_short(Config.get_log_level())),
+                    ("log_file", _mask_short(Config.get_log_file())),
+                    ("enable_run_logger", _mask_short(Config.get_enable_run_logger())),
+                    ("write_audit", _mask_short(Config.get_write_audit())),
+                    ("db_host", _mask_short(db_cfg_masked.get("host"))),
+                    ("db_port", _mask_short(db_cfg_masked.get("port"))),
+                    ("db_name", _mask_short(db_cfg_masked.get("database"))),
+                    ("db_user", _mask_short(db_cfg_masked.get("user"))),
+                    ("db_password", _mask_short(db_cfg_masked.get("password"))),
+                ]
+
+                # Emit a compact, readable block
+                logger.info("Initialization config:")
+                for k, v in init_items:
+                    logger.info(f"  - {k}: {v}")
+            except Exception:
+                logger.debug("Failed to produce initialization config summary")
+        except Exception:
+            # swallowing any logging errors to avoid interfering with CLI behavior
+            pass
+
         # Set force flag on CLI object
         if getattr(args, "force", False):
             self.force = True
@@ -691,6 +794,9 @@ Notes:
                     args.year, args.max_cases, start=getattr(args, "start", None)
                 )
             elif args.command == "probe":
+                # Enable probe state persistence for probe command
+                import os
+                os.environ["FCT_PERSIST_PROBE_STATE"] = "true"
                 # Probe CLI: will run the probing algorithm. By default this is a dry-run that
                 # prints parameters; to perform real HTTP probes pass --live.
                 if getattr(args, "live", False):
@@ -708,6 +814,7 @@ Notes:
                             try:
                                 yy = str(args.year)[-2:]
                                 case_number = f"IMM-{n}-{yy}"
+                                logger.debug(f"call [scraper.search_case] for {case_number}")
                                 found = scraper.search_case(case_number)
                                 return bool(found)
                             except Exception:
@@ -739,7 +846,8 @@ Notes:
                     max_limit=getattr(args, "max_limit", 100000),
                     coarse_step=getattr(args, "coarse_step", 100),
                     refine_range=getattr(args, "refine_range", 200),
-                    probe_budget=getattr(args, "probe_budget", 200),
+                    probe_budget=getattr(args, "probe_budget", 10),
+                    max_probes=10000,
                     rate_limiter=rl,
                 )
 

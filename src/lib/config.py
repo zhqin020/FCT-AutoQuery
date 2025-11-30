@@ -47,11 +47,15 @@ DEFAULT_SAVE_MODAL_HTML = False
 DEFAULT_ENABLE_RUN_LOGGER = True
 DEFAULT_WRITE_AUDIT = False
 DEFAULT_DOCKET_PARSE_MAX_ERRORS = 3
-DEFAULT_SAFE_STOP_NO_RECORDS = 500
+DEFAULT_SAFE_STOP_NO_RECORDS = 3
 DEFAULT_PERSIST_RAW_HTML = False
-DEFAULT_PROBE_BUDGET = 200
+DEFAULT_PROBE_BUDGET = 20
 DEFAULT_BACKOFF_FACTOR = 1.0
 DEFAULT_MAX_BACKOFF_SECONDS = 60.0
+DEFAULT_PROBE_DELAY_MIN = 1.0
+DEFAULT_PROBE_DELAY_MAX = 3.0
+DEFAULT_PROBE_STATE_FILE = "output/probe_state.json"
+DEFAULT_PERSIST_PROBE_STATE = False
 
 
 def _load_toml_config() -> dict:
@@ -272,6 +276,39 @@ class Config:
             or os.getenv("FCT_BACKOFF_FACTOR")
             or DEFAULT_BACKOFF_FACTOR
         )
+
+    @classmethod
+    def get_probe_delay_min(cls) -> float:
+        return float(
+            _get_from_config("app", "probe_delay_min")
+            or os.getenv("FCT_PROBE_DELAY_MIN")
+            or DEFAULT_PROBE_DELAY_MIN
+        )
+
+    @classmethod
+    def get_probe_delay_max(cls) -> float:
+        return float(
+            _get_from_config("app", "probe_delay_max")
+            or os.getenv("FCT_PROBE_DELAY_MAX")
+            or DEFAULT_PROBE_DELAY_MAX
+        )
+
+    @classmethod
+    def get_probe_state_file(cls) -> str:
+        return (
+            _get_from_config("app", "probe_state_file")
+            or os.getenv("FCT_PROBE_STATE_FILE")
+            or DEFAULT_PROBE_STATE_FILE
+        )
+
+    @classmethod
+    def get_persist_probe_state(cls) -> bool:
+        val = _get_from_config("app", "persist_probe_state")
+        if val is None:
+            val = os.getenv("FCT_PERSIST_PROBE_STATE")
+        if isinstance(val, str):
+            return val.lower() == "true"
+        return bool(val) if val is not None else DEFAULT_PERSIST_PROBE_STATE
 
     @classmethod
     def get_max_backoff_seconds(cls) -> float:
