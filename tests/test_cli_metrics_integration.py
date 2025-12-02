@@ -125,6 +125,8 @@ def test_batch_run_emits_run_metrics(monkeypatch):
     monkeypatch.setattr(BatchService, "find_upper_bound", lambda *a, **k: (2, 2))
     monkeypatch.setattr(Config, "get_probe_delay_min", classmethod(lambda cls: 0.0))
     monkeypatch.setattr(Config, "get_probe_delay_max", classmethod(lambda cls: 0.0))
+    # Ensure tracker doesn't skip cases due to prior test state
+    monkeypatch.setattr(cli.tracker, 'should_skip_case', lambda cn, force=False: (False, ''))
 
     cases, skipped = cli.scrape_batch_cases(2025, max_cases=2)
     # one success, one failure

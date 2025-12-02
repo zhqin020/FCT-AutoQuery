@@ -95,6 +95,60 @@ python -m src.cli.main batch 2025 --max-cases 50 --force
 # - `year`: 抓取的年度
 #
 ```
+### DB-backed run tracking & migration
+
+This repo has replaced the legacy NDJSON `RunLogger` with DB-backed tracking implemented in the `CaseTrackingService` and the following schema and helper scripts under `scripts/`:
+
+- `scripts/migrate_tracking_schema.py` — apply idempotent schema changes and create required tables/indexes
+- `scripts/migrate_ndjson_to_db.py` — import historical NDJSON runs (supports `--dry-run`)
+- `scripts/remove_ndjson_system.py` — clean up legacy NDJSON runtime files and imports (supports `--dry-run` and backup)
+
+Recommended quick steps for migration:
+1. Backup DB & NDJSON logs:
+```bash
+# Dump DB and copy NDJSON files
+pg_dump -Fc -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME > backups/fct_pretracking_$(date +%Y%m%d).dump
+cp -r logs logs/backup/ndjson_pretracking_$(date +%Y%m%d)
+```
+2. Run schema migration (safe, idempotent)
+```bash
+python3 scripts/migrate_tracking_schema.py
+```
+3. Dry-run NDJSON import and inspect the output to confirm counts and parsing:
+```bash
+python3 scripts/migrate_ndjson_to_db.py --dry-run --logs-dir logs --since 2020-01-01
+```
+4. Run real import when verified:
+```bash
+python3 scripts/migrate_ndjson_to_db.py --logs-dir logs --since 2020-01-01
+```
+5. Validate results in Postgres:
+```sql
+SELECT run_id, started_at, completed_at, status FROM processing_runs ORDER BY started_at DESC LIMIT 10;
+SELECT count(*) FROM case_processing_history WHERE run_id = '<example_run_id>';
+```
+6. After validation, remove legacy NDJSON runtime files (dry-run first):
+```bash
+python3 scripts/remove_ndjson_system.py --dry-run
+python3 scripts/remove_ndjson_system.py --confirm
+```
+
+Important notes:
+- `FCT_ENABLE_RUN_LOGGER` is still present for compatibility, but DB tracking is now the default and recommended.
+- Always run the dry-run modes first and keep backups.
+
+Note: `probe --live` now creates a `probe` run id and records probe results to the tracking DB. Dry-run (`probe` without `--live`) does not create runs.
+
+Troubleshooting: Null `run_id` errors
+-----------------------------------
+
+If you encounter errors about `run_id` being null when the system attempts to record case processing, this usually indicates the run was not created or not attached before the tracking call. To help avoid this:
+
+- Use CLI entrypoints (`single`, `batch`, or `probe`) which automatically create run IDs via `start_run` and ensure they're passed into the tracking calls.
+- If you call the tracking method directly (for example from tests or scripts), pass a valid `run_id` string. The `CaseTrackingService.record_case_processing` will now generate a fallback run if `run_id` is missing, but it's preferable to create runs explicitly.
+- Check logs for a WARN message that includes a fallback `run_id` if run creation fails — this indicates the service auto-generated a run to attribute the event.
+
+
 
 ### 脚本 `scripts/auto_click_more.py`（快速烟雾/手工检查）
 

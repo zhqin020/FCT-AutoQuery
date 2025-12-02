@@ -49,7 +49,7 @@ def test_create_tracking_integrated_check_exists_records_probe():
     # Create a CLI that uses a scraper returning True for a known case
     cli = MockCLI(tracker, MockScraper({'IMM-1-25': True}))
 
-    check = create_tracking_integrated_check_exists(cli, run_id='r1')
+    check = create_tracking_integrated_check_exists(cli, run_id='r1', year=2025)
     assert callable(check)
 
     exists = check(1)  # IMM-1-25
@@ -61,7 +61,7 @@ def test_create_tracking_integrated_check_exists_records_probe():
 def test_create_tracking_integrated_scrape_case_records_scrape():
     tracker = MockTracker()
     cli = MockCLI(tracker, MockScraper({'IMM-1-25': True}))
-    scrape = create_tracking_integrated_scrape_case(cli, run_id='r2')
+    scrape = create_tracking_integrated_scrape_case(cli, run_id='r2', year=2025)
     assert callable(scrape)
 
     case = scrape(1)  # IMM-1-25

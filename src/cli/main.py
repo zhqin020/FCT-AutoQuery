@@ -303,6 +303,20 @@ class FederalCourtScraperCLI:
         Returns:
             Case object if successful, None otherwise
         """
+        # Ensure that a run ID exists when scraping without search: some callers
+        # (e.g. manual invocation or internal probe scrapers) may call this helper
+        # directly and not have started a run. Start one for compatibility so
+        # that tracking calls are always attributed to a run.
+        if not hasattr(self, 'current_run_id') or self.current_run_id is None:
+            try:
+                self.current_run_id = self.tracker.start_run(
+                    processing_mode="single",
+                    parameters={"case_number": case_number},
+                )
+            except Exception:
+                # best-effort: allow scraping to continue even if DB errors occur
+                self.current_run_id = None
+
         if self.emergency_stop:
             logger.warning("Emergency stop active - skipping case scrape")
             return None
@@ -500,7 +514,33 @@ class FederalCourtScraperCLI:
         def check_case_exists(case_num: int) -> bool:
             case_number = f"IMM-{case_num}-{year % 100:02d}"
             try:
-                # First check if case already exists in database (unless forcing)
+                # First, check if this case should be skipped based on tracking rules
+                should_skip, reason = self.tracker.should_skip_case(case_number, force=self.force)
+                if should_skip:
+                    logger.info(f"Skipping {case_number}: {reason}")
+                    # Record as a skipped probe to tracking (no network call)
+                    try:
+                        # When the tracker recommends skipping a case, record it as a
+                        # 'skipped' outcome rather than 'no_results' to avoid
+                        # incrementing consecutive_no_results counters. This keeps
+                        # the snapshot and history clearer and prevents the skip
+                        # itself from being counted as another no-result.
+                        self.tracker.record_case_processing(
+                            court_file_no=case_number,
+                            run_id=batch_run_id,
+                            outcome="skipped",
+                            reason=reason,
+                            processing_mode="batch_probe",
+                        )
+                    except Exception:
+                        pass
+                    # If the skip reason is 'exists_in_db' we mark it found (True)
+                    if "exists_in_db" in reason:
+                        found_cases.add(case_number)
+                        return True
+                    return False
+
+                # Next check if the case already exists in database (unless forcing)
                 if not self.force and self.exporter.case_exists(case_number):
                     logger.info(f"Case {case_number} already exists in database, skipping web search")
                     found_cases.add(case_number)  # Mark as found to avoid processing
@@ -540,6 +580,15 @@ class FederalCourtScraperCLI:
         def scrape_case_data(case_num: int) -> Optional[object]:
             case_number = f"IMM-{case_num}-{year % 100:02d}"
             try:
+                # Consult tracking skip rules before attempting any network call.
+                should_skip, reason = self.tracker.should_skip_case(case_number, force=self.force)
+                if should_skip:
+                    logger.info(f"Skipping scrape for {case_number} due to tracking: {reason}")
+                    try:
+                        integration.record_scrape_result(case_number, False, error_message=reason)
+                    except Exception:
+                        pass
+                    return None
                 # Check if case already exists in database (unless forcing)
                 if not self.force and self.exporter.case_exists(case_number):
                     logger.info(f"Case {case_number} already exists in database, skipping scrape")
@@ -586,6 +635,7 @@ class FederalCourtScraperCLI:
         logger.info("Starting exponential probing to find upper bound")
         upper, probes = BatchService.find_upper_bound(
             check_case_exists=check_case_exists,
+            fast_check_case_exists=lambda n: (not self.force and self.exporter.case_exists(f"IMM-{n}-{year % 100:02d}")),
             start=start or 1,
             initial_high=getattr(self, 'initial_high', 1000),
             max_limit=getattr(self, 'max_limit', 100000),
@@ -597,6 +647,7 @@ class FederalCourtScraperCLI:
             collect=True,  # Enable collection during probing
             scrape_case_data=scrape_case_data,
             max_cases=max_cases or 100000,
+            format_case_number=lambda n: f"IMM-{n}-{year % 100:02d}",
         )
 
         print(f"\nProbing completed:")
@@ -629,6 +680,14 @@ class FederalCourtScraperCLI:
 
                 # If not forcing, skip if case already exists in DB
                 try:
+                    # Check tracker skip rules before exporter/db checks or web calls
+                    should_skip, reason = self.tracker.should_skip_case(case_number, force=self.force)
+                    if should_skip:
+                        print(f"→ Skipping {case_number}: {reason}")
+                        skipped.append({"case_number": case_number, "status": "skipped", "reason": reason})
+                        # record skip via integration helper
+                        integration.record_scrape_result(case_number, False, error_message=reason)
+                        continue
                     if not self.force and self.exporter.case_exists(case_number):
                         print(f"→ Skipping {case_number}: already in database")
                         skipped.append({"case_number": case_number, "status": "skipped"})
@@ -1129,13 +1188,53 @@ Notes:
                         except Exception:
                             pass
 
+                        # Create a real run for probe so records are attributed to a run
+                        probe_run_id = None
+                        try:
+                            probe_run_id = self.tracker.start_run(
+                                processing_mode="probe",
+                                parameters={
+                                    "year": args.year,
+                                    "start": getattr(args, "start", 1),
+                                    "initial_high": getattr(args, "initial_high", 1000),
+                                },
+                            )
+                            # Also set the current_run_id to be used by methods that reference
+                            # self.current_run_id (defensive compatibility)
+                            self.current_run_id = probe_run_id
+                        except Exception:
+                            probe_run_id = None
+
+                        # Use tracking integration to ensure probe results are recorded to DB
+                        integration = None
+                        if probe_run_id:
+                            integration = TrackingIntegration(self.tracker, probe_run_id)
+
                         def check_case_exists(n: int) -> bool:
                             # Build case number using IMM-<n>-<yy> pattern by default
                             try:
                                 yy = str(args.year)[-2:]
                                 case_number = f"IMM-{n}-{yy}"
                                 logger.debug(f"call [scraper.search_case] for {case_number}")
+                                # Respect tracking skip rules before calling out to the
+                                # scraper to avoid repeated probing for known no-results
+                                should_skip, reason = self.tracker.should_skip_case(case_number, force=self.force)
+                                if should_skip:
+                                    logger.info(f"Skipping {case_number}: {reason}")
+                                    try:
+                                        if integration:
+                                            integration.record_probe_result(case_number, False, 0, f"Skipped: {reason}", outcome='skipped')
+                                    except Exception:
+                                        pass
+                                    return False
                                 found = scraper.search_case(case_number)
+                                # If we have a tracking integration, record the probe result
+                                try:
+                                    if integration:
+                                        processing_time_ms = 0
+                                        integration.record_probe_result(case_number, bool(found), processing_time_ms)
+                                except Exception as e:
+                                    logger.debug(f"Failed to record probe result for {case_number}: {e}")
                                 return bool(found)
                             except Exception:
                                 return False
@@ -1163,6 +1262,7 @@ Notes:
 
                 upper, probes = BatchService.find_upper_bound(
                     check_case_exists=check_case_exists,
+                    fast_check_case_exists=lambda n: (not self.force and self.exporter.case_exists(f"IMM-{n}-{args.year % 100:02d}")),
                     start=getattr(args, "start", 1),
                     initial_high=getattr(args, "initial_high", 1000),
                     max_limit=getattr(args, "max_limit", 100000),
@@ -1171,12 +1271,20 @@ Notes:
                     probe_budget=getattr(args, "probe_budget", 10),
                     max_probes=10000,
                     rate_limiter=rl,
+                    format_case_number=lambda n: f"IMM-{n}-{args.year % 100:02d}",
                 )
 
                 print("\nProbe result:")
                 print(f"  Approx upper numeric id: {upper}")
                 print(f"  Probes used: {probes}")
                 # Stop processing after probe results — do not fall through to batch audit/export logic
+                # finish probe run if applicable
+                try:
+                    if getattr(self, 'current_run_id', None):
+                        self.tracker.finish_run(self.current_run_id, 'completed')
+                        logger.info(f"Probe run {self.current_run_id} completed")
+                except Exception as e:
+                    logger.error(f"Failed to finish probe run: {e}")
                 return
                 if scraped_cases or skipped:
                     # Export scraped cases and save to DB (only if there are scraped cases)

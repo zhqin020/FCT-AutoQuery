@@ -322,6 +322,63 @@ python -m src.cli.main batch 2025 --max-cases 50 --force
 ```
 
 
+### DB-backed run tracking (New)
+
+We replaced the legacy NDJSON RunLogger system with a database-backed case tracking system that stores run and per-case history in Postgres. This improves auditability, querying, and deduplication of runs.
+
+Key tables created or patched by `scripts/migrate_tracking_schema.py`:
+- `processing_runs` — records runs (run_id, started_at, completed_at, status, counters)
+- `case_processing_history` — per-case events (court_file_no, outcome, reason, timestamps)
+- `case_status_snapshots` — aggregated per-case stats (last outcome, success/failure counters)
+- `probe_state` — optional persisted probe caching to speed repeated probes
+
+Migration & removal scripts are in `scripts/`:
+- `scripts/migrate_tracking_schema.py`: idempotent schema creation/patches
+- `scripts/migrate_ndjson_to_db.py`: import historical NDJSON runs to DB (supports --dry-run)
+- `scripts/remove_ndjson_system.py`: remove NDJSON files and RunLogger code once migration is validated (supports backup and --dry-run)
+
+Migration checklist (recommended):
+1. Backup Postgres (e.g., `pg_dump`) and NDJSON files under `logs/`.
+2. Run schema migration (idempotent):
+```bash
+python3 scripts/migrate_tracking_schema.py
+```
+3. Dry-run NDJSON -> DB migration and review the summary:
+```bash
+python3 scripts/migrate_ndjson_to_db.py --dry-run --logs-dir logs --since 2020-01-01
+```
+4. Run the migration (no --dry-run) when dry-run looks correct:
+```bash
+python3 scripts/migrate_ndjson_to_db.py --logs-dir logs --since 2020-01-01
+```
+5. Confirm inserts in Postgres and test a staging run:
+```sql
+SELECT * FROM processing_runs ORDER BY started_at DESC LIMIT 10;
+SELECT COUNT(*) FROM case_processing_history WHERE run_id = '<test_run_id>';
+```
+6. If everything looks good, remove legacy RunLogger / NDJSON assets (creates backups in `logs/backup`):
+```bash
+python3 scripts/remove_ndjson_system.py --dry-run
+python3 scripts/remove_ndjson_system.py --confirm
+```
+
+Troubleshooting: Null `run_id` errors
+-----------------------------------
+
+If you see an ERROR like `null value in column "run_id" of relation "case_processing_history" violates not-null constraint` during runtime, it typically means a tracking call was made without a valid `run_id`.
+
+How we handle this now:
+- The `CaseTrackingService.record_case_processing` method now defensively creates a fallback `run_id` by invoking `start_run` when the passed `run_id` is missing. This prevents DB NOT NULL violations and ensures the event is recorded.
+
+Recommendations:
+- Prefer using the CLI entrypoints to ensure `start_run` is called automatically (the CLI will set `current_run_id` for single/batch runs).
+- If calling `record_case_processing` directly (from tests, scripts, or custom integrations), provide `run_id` explicitly when you can.
+- To debug why the `run_id` was missing, look for the `WARNING` log message that includes the created fallback `run_id` and trace any earlier failures to start a run.
+
+Roll-back: restore DB from dump and copy NDJSON files from `logs/backup/`.
+
+Note: `FCT_ENABLE_RUN_LOGGER` is retained in `Config` for legacy toggles, but DB-backed tracking is the recommended default.
+
 ### 代码质量
 - **Black**: 代码格式化
 - **Flake8**: 代码风格检查

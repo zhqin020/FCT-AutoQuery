@@ -576,7 +576,16 @@ class CaseScraperService:
                 polls = 0
                 td_match_count = 0
                 table_row_count = 0
-                for i in range(40):
+
+                # Prefer a shorter poll delay by default but keep it consistent
+                # with prior behavior; allow a small streak of 'No data'
+                # before treating it as stable. Use the configured safe-stop
+                # threshold so that probe-level and search-level behavior are
+                # consistent.
+                max_polls = 40
+                poll_delay = 0.5
+                no_data_threshold = int(Config.get_safe_stop_no_records())
+                for i in range(max_polls):
                     polls += 1
                     try:
                         no_data_elems = driver.find_elements(By.XPATH, "//td[contains(text(), 'No data available')]")
@@ -586,16 +595,6 @@ class CaseScraperService:
                         no_data_elems = []
                         td_matches = []
                         table_rows = []
-
-                    if no_data_elems:
-                        # The page may show 'No data available' initially but then load data.
-                        # Set no_data but continue polling to allow for later data appearance.
-                        no_data = True
-                        no_data_streak += 1
-                        td_match_count = len(td_matches)
-                        table_row_count = len(table_rows)
-                        logger.warning(f"Poll {i+1}: detected 'No data available' (rows={table_row_count} td_matches={td_match_count})")
-                        break  # Immediately return since no data will load for non-existent cases
 
                     if td_matches:
                         # Clear any prior 'no_data' observation: a later poll
@@ -608,11 +607,37 @@ class CaseScraperService:
                         logger.debug(f"Poll {i+1}: found {td_match_count} matching td(s) in {table_row_count} table rows")
                         break
 
+                    if no_data_elems:
+                        # The page may show 'No data available' at first but then
+                        # update with results; increment streak and only consider
+                        # stable 'no data' if it persists across multiple polls.
+                        # Verify the search input value corresponds to the requested case;
+                        # if the input doesn't match, treat 'No data' as stale and
+                        # continue polling until the page reflects the current request.
+                        try:
+                            cur_val = None
+                            cur_val = case_input.get_attribute('value') if hasattr(case_input, 'get_attribute') else None
+                        except Exception:
+                            cur_val = None
+                        if cur_val is None or str(cur_val).strip() != str(case_number).strip():
+                            logger.debug(f"Detected stale 'No data available' marker but input value indicates search not updated (input={cur_val}) - continuing to poll")
+                            # Continue polling to allow the search input/apply to take effect
+                            time.sleep(poll_delay)
+                            continue
+                        no_data_streak += 1
+                        td_match_count = len(td_matches)
+                        table_row_count = len(table_rows)
+                        logger.warning(f"Poll {i+1}: detected 'No data available' (rows={table_row_count} td_matches={td_match_count}, streak={no_data_streak})")
+                        if no_data_streak >= no_data_threshold:
+                            no_data = True
+                            break
+                        # else, continue polling to allow data to arrive
+
                     # periodic debug summary to trace progress (every 5 polls)
                     if (i + 1) % 5 == 0:
                         logger.debug(f"Poll {i+1}: no marker, td_matches={len(td_matches)} table_rows={len(table_rows)}")
 
-                    time.sleep(0.5)
+                    time.sleep(poll_delay)
 
                 if found_row:
                     # Optionally sample matched cell text for debugging

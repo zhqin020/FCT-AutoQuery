@@ -150,6 +150,21 @@ class CaseTrackingService:
         else:
             duration_seconds = (completed_at - started_at).total_seconds()
         
+        # Defensive: ensure run_id is present. Some code paths may call this
+        # method without a run id (for example, if the CLI failed to start a
+        # run or tests call the method directly). Enforce a fallback to a
+        # generated run id so the DB constraint is not violated.
+        if not run_id:
+            try:
+                fallback_run_id = self.start_run(processing_mode=processing_mode or scrape_mode, parameters={}, metadata={'generated_fallback': True})
+                logger.warning(f"Missing run_id while recording case {court_file_no}; created fallback run_id: {fallback_run_id}")
+                run_id = fallback_run_id
+            except Exception as _:
+                # As a last resort, generate a timestamp-based run id so at least
+                # a non-null string is recorded even if DB inserts fail.
+                import time
+                run_id = f"fallback_{int(time.time())}"
+
         try:
             conn = psycopg2.connect(**self.db_config)
             cursor = conn.cursor()
@@ -215,6 +230,21 @@ class CaseTrackingService:
                     True
             ))
 
+            # Also update consecutive_no_results for 'no_results' outcomes if DB supports the column.
+            # Use a separate update to avoid hard failures if DB schema isn't patched yet.
+            try:
+                cursor.execute("""
+                    UPDATE case_status_snapshots SET
+                        consecutive_no_results = CASE
+                            WHEN last_outcome = 'no_results' THEN COALESCE(consecutive_no_results, 0) + 1
+                            ELSE 0
+                        END
+                    WHERE court_file_no = %s
+                """, (court_file_no,))
+            except Exception:
+                # Column may not exist on older schema; ignore updating it.
+                pass
+
             conn.commit()
             cursor.close()
             conn.close()
@@ -271,6 +301,39 @@ class CaseTrackingService:
             logger.error(f"Failed to get case status for {court_file_no}: {e}")
             return None
 
+    def _count_recent_no_results(self, court_file_no: str, limit: int = 5) -> int:
+        """Count how many of the most recent processing events for a case are 'no_results'.
+
+        This looks at the case_processing_history table in descending order of started_at,
+        stopping early when a non-no_results outcome is encountered. It returns the count
+        of consecutive 'no_results' at the top of the history.
+        """
+        try:
+            conn = psycopg2.connect(**self.db_config)
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT outcome FROM case_processing_history
+                WHERE court_file_no = %s
+                ORDER BY started_at DESC
+                LIMIT %s
+                """,
+                (court_file_no, limit),
+            )
+            rows = cursor.fetchall()
+            cursor.close()
+            conn.close()
+            count = 0
+            for row in rows:
+                if row and row[0] == 'no_results':
+                    count += 1
+                else:
+                    break
+            return count
+        except Exception as e:
+            logger.debug(f"Error counting recent no_results for {court_file_no}: {e}")
+            return 0
+
     def should_skip_case(self, court_file_no: str, force: bool = False, 
                         max_consecutive_failures: int = 5) -> Tuple[bool, str]:
         """
@@ -304,10 +367,42 @@ class CaseTrackingService:
         
         # Check processing status
         status = self.get_case_status(court_file_no)
+        # If snapshot doesn't exist, fall back to computing consecutive no_results
+        if not status:
+            try:
+                safe_no_records = int(self.config.get_safe_stop_no_records())
+            except Exception:
+                safe_no_records = 3
+            try:
+                cons_nr = self._count_recent_no_results(court_file_no, safe_no_records)
+                if cons_nr >= safe_no_records:
+                    return True, f"no_results_repeated ({cons_nr})"
+            except Exception:
+                pass
         if status:
             if status.get('consecutive_failures', 0) >= max_consecutive_failures:
                 return True, f"too_many_failures ({status['consecutive_failures']})"
             
+            # New behavior: avoid repeatedly probing cases that repeatedly return `no_results`.
+            try:
+                safe_no_records = int(self.config.get_safe_stop_no_records())
+            except Exception:
+                safe_no_records = 3
+
+            # If snapshot has no column for consecutive_no_results, or it's 0,
+            # attempt to compute the streak from historical case processing
+            # history. This ensures the logic works even if the DB schema
+            # migration hasn't been applied yet.
+            cons_nr = status.get('consecutive_no_results')
+            if not cons_nr:
+                try:
+                    cons_nr = self._count_recent_no_results(court_file_no, safe_no_records)
+                except Exception:
+                    cons_nr = 0
+
+            if cons_nr >= safe_no_records:
+                return True, f"no_results_repeated ({status.get('consecutive_no_results')})"
+
             if status.get('last_outcome') == 'success':
                 last_success = status.get('last_success_at')
                 if last_success:
@@ -315,6 +410,22 @@ class CaseTrackingService:
                     time_since_success = (datetime.now(timezone.utc) - last_success).days
                     if time_since_success < 7:  # Skip if processed within last 7 days
                         return True, f"recently_processed ({time_since_success} days ago)"
+
+                # New behavior: avoid repeatedly probing cases that repeatedly return `no_results`.
+                try:
+                    safe_no_records = int(self.config.get_safe_stop_no_records())
+                except Exception:
+                    safe_no_records = 3
+
+                cons_nr2 = status.get('consecutive_no_results')
+                if not cons_nr2:
+                    try:
+                        cons_nr2 = self._count_recent_no_results(court_file_no, safe_no_records)
+                    except Exception:
+                        cons_nr2 = 0
+
+                if cons_nr2 >= safe_no_records:
+                    return True, f"no_results_repeated ({status.get('consecutive_no_results')})"
         
         return False, ""
 

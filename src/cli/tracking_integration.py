@@ -16,44 +16,53 @@ class TrackingIntegration:
         self.tracker = tracker
         self.run_id = run_id
     
-    def record_probe_result(self, case_number: str, exists: bool, 
+    def record_probe_result(self, case_number: str, exists: bool,
                            processing_time_ms: Optional[int] = None,
-                           error_message: Optional[str] = None):
+                           error_message: Optional[str] = None,
+                           outcome: Optional[str] = None):
         """Record a probe result to tracking system."""
-        outcome = "success" if exists else "no_results"
+        # Allow callers to override the recorded outcome (e.g., 'skipped').
+        if outcome:
+            final_outcome = outcome
+        else:
+            final_outcome = "success" if exists else "no_results"
         
         self.tracker.record_case_processing(
             court_file_no=case_number,
             run_id=self.run_id,
-            outcome=outcome,
+            outcome=final_outcome,
             processing_mode="batch_probe",
             error_message=error_message,
             processing_duration_ms=processing_time_ms
         )
         
-        logger.debug(f"Recorded probe: {case_number} -> {outcome}")
+        logger.debug(f"Recorded probe: {case_number} -> {final_outcome}")
     
     def record_scrape_result(self, case_number: str, success: bool,
                            case_id: Optional[str] = None,
                            processing_time_ms: Optional[int] = None,
-                           error_message: Optional[str] = None):
+                           error_message: Optional[str] = None,
+                           outcome: Optional[str] = None):
         """Record a scrape result to tracking system."""
-        outcome = "success" if success else "failed"
+        if outcome:
+            final_outcome = outcome
+        else:
+            final_outcome = "success" if success else "failed"
         
         self.tracker.record_case_processing(
             court_file_no=case_number,
             run_id=self.run_id,
-            outcome=outcome,
+            outcome=final_outcome,
             processing_mode="batch_collect",
             case_id=case_id,
             error_message=error_message,
             processing_duration_ms=processing_time_ms
         )
         
-        logger.debug(f"Recorded scrape: {case_number} -> {outcome}")
+        logger.debug(f"Recorded scrape: {case_number} -> {final_outcome}")
 
 
-def create_tracking_integrated_check_exists(cli_instance, run_id: str) -> Callable[[int], bool]:
+def create_tracking_integrated_check_exists(cli_instance, run_id: str, year: int = 2025) -> Callable[[int], bool]:
     """
     Create a check_case_exists function that integrates with tracking system.
     
@@ -68,13 +77,13 @@ def create_tracking_integrated_check_exists(cli_instance, run_id: str) -> Callab
     
     def tracked_check_exists(number: int) -> bool:
         """Check if case exists and record result to tracking system."""
-        case_number = f"IMM-{number}-25"  # TODO: Get year from context
+        case_number = f"IMM-{number}-{year % 100:02d}"
         
         # Check if we should skip this case
         should_skip, reason = cli_instance.tracker.should_skip_case(case_number, force=cli_instance.force)
         if should_skip:
             logger.info(f"Skipping {case_number}: {reason}")
-            integration.record_probe_result(case_number, False, error_message=f"Skipped: {reason}")
+            integration.record_probe_result(case_number, False, error_message=f"Skipped: {reason}", outcome='skipped')
             return False
         
         # Perform the actual check
@@ -88,7 +97,7 @@ def create_tracking_integrated_check_exists(cli_instance, run_id: str) -> Callab
             
             # Record processing time
             processing_time_ms = int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000)
-            
+
             # Record result
             integration.record_probe_result(case_number, exists, processing_time_ms)
             
@@ -104,7 +113,7 @@ def create_tracking_integrated_check_exists(cli_instance, run_id: str) -> Callab
     return tracked_check_exists
 
 
-def create_tracking_integrated_scrape_case(cli_instance, run_id: str) -> Callable[[int], Optional[object]]:
+def create_tracking_integrated_scrape_case(cli_instance, run_id: str, year: int = 2025) -> Callable[[int], Optional[object]]:
     """
     Create a scrape_case_data function that integrates with tracking system.
     
@@ -119,13 +128,13 @@ def create_tracking_integrated_scrape_case(cli_instance, run_id: str) -> Callabl
     
     def tracked_scrape_case(number: int) -> Optional[object]:
         """Scrape case data and record result to tracking system."""
-        case_number = f"IMM-{number}-25"  # TODO: Get year from context
+        case_number = f"IMM-{number}-{year % 100:02d}"
         
         # Check if we should skip this case
         should_skip, reason = cli_instance.tracker.should_skip_case(case_number, force=cli_instance.force)
         if should_skip:
             logger.info(f"Skipping scrape {case_number}: {reason}")
-            integration.record_scrape_result(case_number, False, error_message=f"Skipped: {reason}")
+            integration.record_scrape_result(case_number, False, error_message=f"Skipped: {reason}", outcome='skipped')
             return None
         
         # Perform the actual scraping

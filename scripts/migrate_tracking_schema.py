@@ -182,6 +182,7 @@ def create_tracking_schema():
             cursor.execute("ALTER TABLE case_status_snapshots ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;")
             cursor.execute("ALTER TABLE case_status_snapshots ADD COLUMN IF NOT EXISTS total_attempts INTEGER DEFAULT 0;")
             cursor.execute("ALTER TABLE case_status_snapshots ADD COLUMN IF NOT EXISTS first_seen_at TIMESTAMP WITH TIME ZONE;")
+            cursor.execute("ALTER TABLE case_status_snapshots ADD COLUMN IF NOT EXISTS consecutive_no_results INTEGER DEFAULT 0;")
 
             cursor.execute("\n                DO $$\n                BEGIN\n                    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='case_status_snapshots' AND column_name='case_number') THEN\n                        UPDATE case_status_snapshots SET court_file_no = case_number WHERE court_file_no IS NULL;\n                    END IF;\n                END$$;\n            ")
 
