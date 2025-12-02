@@ -1557,6 +1557,30 @@ class CaseScraperService:
 
         return data
 
+    def _parse_label_value_table(self, modal_element, label_variants):
+        """Parse table rows where first cell is label and second cell is value."""
+        parsed = {}
+        try:
+            rows = modal_element.find_elements(By.XPATH, ".//table//tr")
+            for row in rows:
+                try:
+                    cells = row.find_elements(By.TAG_NAME, "td")
+                    if len(cells) >= 2:
+                        label = cells[0].text.strip().lower()
+                        value = cells[1].text.strip()
+                        for key, fld in label_variants.items():
+                            if key in label:
+                                if fld == "filing_date":
+                                    parsed[fld] = _parse_date_str(value)
+                                else:
+                                    parsed[fld] = value or None
+                                break
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return parsed
+
     def _extract_docket_entries(
         self, modal_element, case_id: Optional[str] = None
     ) -> list[DocketEntry]:
@@ -1574,6 +1598,12 @@ class CaseScraperService:
             if not s:
                 return None
             s = s.strip()
+            # Avoid treating numeric-only tokens (e.g., '1', '2') as dates, which
+            # dateutil would interpret as day in current month; require explicit
+            # separators or month names for a valid date.
+            import re
+            if re.fullmatch(r"\d{1,2}", s):
+                return None
             try:
                 return date.fromisoformat(s)
             except Exception:
@@ -1581,6 +1611,8 @@ class CaseScraperService:
             # common formats
             fmts = [
                 "%Y-%m-%d",
+                "%d-%b-%Y",
+                "%d-%B-%Y",
                 "%d-%m-%Y",
                 "%d/%m/%Y",
                 "%B %d, %Y",
@@ -1597,6 +1629,8 @@ class CaseScraperService:
                 "%b %d, %Y",
                 "%d %b %Y",
                 "%d %B, %Y",
+                "%d-%b-%Y",
+                "%d-%B-%Y",
             ]
             for f in extra:
                 try:
@@ -1637,7 +1671,8 @@ class CaseScraperService:
                         try:
                             from dateutil.parser import parse as _parse
 
-                            d = _parse(ds, fuzzy=True)
+                            # prefer day-first parsing where appropriate
+                            d = _parse(ds, fuzzy=True, dayfirst=True)
                             return d.date()
                         except Exception:
                             pass
@@ -1648,7 +1683,8 @@ class CaseScraperService:
             try:
                 from dateutil.parser import parse as _parse
 
-                d = _parse(s, fuzzy=True)
+                # prefer day-first parsing where appropriate (e.g. '10-NOV-2025')
+                d = _parse(s, fuzzy=True, dayfirst=True)
                 return d.date()
             except Exception:
                 return None
@@ -1767,6 +1803,8 @@ class CaseScraperService:
                     table = modal_element.find_element(By.XPATH, ".//table")
                 except Exception:
                     table = None
+            if table is None:
+                return entries
             # Determine header mapping if present
             headers = []
             try:

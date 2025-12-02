@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
 import argparse
+import sys
+from pathlib import Path
+
+# Ensure the project src/ is importable when running this script directly
+sys.path.insert(0, str(Path(__file__).parent.parent))
+import os
 import os
 import time
 from datetime import datetime, timezone

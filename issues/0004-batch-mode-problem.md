@@ -68,7 +68,7 @@ This Issue drives the feature documented in `specs/0004-batch-mode-problem/spec.
 ####   **步骤 2: 线性采集阶段**
   - 仅用于采集模式， 编号线性增长，依次采集
   - 结束条件： 记录数量达到 max_limit； 采集到达上边界
-  - 跳过已经采集的记录，('No data available' or 已经采集过)  
+  - number 从start 开始，跳过已经采集的记录，('No data available' or 已经采集过)  
   - 如果所有可能的 i 和 n 下都没有找到新记录，则 A 就是上限。
   - **记录状态**：每次检查的结果存入 `visited` 字典，避免重复检查（例如，如果之前检查过某个编号，直接用缓存结果）。
 

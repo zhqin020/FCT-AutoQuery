@@ -107,7 +107,8 @@ def test_batch_run_emits_run_metrics(monkeypatch):
             self._initialized = True
 
         def search_case(self, case_number):
-            return True
+            # Only return True for our target case numbers to avoid excessive probing
+            return case_number in ("IMM-1-25", "IMM-2-25")
 
         def scrape_case_data(self, case_number):
             if case_number.endswith("1-25"):
@@ -119,6 +120,11 @@ def test_batch_run_emits_run_metrics(monkeypatch):
 
     cli.scraper = DualScraper()
     cli.exporter = FakeExporter()
+    # Short-circuit probing and eliminate delays to avoid long-running loops
+    from src.services.batch_service import BatchService
+    monkeypatch.setattr(BatchService, "find_upper_bound", lambda *a, **k: (2, 2))
+    monkeypatch.setattr(Config, "get_probe_delay_min", classmethod(lambda cls: 0.0))
+    monkeypatch.setattr(Config, "get_probe_delay_max", classmethod(lambda cls: 0.0))
 
     cases, skipped = cli.scrape_batch_cases(2025, max_cases=2)
     # one success, one failure

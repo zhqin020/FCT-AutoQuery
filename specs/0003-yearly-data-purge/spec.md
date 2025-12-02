@@ -9,13 +9,13 @@
 
 ## Summary
 
-Provide a safe, auditable, and testable `purge` command that removes all data and artifacts for a specified year. Deletion targets include database records for that year, the `output/<YEAR>` directory (per-case JSON and bundle exports), and year-specific log artifacts (run-level NDJSON files and modal HTML files). The feature must support a dry-run mode, require explicit confirmation for destructive operations, produce an audit of the purge action, and allow automated (CI/cron) invocation with a non-interactive confirmation flag.
+Provide a safe, auditable, and testable `purge` command that removes all data and artifacts for a specified year. Deletion targets include database records for that year, the `output/<YEAR>` directory (per-case JSON and bundle exports), and year-specific log artifacts (modal HTML files). Historical run-level logs are now stored in the database tracking system rather than NDJSON files; a migration tool is available to import legacy NDJSON run logs into the DB tracking tables. The feature must support a dry-run mode, require explicit confirmation for destructive operations, produce an audit of the purge action, and allow automated (CI/cron) invocation with a non-interactive confirmation flag.
 
 ## Actors, Actions, Data and Constraints
 
 - Actors: System Operator / Admin (CLI user), Automated Job (cron/CI), Support/Forensics team (consuming audit output)
 - Actions: Request purge for a given year; preview purge (dry-run); confirm and execute purge; optionally create backup before deletion; emit audit report describing removed items and counts
-- Data involved: Database case records (per-case metadata persisted in DB), per-case JSON files in `output/<YEAR>`, run-level NDJSON logs (run_logger output), modal HTML files under `logs/` matching the year, and any derived audit/backup files
+- Data involved: Database case records (per-case metadata persisted in DB), per-case JSON files in `output/<YEAR>`, per-run logs and historical tracking stored in the DB (migrated from NDJSON), modal HTML files under `logs/` matching the year, and any derived audit/backup files
 - Constraints: Operation is destructive and must be auditable and reversible only via retained backups if enabled. Must be able to run non-interactively (for scheduled jobs) and must complete within reasonable time for a year of data (see Success Criteria)
 
 ## User Scenarios & Testing *(mandatory)*
@@ -31,7 +31,7 @@ An operator needs to permanently remove all data for year 2023.
 **Acceptance Scenarios**:
 
 1. **Given** a populated DB and `output/2023` and `logs/` entries, **When** the operator runs purge for 2023 with `--dry-run`, **Then** no files or DB rows are deleted and the tool prints a complete list/count of items that would be removed.
-2. **Given** the same initial state, **When** the operator runs purge for 2023 with `--yes`, **Then** all DB records for 2023 are deleted, the `output/2023` directory is removed, all run-level NDJSON and modal HTML files for 2023 are removed, and an audit JSON summarizing the purge is written to `output/purge_audit_<timestamp>_2023.json`.
+2. **Given** the same initial state, **When** the operator runs purge for 2023 with `--yes`, **Then** all DB records for 2023 are deleted, the `output/2023` directory is removed, relevant modal HTML files for 2023 are removed, and an audit JSON summarizing the purge is written to `output/purge_audit_<timestamp>_2023.json`. Historical run-level logs for the year stored in the DB are either removed or flagged as purged depending on the operator flags.
 
 ---
 
@@ -77,20 +77,20 @@ Operators sometimes want to purge only files (not DB) or only DB rows; the CLI s
 - **FR-004**: The command MUST produce an audit JSON file summarizing: timestamp, year, lists/counts of DB records removed, filesystem paths removed, files skipped, errors encountered, and whether a backup was created. The audit file path MUST be returned on successful completion.
 - **FR-005**: If `--backup` is provided, the command MUST create a backup archive (or export) of the `output/<YEAR>` directory and optionally DB export (see Clarification Q1), and store it at the specified path before deletion.
 - **FR-006**: The command MUST delete DB records associated with the specified year. The exact DB tables and selection logic are documented in the Assumptions section and flagged for clarification where required.
-- **FR-007**: The command MUST remove filesystem artifacts matching the year: `output/<YEAR>/**` and `logs/` files whose names contain the year or whose metadata indicate they relate to that year (e.g., run_logger NDJSON entries referencing that year). Files not owned/accessible MUST be reported but not cause whole-run failure.
+- **FR-007**: The command MUST remove filesystem artifacts matching the year: `output/<YEAR>/**` and `logs/` files whose names contain the year or whose metadata indicate they relate to that year (e.g., modal HTML saved per-case by year). Files not owned/accessible MUST be reported but not cause whole-run failure.
 - **FR-008**: The command MUST exit with a non-zero status when critical failures occur (e.g., DB delete partially applied and rollback not possible), and write a partial audit indicating what succeeded/failed.
 
 *Clarifications and decisions (applied):*
 
 - **FR-009**: Backup policy — Backups are created by default before deletion (operator choice: A). Implication: purge will attempt to create backups automatically unless `--no-backup` is provided; backups will be stored in the configured backup location or the provided `--backup` path. This increases run time and storage usage but simplifies recovery.
 - **FR-010**: Database scope — Purge `cases` and cascade to related tables (operator choice: A). Implication: the implementation will remove `cases` for the target year and rely on DB cascade rules or explicit cascaded deletes for `docket_entries` and attachments to ensure referential integrity.
-- **FR-011**: Log selection strategy — Remove modal HTML files by filename only and leave run NDJSON files untouched (operator choice: C). Implication: modal HTML artifacts will be removed by filename matching for the year; run-level NDJSON files will be preserved to avoid complex in-place edits to log files, and audit will note any references to removed HTML.
+- **FR-011**: Log selection strategy — Modal HTML files are removed by filename only. Historical run-level logs are stored in the DB and may be pruned/flagged or exported and removed depending on operator options. For any legacy NDJSON files that remain (e.g., if migration not performed), a migration tool is available and operators may choose to remove NDJSON files only after confirming they have been migrated.
 
 ### Key Entities *(include if feature involves data)*
 
 - **CaseRecord (DB)**: Represents a scraped case persisted in the database. Key attributes: `case_id`, `case_number`, `scraped_at` (timestamp), `year` derived from `case_number` or `scraped_at`.
 - **PerCaseFile (Filesystem)**: Files under `output/<YEAR>/` containing per-case JSON. Key attributes: filepath, last_modified, size.
-- **RunLogFile (Filesystem)**: NDJSON files produced by `RunLogger`, each line contains an event with a timestamp, case_number and outcome.
+- **RunLogRecord (DB)**: Historical run entries and case processing events stored in the DB by `CaseTrackingService` and `processing_runs`/`case_processing_history` tables. Each record includes run id, timestamps, case_number, result/outcome and metadata. Legacy NDJSON files may still exist and can be migrated via `scripts/migrate_ndjson_to_db.py`.
 - **ModalHTML (Filesystem)**: Saved HTML files under `logs/` whose filename convention includes the case number and timestamp.
 - **PurgeAudit (Filesystem)**: JSON file created by the purge operation summarizing actions taken and any errors; includes counts and sample paths.
 
@@ -115,7 +115,7 @@ Operators sometimes want to purge only files (not DB) or only DB rows; the CLI s
 
 - The repository's DB schema includes a `cases` table (and possibly related tables such as `docket_entries`) where each record is associated with a year via `case_number` or `scraped_at`.
 - By default, backups are NOT created unless `--backup` is explicitly supplied (this is the safer default); if you prefer backup-by-default, answer Clarification Q1.
-- Log files for a year can be identified by filename convention including the year (e.g., `modal_IMM-..._20251126_...html`) or by scanning NDJSON entries; parsing NDJSON for selective deletion is more complex and thus optional depending on Clarification Q3.
+- Log files for a year can be identified by filename convention including the year (e.g., `modal_IMM-..._20251126_...html`). Legacy NDJSON files may exist; parsing NDJSON for selective deletion is optional and more complex (Clarification Q3) — prefer to migrate NDJSON into DB then prune/delete via DB purges.
 
 ## Testing Plan
 

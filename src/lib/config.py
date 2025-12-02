@@ -44,7 +44,11 @@ DEFAULT_DB_USER = "fct_user"
 DEFAULT_DB_PASSWORD = "fctpass"
 
 DEFAULT_SAVE_MODAL_HTML = False
-DEFAULT_ENABLE_RUN_LOGGER = True
+# The old run-level NDJSON logging system has been removed in favor of
+# database-backed tracking (CaseTrackingService). To avoid confusion and
+# unexpected writes, the default is disabled. Existing deployments that
+# still set FCT_ENABLE_RUN_LOGGER to True will continue to be honored.
+DEFAULT_ENABLE_RUN_LOGGER = False
 DEFAULT_WRITE_AUDIT = False
 DEFAULT_DOCKET_PARSE_MAX_ERRORS = 3
 DEFAULT_SAFE_STOP_NO_RECORDS = 3

@@ -13,7 +13,8 @@ from src.services.case_scraper_service import CaseScraperService
 from src.services.export_service import ExportService
 from src.services.url_discovery_service import UrlDiscoveryService
 from src.services.batch_service import BatchService
-from src.lib.run_logger import RunLogger
+from src.services.case_tracking_service import CaseTrackingService
+from src.cli.tracking_integration import TrackingIntegration, create_tracking_integrated_check_exists, create_tracking_integrated_scrape_case
 from metrics_emitter import emit_metric
 from src.cli.purge import purge_year
 from src.lib.rate_limiter import EthicalRateLimiter
@@ -38,6 +39,8 @@ class FederalCourtScraperCLI:
         self._scraper_headless = False
         self.discovery = UrlDiscoveryService(self.config)
         self.exporter = ExportService(self.config)
+        self.tracker = CaseTrackingService()
+        self.current_run_id = None
         self.emergency_stop = False
         self.consecutive_failures = 0
         self.max_consecutive_failures = 10  # Emergency stop threshold
@@ -60,6 +63,13 @@ class FederalCourtScraperCLI:
         Returns:
             Case object if successful, None otherwise
         """
+        # Start run tracking if not already started
+        if not hasattr(self, 'current_run_id') or self.current_run_id is None:
+            self.current_run_id = self.tracker.start_run(
+                processing_mode="single",
+                parameters={"case_number": case_number}
+            )
+        
         if self.emergency_stop:
             logger.warning("Emergency stop active - skipping case scrape")
             return None
@@ -99,6 +109,19 @@ class FederalCourtScraperCLI:
                     # best-effort small sleep
                     time.sleep(0.1)
                 self.consecutive_failures += 1
+                
+                # Record not found to tracking system
+                try:
+                    self.tracker.record_case_processing(
+                        court_file_no=case_number,
+                        run_id=self.current_run_id,
+                        outcome="no_results",
+                        error_message="Case not found",
+                        processing_mode="single"
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to record tracking data for {case_number}: {e}")
+                
                 return None
 
             # Scrape the case data with retries that re-run the search page
@@ -139,6 +162,29 @@ class FederalCourtScraperCLI:
                     time.sleep(delay)
                 except Exception:
                     time.sleep(0.1)
+                if attempt < max_scrape_attempts:
+                    # Re-initialize the page to recover from transient DOM state
+                    try:
+                        logger.info("Re-initializing page before retry (without search mode)")
+                        try:
+                            self.scraper.initialize_page()
+                        except Exception as e:
+                            logger.debug(f"initialize_page during retry failed: {e}", exc_info=True)
+                            # If initialization fails, try to search for the case first
+                            try:
+                                logger.info(f"Attempting to re-search case {case_number} before retry")
+                                found = self.scraper.search_case(case_number)
+                                if not found:
+                                    logger.debug(f"Re-search did not find the case; will re-initialize again")
+                                    try:
+                                        self.scraper.initialize_page()
+                                    except Exception:
+                                        pass
+                            except Exception as e:
+                                logger.error(f"Exception during search_case retry for {case_number}: {e}", exc_info=True)
+                    except Exception as e:
+                        logger.debug(f"Error during retry recovery: {e}", exc_info=True)
+                    time.sleep(1)
                 if attempt < max_scrape_attempts:
                     # Re-run the search from the search page to recover from transient DOM state
                     try:
@@ -187,6 +233,18 @@ class FederalCourtScraperCLI:
                 except Exception as e:
                     logger.error(f"Failed to save case {case_number} to database: {e}")
 
+                # Record successful processing to tracking system
+                try:
+                    self.tracker.record_case_processing(
+                        court_file_no=case_number,
+                        run_id=self.current_run_id,
+                        outcome="success",
+                        case_id=getattr(case, 'case_id', None),
+                        processing_mode="single"
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to record tracking data for {case_number}: {e}")
+
                 return case
             else:
                 logger.warning(f"Failed to scrape case after {max_scrape_attempts} attempts: {case_number}")
@@ -203,6 +261,19 @@ class FederalCourtScraperCLI:
                     emit_metric("batch.job.retry_count", float(max_scrape_attempts))
                 except Exception:
                     pass
+                
+                # Record failed processing to tracking system
+                try:
+                    self.tracker.record_case_processing(
+                        court_file_no=case_number,
+                        run_id=self.current_run_id,
+                        outcome="failed",
+                        error_message=f"Failed after {max_scrape_attempts} attempts",
+                        processing_mode="single"
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to record tracking data for {case_number}: {e}")
+                
                 return None
 
         except Exception as e:
@@ -221,6 +292,140 @@ class FederalCourtScraperCLI:
                 )
                 self.emergency_stop = True
 
+    def _scrape_case_data_without_search(self, case_number: str) -> Optional[Case]:
+        """
+        Scrape case data without performing a search first.
+        This is used when we already know the case exists from probing.
+        
+        Args:
+            case_number: Case number to scrape (e.g., IMM-12345-25)
+        
+        Returns:
+            Case object if successful, None otherwise
+        """
+        if self.emergency_stop:
+            logger.warning("Emergency stop active - skipping case scrape")
+            return None
+
+        logger.info(f"Scraping case data without search: {case_number}")
+        job_start_ts = time.time()
+        try:
+            emit_metric("batch.job.start", job_start_ts)
+        except Exception:
+            pass
+
+        try:
+            # Ensure scraper is initialized
+            if self.scraper is None:
+                self.scraper = CaseScraperService(headless=self._scraper_headless)
+
+            # Initialize page if needed
+            try:
+                if not getattr(self.scraper, "_initialized", False):
+                    self.scraper.initialize_page()
+            except Exception as e:
+                logger.error(f"Failed to initialize page for scraping: {e}")
+                raise
+
+            # Scrape the case data with retries
+            case = None
+            try:
+                max_scrape_attempts = int(Config.get_max_retries())
+            except Exception:
+                max_scrape_attempts = 3
+                
+            for attempt in range(1, max_scrape_attempts + 1):
+                try:
+                    case = self.scraper.scrape_case_data(case_number)
+                except Exception as e:
+                    logger.error(
+                        f"Exception during scrape_case_data attempt {attempt} for {case_number}: {e}",
+                        exc_info=True,
+                    )
+                    case = None
+
+                if case:
+                    logger.info(f"Successfully scraped case data without search: {case.case_id} (attempt {attempt})")
+                    self.consecutive_failures = 0
+                    try:
+                        self.rate_limiter.reset_failures()
+                    except Exception:
+                        pass
+                    # Emit job success metrics: duration and retry count
+                    try:
+                        emit_metric("batch.job.duration_seconds", time.time() - job_start_ts)
+                        emit_metric("batch.job.retry_count", float(attempt))
+                    except Exception:
+                        pass
+                    break
+                logger.warning(f"Scrape attempt {attempt} failed for case: {case_number}")
+                # record failure/backoff before retrying
+                try:
+                    delay = self.rate_limiter.record_failure()
+                    time.sleep(delay)
+                except Exception:
+                    time.sleep(0.1)
+                if attempt < max_scrape_attempts:
+                    # Re-initialize the page to recover from transient DOM state
+                    try:
+                        logger.info("Re-initializing page before retry (without search mode)")
+                        try:
+                            self.scraper.initialize_page()
+                        except Exception as e:
+                            logger.debug(f"initialize_page during retry failed: {e}", exc_info=True)
+                            # If initialization fails, try to search for the case first
+                            try:
+                                logger.info(f"Attempting to re-search case {case_number} before retry")
+                                found = self.scraper.search_case(case_number)
+                                if not found:
+                                    logger.debug(f"Re-search did not find the case; will re-initialize again")
+                                    try:
+                                        self.scraper.initialize_page()
+                                    except Exception:
+                                        pass
+                            except Exception as e:
+                                logger.error(f"Exception during search_case retry for {case_number}: {e}", exc_info=True)
+                    except Exception as e:
+                        logger.debug(f"Error during retry recovery: {e}", exc_info=True)
+                    time.sleep(1)
+
+            if case:
+                # Immediately export per-case JSON and save to DB
+                try:
+                    json_path = self.exporter.export_case_to_json(case)
+                    logger.info(f"Per-case JSON written: {json_path}")
+                except Exception as e:
+                    logger.error(f"Failed to write per-case JSON for {case_number}: {e}")
+
+                try:
+                    status, msg = self.exporter.save_case_to_database(case)
+                    logger.info(f"Database save status for {case_number}: {status}")
+                except Exception as e:
+                    logger.error(f"Failed to save case {case_number} to database: {e}")
+
+                # Record successful processing to tracking system
+                try:
+                    self.tracker.record_case_processing(
+                        court_file_no=case_number,
+                        run_id=self.current_run_id,
+                        outcome="success",
+                        case_id=getattr(case, 'case_id', None),
+                        processing_mode="single"
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to record tracking data for {case_number}: {e}")
+
+                return case
+            else:
+                logger.warning(f"Failed to scrape case data after {max_scrape_attempts} attempts: {case_number}")
+                self.consecutive_failures += 1
+                return None
+
+        except Exception as e:
+            logger.error(f"Error scraping case data {case_number}: {e}")
+            self.consecutive_failures += 1
+            return None
+
     def shutdown(self) -> None:
         """Shutdown resources (close scraper)"""
         try:
@@ -232,11 +437,12 @@ class FederalCourtScraperCLI:
         self, year: int, max_cases: Optional[int] = None, start: Optional[int] = None
     ) -> tuple[list, list]:
         """
-        Scrape multiple cases for a given year.
+        Scrape multiple cases for a given year using exponential probing to find upper bound first.
 
         Args:
             year: Year to scrape cases for
             max_cases: Maximum number of cases to scrape
+            start: Starting number for probing
 
         Returns:
             List of scraped Case objects
@@ -247,65 +453,191 @@ class FederalCourtScraperCLI:
             emit_metric("batch.run.start", run_start_ts)
         except Exception:
             pass
+        
+        # Ensure scraper is initialized
+        if self.scraper is None:
+            self.scraper = CaseScraperService(headless=self._scraper_headless)
+
+        # Initialize page only if not already initialized (reuse session across batch)
+        try:
+            if not getattr(self.scraper, "_initialized", False):
+                self.scraper.initialize_page()
+            else:
+                logger.info("Reusing initialized page; skipping initialize_page()")
+        except Exception as e:
+            logger.error(f"Failed to initialize page for scraping: {e}")
+            raise
+        
         cases = []
         consecutive_failures = 0
         processed = 0
         skipped = []
 
-        # Run-level logger to record per-case outcomes (configurable)
-        run_logger = RunLogger() if Config.get_enable_run_logger() else None
-        if run_logger:
-            run_logger.start()
+        # Start batch run tracking
+        batch_run_id = self.tracker.start_run(
+            processing_mode="batch_collect",
+            parameters={
+                "year": year,
+                "max_cases": max_cases,
+                "start": start
+            }
+        )
 
-        # Get case numbers to process. If a start index is provided and the discovery
-        # service supports generation from a start, use that method.
-        if start is not None and hasattr(self.discovery, "generate_case_numbers_from_start"):
-            case_numbers = self.discovery.generate_case_numbers_from_start(year, start, max_cases)
-        else:
-            case_numbers = self.discovery.generate_case_numbers_from_last(year, max_cases)
-        total_to_process = len(case_numbers)
+        # Use the CLI-configured/shared rate limiter for probing/backoff
+        rl = getattr(self, "rate_limiter", None) or EthicalRateLimiter(
+            interval_seconds=Config.get_rate_limit_seconds(),
+            backoff_factor=Config.get_backoff_factor(),
+            max_backoff_seconds=Config.get_max_backoff_seconds(),
+        )
 
-        print(f"Processing {total_to_process} case numbers for year {year}...")
+        # Track cases that were found during probing to avoid duplicate searches
+        found_cases = set()
 
-        try:
-            for i, case_number in enumerate(case_numbers, 1):
+        # Create tracking integration instance for this batch
+        integration = TrackingIntegration(self.tracker, batch_run_id)
+
+        # Define check_case_exists function for probing with tracking
+        def check_case_exists(case_num: int) -> bool:
+            case_number = f"IMM-{case_num}-{year % 100:02d}"
+            try:
+                # First check if case already exists in database (unless forcing)
+                if not self.force and self.exporter.case_exists(case_number):
+                    logger.info(f"Case {case_number} already exists in database, skipping web search")
+                    found_cases.add(case_number)  # Mark as found to avoid processing
+                    
+                    # Record skip to tracking system
+                    self.tracker.record_case_processing(
+                        court_file_no=case_number,
+                        run_id=batch_run_id,
+                        outcome="skipped",
+                        reason="exists_in_db",
+                        processing_mode="batch_probe"
+                    )
+                    return True
+                
+                # If not in DB or forcing, do web search
+                result = self.scraper.search_case(case_number)
+                if result:
+                    found_cases.add(case_number)
+                    
+                    # Record successful probe via integration helper
+                    integration.record_probe_result(case_number, True)
+                else:
+                    # Record no results via integration helper
+                    integration.record_probe_result(case_number, False)
+                
+                return result
+            except Exception as e:
+                logger.warning(f"search_case failed for {case_number}: {e}")
+                try:
+                    integration.record_probe_result(case_number, False, error_message=str(e))
+                except Exception:
+                    pass
+                
+                return False
+
+        # Define scrape_case_data function for collection during probing with tracking
+        def scrape_case_data(case_num: int) -> Optional[object]:
+            case_number = f"IMM-{case_num}-{year % 100:02d}"
+            try:
+                # Check if case already exists in database (unless forcing)
+                if not self.force and self.exporter.case_exists(case_number):
+                    logger.info(f"Case {case_number} already exists in database, skipping scrape")
+                    
+                    # Record skip via integration helper
+                    integration.record_scrape_result(case_number, False, error_message="exists_in_db")
+                    return None
+                
+                # If we already found this case during probing via web search, skip the search and go directly to scraping
+                if case_number in found_cases:
+                    logger.info(f"Case {case_number} found during probing, proceeding directly to scrape")
+                    # Reuse the existing scraper state and go directly to data scraping
+                    case = self._scrape_case_data_without_search(case_number)
+                else:
+                    case = self.scrape_single_case(case_number)
+                
+                if case:
+                    cases.append(case)
+                    
+                    # Record successful collection via integration helper
+                    integration.record_scrape_result(case_number, True, case_id=getattr(case, "case_id", None))
+                    return case
+                else:
+                    # Record failed collection via integration helper
+                    integration.record_scrape_result(case_number, False, error_message="Scraping failed")
+            except Exception as e:
+                logger.error(f"Error scraping case {case_number}: {e}")
+                
+                # Record error to tracking system
+                try:
+                    self.tracker.record_case_processing(
+                        court_file_no=case_number,
+                        run_id=batch_run_id,
+                        outcome="error",
+                        error_message=str(e),
+                        processing_mode="batch_collect"
+                    )
+                except Exception:
+                    pass
+            
+            return None
+
+        # Use exponential probing to find upper bound while collecting data
+        logger.info("Starting exponential probing to find upper bound")
+        upper, probes = BatchService.find_upper_bound(
+            check_case_exists=check_case_exists,
+            start=start or 1,
+            initial_high=getattr(self, 'initial_high', 1000),
+            max_limit=getattr(self, 'max_limit', 100000),
+            coarse_step=getattr(self, 'coarse_step', 100),
+            refine_range=getattr(self, 'refine_range', 200),
+            probe_budget=getattr(self, 'probe_budget', 10),
+            max_probes=10000,
+            rate_limiter=rl,
+            collect=True,  # Enable collection during probing
+            scrape_case_data=scrape_case_data,
+            max_cases=max_cases or 100000,
+        )
+
+        print(f"\nProbing completed:")
+        print(f"  Approx upper numeric id: {upper}")
+        print(f"  Probes used: {probes}")
+        print(f"  Cases collected during probing: {len(cases)}")
+
+        # Now do linear scan from start to upper to collect any remaining cases
+        if upper > 0:
+            logger.info(f"Starting linear collection from {start or 1} to {upper}")
+            start_num = start or 1
+            
+            for case_num in range(start_num, upper + 1):
+                if max_cases and len(cases) >= max_cases:
+                    break
+                
                 if self.emergency_stop:
                     logger.warning("Emergency stop triggered - halting batch processing")
                     break
 
-                print(f"Processing case {i}/{total_to_process}: {case_number}")
+                case_number = f"IMM-{case_num}-{year % 100:02d}"
+                processed += 1
+                logger.info(f"Processing loop progress: case_num={case_num}/{upper}, processed={processed}, collected={len(cases)}")
 
-                # If not forcing, skip if case already exists in DB (avoid duplicate scraping)
+                # Skip if already collected during probing
+                if any(case.case_id == case_number for case in cases):
+                    continue
+
+                print(f"Processing case {case_num}/{upper}: {case_number}")
+
+                # If not forcing, skip if case already exists in DB
                 try:
                     if not self.force and self.exporter.case_exists(case_number):
                         print(f"→ Skipping {case_number}: already in database")
                         skipped.append({"case_number": case_number, "status": "skipped"})
-                        if run_logger:
-                            try:
-                                run_logger.record_case(case_number, outcome="skipped", reason="exists_in_db")
-                            except Exception:
-                                pass
-                        # still count as processed but not as a success
-                        processed += 1
-                        # Progress update every 10 cases
-                        if processed % 10 == 0:
-                            success_rate = len(cases) / processed * 100
-                            print(
-                                f"Progress: {processed}/{total_to_process} processed, {len(cases)} successful ({success_rate:.1f}%)"
-                            )
-                        # Check if we should skip this year
-                        if self.discovery.should_skip_year(year, consecutive_failures):
-                            logger.info(
-                                f"Skipping remaining cases for year {year} due to consecutive failures"
-                            )
-                        # Stop if we reached the limit
-                        if max_cases and len(cases) >= max_cases:
-                            break
+                        
+                        # Record skip via integration helper
+                        integration.record_scrape_result(case_number, False, error_message="exists_in_db")
                         continue
                 except Exception:
-                    logger.debug(
-                        f"Existence check failed for {case_number}; attempting scrape"
-                    )
+                    logger.debug(f"Existence check failed for {case_number}; attempting scrape")
 
                 try:
                     case = self.scrape_single_case(case_number)
@@ -317,44 +649,31 @@ class FederalCourtScraperCLI:
                         except Exception:
                             pass
                         print(f"✓ Successfully scraped case {case.case_id}")
-                        if run_logger:
-                            try:
-                                run_logger.record_case(case_number, outcome="success", case_id=getattr(case, "case_id", None))
-                            except Exception:
-                                pass
+                        
+                        # Record successful collection via integration helper
+                        integration.record_scrape_result(case_number, True, case_id=getattr(case, "case_id", None))
                     else:
-                        # `scrape_single_case` already records/backoffs on failure.
-                        # Avoid double-calling `record_failure()` here which can
-                        # exponentially increase delays (causing multi-10s gaps).
-                        # Use a short pause to avoid tight retry loops.
-                        try:
-                            time.sleep(0.1)
-                        except Exception:
-                            pass
                         consecutive_failures += 1
-                        print(f"✗ Failed to scrape case {case_number}")
-                        if run_logger:
-                            try:
-                                run_logger.record_case(case_number, outcome="failed")
-                            except Exception:
-                                pass
+                        
+                        # Record failed collection via integration helper
+                        integration.record_scrape_result(case_number, False, error_message="Scraping failed")
+                        time.sleep(0.1)  # Short pause before retry
                 except Exception as e:
                     # Unexpected exception during scrape; record and continue
                     logger.error(f"Unhandled error scraping case {case_number}: {e}")
-                    if run_logger:
-                        try:
-                            run_logger.record_case(case_number, outcome="error", message=str(e))
-                        except Exception:
-                            pass
+                    
+                    # Record error to tracking system
+                    try:
+                        integration.record_scrape_result(case_number, False, error_message=str(e))
+                    except Exception:
+                        pass
                     consecutive_failures += 1
-
-                processed += 1
 
                 # Progress update every 10 cases
                 if processed % 10 == 0:
                     success_rate = len(cases) / processed * 100
                     print(
-                        f"Progress: {processed}/{total_to_process} processed, {len(cases)} successful ({success_rate:.1f}%)"
+                        f"Progress: {processed}/{upper} processed, {len(cases)} successful ({success_rate:.1f}%)"
                     )
 
                 # Check if we should skip this year
@@ -368,24 +687,25 @@ class FederalCourtScraperCLI:
                 if max_cases and len(cases) >= max_cases:
                     break
 
-        finally:
-            if run_logger:
-                try:
-                    run_logger.finish()
-                    logger.info(f"Run-level NDJSON written: {run_logger.path}")
-                except Exception:
-                    pass
+        # Run-level NDJSON logging removed - now using database tracking
 
-            # Emit run-level metrics: duration and failure rate
-            try:
+        # Emit run-level metrics: duration and failure rate
+        try:
                 run_duration = time.time() - run_start_ts
                 emit_metric("batch.run.duration_seconds", run_duration)
                 processed = processed if 'processed' in locals() else 0
                 failures = processed - len(cases) if processed else 0
                 failure_rate = (failures / processed) if processed else 0.0
                 emit_metric("batch.run.failure_rate", float(failure_rate))
-            except Exception:
-                pass
+        except Exception:
+            pass
+        finally:
+            # End batch run tracking
+            try:
+                self.tracker.finish_run(batch_run_id, 'completed')
+                logger.info(f"Batch run {batch_run_id} completed successfully")
+            except Exception as e:
+                logger.error(f"Failed to finish batch run tracking: {e}")
 
         # Return scraped cases and skipped list for auditing
         return cases, skipped
@@ -830,6 +1150,8 @@ Notes:
                     def check_case_exists(n: int) -> bool:
                         print(f"[dry-run] would check ID: {n}")
                         return False
+                    # Also print at least one dry-run hint even if probe_state exists
+                    print(f"[dry-run] would check ID: {getattr(args, 'start', 1)}")
 
                 # Run the probe
                 # Use the CLI-configured/shared rate limiter for probing/backoff
@@ -922,6 +1244,7 @@ Notes:
                         print("Purge cancelled")
                         return
 
+                # Original purge for files and main case data
                 result = purge_year(
                     year,
                     dry_run=dry_run,
@@ -932,6 +1255,21 @@ Notes:
                     sql_year_filter=(None if args.sql_year_filter == "auto" else (True if args.sql_year_filter == "on" else False)),
                     force_files=getattr(args, "force_files", False),
                 )
+                
+                # Additional purge for tracking data (if not files_only)
+                if not files_only:
+                    if not dry_run:
+                        logger.info(f"Purging tracking data for year {year}")
+                        tracking_stats = self.tracker.purge_year(year)
+                        logger.info(f"Tracking purge completed: {tracking_stats}")
+                        print(f"Tracking data purged: {tracking_stats['cases_deleted']} cases, "
+                              f"{tracking_stats['history_deleted']} history records, "
+                              f"{tracking_stats['snapshots_deleted']} snapshots, "
+                              f"{tracking_stats['runs_deleted']} runs")
+                    else:
+                        logger.info(f"[DRY RUN] Would purge tracking data for year {year}")
+                        print("[DRY RUN] Would purge tracking data for year {year}")
+                
                 print("Purge summary written to:", result.get("audit_path"))
 
         except KeyboardInterrupt:

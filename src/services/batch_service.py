@@ -78,18 +78,27 @@ class BatchService:
 
         current_start = start
         last_success = None
-        first_no_data_number = None
+        consecutive_no_data = 0
         i = 0
-        restarted = False
+        last_success_position = None  # 记录最近一次成功的位置
+        
+        # 第一次指数探测
         while i <= probe_budget and probes < max_probes and (not collect or collected_count < max_cases):
-            if i == 0 and not restarted:
+            if i == 0:
                 number = current_start
             else:
-                number = current_start + (1 << i)
+                number = current_start + (1 << (i - 1))
             if number > max_limit:
                 break
-            if number >= start + (1 << probe_budget):
-                break
+            
+
+            
+            # 随机延时，模拟人类操作，避免封IP
+            delay_min = Config.get_probe_delay_min()
+            delay_max = Config.get_probe_delay_max()
+            if delay_max > 0:
+                time.sleep(random.uniform(delay_min, delay_max))
+            
             if number in visited:
                 exists = visited[number]
             else:
@@ -100,9 +109,11 @@ class BatchService:
                         exists = check_case_exists(number)
                         probes += 1
                         break
-                    except Exception:
+                    except Exception as e:
                         attempt += 1
                         probes += 1
+                        logger.warning(f"Attempt {attempt} failed for {number}: {e}")
+
                         if rate_limiter is not None:
                             try:
                                 delay = rate_limiter.record_failure()
@@ -112,9 +123,12 @@ class BatchService:
                         else:
                             time.sleep(check_retry_delay)
                 visited[number] = exists
+                logger.info(f"Probing {number}: {exists} (probes={probes}, collected={collected_count})")
 
             if exists:
                 last_success = number
+                last_success_position = i  # 记录成功时的i位置
+                consecutive_no_data = 0
                 if collect and scrape_case_data:
                     try:
                         case = scrape_case_data(number)
@@ -123,8 +137,25 @@ class BatchService:
                     except Exception as e:
                         logger.debug(f"Failed to scrape case {number}: {e}")
             else:
-                first_no_data_number = number
-                break
+                consecutive_no_data += 1
+                if consecutive_no_data >= safe_stop:
+                    # 进入第二次扫描
+                    if last_success_position is not None and last_success_position > 0:
+                        # 回到最近一次成功位置
+                        previous_i = last_success_position
+                        if previous_i == 0:
+                            previous_number = current_start
+                        else:
+                            previous_number = current_start + (1 << (previous_i - 1))
+                        logger.info(f"Starting second scan from {previous_number} after {consecutive_no_data} consecutive no-data results")
+                        # 重置状态，开始第二次扫描
+                        current_start = previous_number
+                        last_success = previous_number if previous_number in visited and visited[previous_number] else last_success
+                        consecutive_no_data = 0
+                        i = 0
+                        last_success_position = None
+                        continue
+                    break
 
             i += 1
 
@@ -156,6 +187,12 @@ class BatchService:
             current = last_success + 1
             consecutive_no_data_linear = 0
             while current <= max_limit and probes < max_probes and (not collect or collected_count < max_cases):
+                # 随机延时，模拟人类操作，避免封IP
+                delay_min = Config.get_probe_delay_min()
+                delay_max = Config.get_probe_delay_max()
+                if delay_max > 0:
+                    time.sleep(random.uniform(delay_min, delay_max))
+                
                 if current in visited:
                     exists = visited[current]
                 else:
@@ -166,9 +203,10 @@ class BatchService:
                             exists = check_case_exists(current)
                             probes += 1
                             break
-                        except Exception:
+                        except Exception as e:
                             attempt += 1
                             probes += 1
+                            logger.warning(f"Linear scan attempt {attempt} failed for {current}: {e}")
                             if rate_limiter is not None:
                                 try:
                                     delay = rate_limiter.record_failure()
@@ -178,6 +216,7 @@ class BatchService:
                             else:
                                 time.sleep(check_retry_delay)
                     visited[current] = exists
+                    logger.info(f"Linear scan {current}: {exists} (probes={probes}, collected={collected_count})")
                 if exists:
                     upper = current
                     consecutive_no_data_linear = 0
