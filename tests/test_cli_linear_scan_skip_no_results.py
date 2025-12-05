@@ -8,7 +8,7 @@ def test_linear_scan_cli_skips_repeated_no_results(monkeypatch):
     # Simulate that should_skip_case returns True for IMM-5-21
     def fake_should_skip(case_number, force=False):
         if case_number == 'IMM-5-21':
-            return True, 'no_results_repeated (3)'
+            return True, 'no_data_repeated (3)'
         return False, ''
 
     monkeypatch.setattr(cli.tracker, 'should_skip_case', fake_should_skip)

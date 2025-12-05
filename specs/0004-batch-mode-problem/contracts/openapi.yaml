@@ -18,7 +18,7 @@ paths:
                   example: '25'
                 probe_budget:
                   type: integer
-                  example: 200
+                  example: 20
       responses:
         '200':
           description: Returns an estimated upper bound and probe count

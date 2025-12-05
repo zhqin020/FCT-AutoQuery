@@ -6,6 +6,8 @@ candidate case ids and performs deletes inside a transaction; it attempts to be
 DB-agnostic by performing minimal SQL and doing filtering in Python where needed.
 """
 from __future__ import annotations
+from src.lib.logging_config import get_logger
+logger = get_logger()
 
 from datetime import datetime
 from typing import Callable, Dict, List, Any
@@ -14,7 +16,6 @@ from typing import Callable, Dict, List, Any
 def _parse_year_from_value(v: Any) -> int | None:
     if v is None:
         return None
-    # Accept datetime, date, or ISO string
     try:
         if hasattr(v, "year"):
             return int(v.year)
@@ -24,6 +25,95 @@ def _parse_year_from_value(v: Any) -> int | None:
         return y
     except Exception:
         return None
+
+
+def _quote(v: object) -> str:
+    """Quote values for an SQL IN expression safely for DBs without
+    parameterized list support. Keep this minimal and escape single quotes.
+    """
+    if isinstance(v, int):
+        return str(v)
+    s = str(v).replace("'", "''")
+    return f"'{s}'"
+
+
+def delete_docket_entries_by_ids(cur, ids: List[Any]) -> int:
+    """Delete rows in `docket_entries` that reference the supplied case ids.
+
+    The function attempts multiple common FK column names to maintain
+    cross-schema compatibility and returns the number of deleted rows when
+    known, or -1 if unknown.
+    """
+    if not ids:
+        return 0
+    try:
+        ids_list = ",".join(_quote(i) for i in ids)
+    except Exception:
+        return -1
+
+    fk_candidates = ["case_id", "caseid", "id", "case_number"]
+    deleted = -1
+    # Inspect columns if available and attempt the delete by each fk candidate
+    try:
+        cur.execute("SELECT * FROM docket_entries LIMIT 1")
+        de_cols = [d[0] for d in cur.description] if cur.description else []
+    except Exception:
+        de_cols = []
+
+    for fk in fk_candidates:
+        if not fk or (de_cols and fk not in de_cols):
+            continue
+        try:
+            cur.execute(f"DELETE FROM docket_entries WHERE {fk} IN ({ids_list})")
+            deleted = cur.rowcount if hasattr(cur, "rowcount") else -1
+            break
+        except Exception:
+            try:
+                conn_obj = getattr(cur, 'connection', None)
+                if conn_obj and hasattr(conn_obj, 'rollback'):
+                    conn_obj.rollback()
+            except Exception:
+                pass
+            continue
+    return deleted
+
+
+def delete_docket_entries_by_case_pattern(cur, case_pattern: str) -> int:
+    """Delete rows in `docket_entries` for cases matching the given
+    `case_number` pattern (e.g. IMM-%-21) and return the deleted count.
+
+    The function first tries the common `case_number` column, then falls
+    back to deleting by `case_id` referencing `cases.id` where the
+    `case_number` matches the pattern.
+    """
+    deleted = -1
+    try:
+        # Try parameterized delete using the standard psycopg2 '%s' style.
+        cur.execute("DELETE FROM docket_entries WHERE case_number LIKE %s", (case_pattern,))
+        deleted = cur.rowcount if hasattr(cur, "rowcount") else -1
+        return deleted
+    except Exception:
+        try:
+            # Fallback to string interpolation in case the DB driver uses ? param style (e.g., sqlite)
+            safe = case_pattern.replace("'", "''")
+            cur.execute(f"DELETE FROM docket_entries WHERE case_number LIKE '{safe}'")
+            deleted = cur.rowcount if hasattr(cur, "rowcount") else -1
+            return deleted
+        except Exception:
+            # Try numeric FK fallback: delete by referencing cases(id)
+            try:
+                cur.execute("DELETE FROM docket_entries WHERE case_id IN (SELECT id FROM cases WHERE case_number LIKE %s)", (case_pattern,))
+                deleted = cur.rowcount if hasattr(cur, "rowcount") else -1
+                return deleted
+            except Exception:
+                try:
+                    cur.execute(f"DELETE FROM docket_entries WHERE case_id IN (SELECT id FROM cases WHERE case_number LIKE '{safe}')")
+                    deleted = cur.rowcount if hasattr(cur, "rowcount") else -1
+                    return deleted
+                except Exception:
+                    # No viable delete path found
+                    return 0
+    
 
 
 def db_purge_year(
@@ -59,7 +149,7 @@ def db_purge_year(
                 # avoid relying on scraped/filing timestamps and ensure the
                 # purge decision is based solely on the case id as requested.
                 # Try common column names for the court-file identifier.
-                cur.execute("SELECT id, court_file_no FROM cases")
+                cur.execute("SELECT id, case_number FROM cases")
                 rows = cur.fetchall()
                 case_ids = []
                 for r in rows:
@@ -93,7 +183,7 @@ def db_purge_year(
             cur.execute("SELECT * FROM cases LIMIT 1")
             cols = [d[0] for d in cur.description] if cur.description else []
 
-            id_candidates = ["id", "case_id", "caseid", "case_number", "case_no", "court_file_no"]
+            id_candidates = ["id", "case_id", "caseid", "case_number", "case_no", "case_number"]
             scraped_candidates = ["scraped_at", "scraped", "created_at", "created"]
 
             id_col = next((c for c in id_candidates if c in cols), None)
@@ -113,7 +203,7 @@ def db_purge_year(
             # `scraped_at` as a last resort when no other info is available.
             # Detect optional columns if present in the table.
             filing_candidates = ["filing_date", "filed_at", "date_filed", "filing"]
-            court_candidates = ["court_file_no", "case_number", "case_no", "caseid", "case_id"]
+            court_candidates = ["case_number", "case_number", "case_no", "caseid", "case_id"]
 
             filing_col = next((c for c in filing_candidates if c in cols), None)
             court_col = next((c for c in court_candidates if c in cols), None)
@@ -206,18 +296,13 @@ def db_purge_year(
             "cases_deleted": 0,
             "docket_entries_deleted": 0,
         }
+        logger.debug(f"db_purge_year candidates: {case_ids} id_col={id_col} scraped_col={scraped_col} filing_col={filing_col} court_col={court_col}")
 
         if not case_ids:
             return result
 
         # Build IN clause safely (ids may be ints or strings). Quote string
         # values as needed for SQL.
-        def _quote(v: object) -> str:
-            if isinstance(v, int):
-                return str(v)
-            s = str(v).replace("'", "''")
-            return f"'{s}'"
-
         ids_list = ",".join(_quote(i) for i in case_ids)
 
         if transactional:
@@ -227,33 +312,13 @@ def db_purge_year(
             except Exception:
                 pass
 
-        # Delete dependent rows first. Avoid executing statements that will
-        # certainly fail by checking available columns on `docket_entries`.
-        deleted_de = -1
-        fk_candidates = ["case_id", "caseid", id_col, "case_number"]
-
-        # Inspect docket_entries columns (DB-agnostic fallback)
+        # Delete dependent docket_entries first using the helper
         try:
-            cur.execute("SELECT * FROM docket_entries LIMIT 1")
-            de_cols = [d[0] for d in cur.description] if cur.description else []
+            deleted_de = delete_docket_entries_by_ids(cur, case_ids)
+            result["docket_entries_deleted"] = deleted_de
         except Exception:
-            de_cols = []
-
-        for fk in fk_candidates:
-            if not fk or (de_cols and fk not in de_cols):
-                continue
-            try:
-                cur.execute(f"DELETE FROM docket_entries WHERE {fk} IN ({ids_list})")
-                deleted_de = cur.rowcount if hasattr(cur, "rowcount") else -1
-                result["docket_entries_deleted"] = deleted_de
-                break
-            except Exception:
-                # ensure connection is usable for further attempts
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-                continue
+            # Best-effort; leave as 0 if deletion cannot be performed
+            result["docket_entries_deleted"] = 0
 
         # Delete cases using the detected id column
         try:

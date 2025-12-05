@@ -19,3 +19,9 @@ export_write_retries = 2
 export_write_backoff_seconds = 1
 # Maximum number of soft WebDriver restarts during a batch run (default: 1)
 max_driver_restarts = 1
+
+# Retry configuration for simplified tracking system
+# Cooldown period between retry attempts in seconds (default: 3600 = 1 hour)
+retry_cooldown_seconds = 3600
+# Hours since last attempt before considering failed cases for retry (default: 24)
+retry_hours_since_last_attempt = 24

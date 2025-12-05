@@ -16,6 +16,7 @@ def scrape_batch_cases_with_tracking(self, year: int, start: Optional[int] = Non
     from datetime import datetime, timezone
     from src.cli.tracking_integration import TrackingIntegration, create_tracking_integrated_check_exists
     from src.services.batch_service import BatchService
+    from src.lib.config import Config
     
     # Start tracking run
     run_id = self.tracker.start_run(
@@ -31,7 +32,7 @@ def scrape_batch_cases_with_tracking(self, year: int, start: Optional[int] = Non
             'config': {
                 'rate_limit_seconds': Config.get_rate_limit_seconds(),
                 'backoff_factor': Config.get_backoff_factor(),
-                'probe_budget': getattr(self, 'probe_budget', 10),
+                'probe_budget': getattr(self, 'probe_budget', Config.get_probe_budget()),
                 'safe_stop_no_records': Config.get_safe_stop_no_records()
             }
         }
@@ -134,7 +135,8 @@ def scrape_batch_cases_with_tracking(self, year: int, start: Optional[int] = Non
             max_limit=getattr(self, 'max_limit', 100000),
             coarse_step=getattr(self, 'coarse_step', 100),
             refine_range=getattr(self, 'refine_range', 200),
-            probe_budget=getattr(self, 'probe_budget', 10),
+            probe_budget=getattr(self, 'probe_budget', Config.get_probe_budget()),
+            safe_stop=getattr(self, 'safe_stop_no_records', Config.get_safe_stop_no_records()),
             max_probes=10000,
             rate_limiter=rl,
             collect=True,

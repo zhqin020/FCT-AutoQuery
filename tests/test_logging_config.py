@@ -1,3 +1,7 @@
+from src.lib.logging_config import get_logger
+
+def test_logging_config_importable():
+    assert get_logger is not None
 import os
 from src.lib.logging_config import setup_logging, get_logger
 

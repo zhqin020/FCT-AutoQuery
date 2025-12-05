@@ -315,7 +315,7 @@ def find_upper_bound_with_tracking(
         exists = check_case_exists(number)
         
         # 记录结果
-        outcome = "success" if exists else "no_results"
+        outcome = "success" if exists else "no_data"
         tracker.record_case_processing(
             court_file_no=case_number,
             run_id=run_id,

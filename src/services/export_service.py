@@ -77,7 +77,9 @@ def export_case_to_json(case: dict, output_root: Optional[str] = None) -> str:
                 pass
             if attempt == retries:
                 raise
-            time.sleep(base_backoff * (2 ** (attempt - 1)))
+            # Avoid sleeping during local I/O retries to keep local operations
+            # high-throughput; immediately retry instead.
+            pass
 
     # Shouldn't reach here
     raise last_exc or RuntimeError("Failed to export case to JSON")
@@ -194,7 +196,7 @@ class ExportService:
             # the case-year folder (user expectation).
             year = None
             try:
-                cf = getattr(case, "court_file_no", None) or getattr(case, "case_id", None) or ""
+                cf = getattr(case, "case_number", None) or getattr(case, "case_id", None) or ""
                 import re
 
                 m = re.search(r"IMM-\d+-([0-9]{2})$", str(cf))
@@ -240,7 +242,7 @@ class ExportService:
         json_dir.mkdir(parents=True, exist_ok=True)
 
         # Base filename: <case-number>-<YYYYMMDD>.json
-        safe_case = getattr(case, "court_file_no", None) or getattr(case, "case_id", None) or "case"
+        safe_case = getattr(case, "case_number", None) or getattr(case, "case_id", None) or "case"
         # sanitize filename characters
         safe_case = re.sub(r"[^A-Za-z0-9._-]", "_", str(safe_case))
         base_name = f"{safe_case}-{date_str}.json"
@@ -287,7 +289,9 @@ class ExportService:
                     logger.error(f"Exceeded max retries ({max_retries}) writing JSON for {safe_case}")
                     raise
                 else:
-                    time.sleep(backoff)
+                    # Avoid sleeping during local I/O retries to keep local operations
+                    # high-throughput; continue immediately and retry.
+                    pass
 
     def export_to_csv(self, cases: List[Case], filename: Optional[str] = None) -> str:
         """
@@ -354,16 +358,16 @@ class ExportService:
                 raise ValueError(f"Case at index {i} is not a Case instance")
 
             # Check required fields
-            if not case.court_file_no:
+            if not case.case_number:
                 raise ValueError(f"Case at index {i} has empty case_id")
 
             # Validate case_id format (should be IMM-XXXXX-YY)
             if (
-                not case.court_file_no.startswith("IMM-")
-                or len(case.court_file_no.split("-")) != 3
+                not case.case_number.startswith("IMM-")
+                or len(case.case_number.split("-")) != 3
             ):
                 logger.warning(
-                    f"Case at index {i} has non-standard court_file_no format: {case.court_file_no}"
+                    f"Case at index {i} has non-standard case_number format: {case.case_number}"
                 )
 
     def get_export_history(self) -> List[str]:
@@ -425,19 +429,20 @@ class ExportService:
 
             # Determine if this is a new case or update
             cursor.execute(
-                "SELECT 1 FROM cases WHERE court_file_no = %s LIMIT 1",
-                (case.court_file_no,),
+                "SELECT 1 FROM cases WHERE case_number = %s LIMIT 1",
+                (case.case_number,),
             )
             exists = cursor.fetchone() is not None
 
-            # UPSERT case data
+            # UPSERT case data with tracking status
             cursor.execute(
                 """
                 INSERT INTO cases (
-                    court_file_no, case_type, type_of_action, nature_of_proceeding,
-                    filing_date, office, style_of_cause, language, scraped_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (court_file_no) DO UPDATE SET
+                    case_number, case_type, type_of_action, nature_of_proceeding,
+                    filing_date, office, style_of_cause, language, scraped_at,
+                    status, last_attempt_at, retry_count, error_message
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0, NULL)
+                ON CONFLICT (case_number) DO UPDATE SET
                     case_type = EXCLUDED.case_type,
                     type_of_action = EXCLUDED.type_of_action,
                     nature_of_proceeding = EXCLUDED.nature_of_proceeding,
@@ -445,10 +450,14 @@ class ExportService:
                     office = EXCLUDED.office,
                     style_of_cause = EXCLUDED.style_of_cause,
                     language = EXCLUDED.language,
-                    scraped_at = EXCLUDED.scraped_at
+                    scraped_at = EXCLUDED.scraped_at,
+                    status = EXCLUDED.status,
+                    last_attempt_at = EXCLUDED.last_attempt_at,
+                    retry_count = 0,
+                    error_message = NULL
             """,
                 (
-                    case.court_file_no,
+                    case.case_number,
                     getattr(case, "case_type", None),
                     getattr(case, "action_type", None),
                     getattr(case, "nature_of_proceeding", None),
@@ -457,13 +466,15 @@ class ExportService:
                     getattr(case, "style_of_cause", None),
                     getattr(case, "language", None),
                     datetime.now(),
+                    'success',  # 标记为成功采集
+                    datetime.now(),  # 记录尝试时间
                 ),
             )
 
             # Save docket entries if they exist
             if hasattr(case, "docket_entries") and case.docket_entries:
                 self._save_docket_entries(
-                    cursor, case.court_file_no, case.docket_entries
+                    cursor, case.case_number, case.docket_entries
                 )
 
             conn.commit()
@@ -471,27 +482,27 @@ class ExportService:
             conn.close()
 
             status = "updated" if exists else "new"
-            logger.info(f"Successfully saved case {case.court_file_no} to database ({status})")
+            logger.info(f"Successfully saved case {case.case_number} to database ({status})")
             return status, None
 
         except Exception as e:
-            logger.error(f"Failed to save case {case.court_file_no} to database: {e}")
+            logger.error(f"Failed to save case {case.case_number} to database: {e}")
             return "failed", str(e)
 
-    def case_exists(self, court_file_no: str) -> bool:
-        """Return True if a case with given `court_file_no` exists in the database."""
+    def case_exists(self, case_number: str) -> bool:
+        """Return True if a case with given `case_number` exists in the database."""
         try:
             conn = psycopg2.connect(**self.db_config)
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT 1 FROM cases WHERE court_file_no = %s LIMIT 1", (court_file_no,)
+                "SELECT 1 FROM cases WHERE case_number = %s AND status = 'success' LIMIT 1", (case_number,)
             )
             exists = cursor.fetchone() is not None
             cursor.close()
             conn.close()
             return exists
         except Exception as e:
-            logger.warning(f"Failed to check existence for {court_file_no}: {e}")
+            logger.warning(f"Failed to check existence for {case_number}: {e}")
             return False
 
     def save_cases_to_database(self, cases: List[Case]) -> Tuple[int, int, List[dict]]:
@@ -510,7 +521,7 @@ class ExportService:
 
         for case in cases:
             status, message = self.save_case_to_database(case)
-            per_case.append({"case_number": case.court_file_no, "status": status, "message": message})
+            per_case.append({"case_number": case.case_number, "status": status, "message": message})
             if status == "failed":
                 failed += 1
             else:
@@ -550,9 +561,9 @@ class ExportService:
         execute_values(
             cursor,
             """
-            INSERT INTO docket_entries (court_file_no, id_from_table, date_filed, office, recorded_entry_summary)
+            INSERT INTO docket_entries (case_number, id_from_table, date_filed, office, recorded_entry_summary)
             VALUES %s
-            ON CONFLICT (court_file_no, id_from_table) DO NOTHING
+            ON CONFLICT (case_number, id_from_table) DO NOTHING
         """,
             entries_data,
         )
@@ -632,8 +643,8 @@ class ExportService:
             cursor.execute(
                 """
                 SELECT * FROM cases
-                WHERE court_file_no LIKE %s
-                ORDER BY court_file_no
+                WHERE case_number LIKE %s
+                ORDER BY case_number
             """,
                 (f"IMM-%-{year % 100:02d}",),
             )

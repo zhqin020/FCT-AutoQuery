@@ -1,3 +1,8 @@
+from src.cli.tracking_integration import TrackingIntegration
+
+
+def test_tracking_integration_importable():
+    assert TrackingIntegration is not None
 from typing import Optional
 
 from src.cli.tracking_integration import (

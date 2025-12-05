@@ -34,7 +34,7 @@ Design & Implementation Notes
 -----------------------------
 - Implementation lives in `src/services/batch_service.py` (`BatchService.find_upper_bound`).
 - CLI wiring is on `src/cli/main.py` with `probe` subcommand (dry-run by default).
-- Defaults: `initial_high=1000`, `probe_budget=200`, `max_limit=100000` (configurable via CLI flags).
+- Defaults: `initial_high=1000`, `probe_budget=20`, `max_limit=100000` (configurable via CLI flags).
 - Tests: `tests/test_batch_service.py` covers dense, sparse, budget and max_limit scenarios.
 
 Risks & Mitigations

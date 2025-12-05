@@ -139,6 +139,43 @@ As an operator, I need failed requests to be classified (no-record vs. transient
 - **FR-010**: System MUST log per-case metadata (id, timestamp, outcome, attempts, notes) and produce audit-friendly artifacts (summary JSON and optional NDJSON log lines for each attempt).
 - **FR-011**: System MUST surface errors and final stats through CLI exit codes and machine-readable output (JSON) for integration into pipelines.
 
+## Detailed Steps (Upper-bound detection & Linear collection)
+
+The following steps describe the precise probing and linear traversal behavior implemented by the batch runner. They are written to match the behavioral example used in design discussions and issue notes.
+
+### Step 1 — Exponential (2^i) probe to detect upper-bound
+- Probe mode: this phase runs in both probe-only mode and as the first phase of a full collection run.
+- Start from an `init_number` (CLI `--start`, default 1). For i = 0..probe_budget, compute step = 2^i and candidate id = init_number + step.
+- Before issuing an external request, check the local Case Tracker to see if this candidate is already collected or marked `no-record`. If so, skip the request and treat accordingly (skipped but count toward probe logic if the tracker says `no-record`).
+- If the request is needed, perform the check and classify the outcome as `success`, `no-record` or `failed`.
+- When the runner observes `safe_stop` consecutive `no-record` outcomes it treats the most recent verified `no-record` candidate as a provisional upper bound B and returns the last known-success id A (last successful id < B), then repeats exponential probing from A+1 up to B (i.e., re-opening the window between A and B) to refine local boundaries.
+- Continue this factor-of-two strategy until hit `probe_budget` or the `max_limit` (configured `--max-cases` reached). If `max_limit` is reached without `safe_stop` the last `success` seen is returned as upper bound.
+
+Behavioral notes and examples:
+- Example: `init_number=12000`, probe_budget=20 (2^20 steps theoretical upper bound). The probe sequence checks sequences like 12000, 12001, 12002, 12004, 12008, 12016, ... until safe_stop is reached or i==probe_budget.
+- The probe phase treats consecutive `No data available` counters carefully: only real `no-record` responses increment the `safe_stop` counter; transient `failed` responses do not.
+
+### Step 2 — Linear collection from start to upper-bound
+- Collection mode walks sequentially with step=1 from `init_number` to final upper-bound (determined by probe phase or computed by `--start + --max-cases - 1` if using `--max-cases`).
+- The collection phase must skip any IDs already present in the case tracker (both `success` and `no-record`) and should avoid repeating requests for recent attempts unless `failed` with retry attempts remaining.
+- Termination conditions for linear collection: collected `max_limit` items (CLI `--max-cases` fulfilled) OR current id >= computed upper-bound.
+
+### Caching & Reuse of discovered upper-bound
+- The runner MUST persist the discovered upper-bound (A) in local tracker / persistent storage and mark the discovery timestamp. That discovery is valid for a week by default; subsequent runs within the cache window should re-use that upper-bound as starting `init_number` for new probes.
+- If cached upper-bound is older than the TTL (1 week by default) the probe phase must include a small local refinement scan to confirm the bound, otherwise re-probe.
+
+### Observability and audit
+- Each probe and collection attempt must result in a single line NDJSON audit entry containing: run_id, case_id, attempt_number, result={success,no-record,failed}, timestamp, and optionally path to any raw HTML persisted.
+- The final JSON summary should include the final upper-bound and basic probe statistics (probe_count, first_success, last_success, final_no_record_streak).
+
+### Defaults & tuning items
+- Defaults used in examples (not authoritative): `safe_stop`=20; `probe_budget`=50; these values are illustrative. See Configuration Defaults for canonical configured values.
+
+## Functional Requirements (Additional / Updated)
+- **FR-012**: System MUST implement exponential probe search with parameters `init_number`, `probe_budget`, and `safe_stop`. The probe must be idempotent and respect local tracker state to avoid redundant network requests.
+- **FR-013**: System MUST cache discovered upper-bound values with a TTL default (1 week) and reuse cached bounds when within TTL.
+- **FR-014**: System MUST limit probe activity by `probe_budget` and `max_limit`, and stop if `probe_budget` or `max_limit` is reached.
+
 ### Key Entities
 
 - **CaseIdentifier**: { `year`: string, `number`: integer } — represents a case id like `IMM-231-25`.
@@ -171,20 +208,21 @@ As an operator, I need failed requests to be classified (no-record vs. transient
 
 ## Decisions
 
-1. Safe-stop threshold: the safe-stop threshold is configurable via CLI and defaults to `500` consecutive `no-record` responses. CLI flag: `--safe-stop-no-records` (default `500`). Tests will include lower thresholds (e.g., `100`) to validate behavior under sparse datasets.
+1. Safe-stop threshold: the safe-stop threshold is configurable via CLI and defaults to `20` consecutive `no-record` responses. CLI flag: `--safe-stop-no-records` (default `20`). Tests will include lower thresholds (e.g., `10`) to validate behavior under sparse datasets.
 
 2. Raw HTML persistence: by default persist raw HTML only for failed attempts. Provide CLI toggle `--persist-raw-html` to enable full persistence of successful fetches. Failure-only persistence will save files to `output/html_failed/<run>/<case_id>.html` and the audit NDJSON will record the path.
 
-3. Probe budget and detection goal: expose a configurable `probe_budget` (default `200`) as an upper bound for probe attempts; the empirical typical-case goal for high-water detection is ≤50 probes. Tests should assert typical-case behavior while enforcing the configured `probe_budget` as the hard upper limit.
+3. Probe budget and detection goal: expose a configurable `probe_budget` (default `50`) as an upper bound for probe attempts; the empirical typical-case goal for high-water detection is ≤50 probes. Tests should assert typical-case behavior while enforcing the configured `probe_budget` as the hard upper limit.
 
 ## Configuration Defaults (canonical)
 
 The following canonical defaults are authoritative for this feature and should be referenced by implementation and tests. Tests and tasks MUST reference these values rather than re-stating ad-hoc numbers.
 
-- `safe_stop_no_records`: 500 (default consecutive `no-record` responses to trigger safe-stop)
-- `probe_budget`: 200 (hard upper limit on probe attempts during upper-bound detection)
-- `probe_typical_goal`: 50 (typical-case target for probe attempts; not a hard limit but used for acceptance tests)
-- `persist_raw_html`: false (default; raw HTML persisted only for failures unless CLI toggled)
+ 
+ - `safe_stop_no_records`: 20 (default consecutive `no-record` responses to trigger safe-stop)
+ - `probe_budget`: 20 (hard upper limit on probe attempts during upper-bound detection)
+ - `probe_typical_goal`: 50 (typical-case target for probe attempts; not a hard limit but used for acceptance tests)
+ - `persist_raw_html`: false (default; raw HTML persisted only for failures unless CLI toggled)
 
 Per the project constitution, every `src/*` module MUST have corresponding tests. If any `src/*` module is missing test coverage at merge time, the following remediation task will be required (see `tasks.md` T11): create minimal test stubs that assert importability and critical public API surface to satisfy the constitution. This is a required step and not optional.
 ## Testing / User Scenarios (expanded)

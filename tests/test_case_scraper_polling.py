@@ -33,7 +33,8 @@ class FakeDriver:
 
     def find_elements(self, by, value):
         # Only care about the XPaths used during polling
-        if by == By.XPATH and "No data available" in value:
+        value_lower = value.lower() if isinstance(value, str) else ''
+        if by == By.XPATH and "no data available" in value_lower:
             # First poll: return a 'No data' indicator, second poll: none
             if self.poll_count == 0:
                 return [FakeElement(text="No data available")]
@@ -85,8 +86,9 @@ def test_polling_allows_transient_no_data(monkeypatch):
     def counting_find_elements(by, value):
         # For polling XPath values, we map poll_count usage
         res = orig_find_elements(by, value)
+        value_lower = value.lower() if isinstance(value, str) else ''
         # If this call relates to polling XPaths, increment poll_count when called for 'No data' XPATH
-        if by == By.XPATH and "No data available" in value:
+        if by == By.XPATH and "no data available" in value_lower:
             # increment poll count on each call of the no-data check to simulate progression
             fake_driver.poll_count += 1
         return res
@@ -140,7 +142,8 @@ def test_stale_no_data_ignored_until_input_applies(monkeypatch):
     # counting find_elements to increment poll_count
     def counting_find_elements2(by, value):
         res = orig_find_elements(by, value)
-        if by == By.XPATH and "No data available" in value:
+        value_lower = value.lower() if isinstance(value, str) else ''
+        if by == By.XPATH and "no data available" in value_lower:
             fake_driver.poll_count += 1
         return res
 
@@ -169,7 +172,8 @@ def test_no_data_threshold_respected(monkeypatch):
             self._counter = 0
 
         def find_elements(self, by, value):
-            if by == By.XPATH and "No data available" in value:
+            value_lower = value.lower() if isinstance(value, str) else ''
+            if by == By.XPATH and "no data available" in value_lower:
                 if self._counter < threshold:
                     self._counter += 1
                     return [FakeElement(text="No data available")]
@@ -212,4 +216,274 @@ def test_no_data_threshold_respected(monkeypatch):
     monkeypatch.setattr('src.services.case_scraper_service.WebDriverWait', DummyWait3)
 
     found = service.search_case('IMM-9-21')
+    assert found is False
+
+
+def test_polling_numeric_variant_detected_early(monkeypatch):
+    """If the table rows appear with a leading-zero variant, detection should succeed in polling loop."""
+    service = CaseScraperService(headless=True)
+    fake_driver = FakeDriver()
+
+    # This driver returns 'No data' initially, then returns a table row with IMM-0001-25
+    class VariantDriver(FakeDriver):
+        def __init__(self):
+            super().__init__()
+            self._counter = 0
+        def find_elements(self, by, value):
+            value_lower = value.lower() if isinstance(value, str) else ''
+            if by == By.XPATH and "no data available" in value_lower:
+                if self._counter < 3:
+                    self._counter += 1
+                    return [FakeElement(text="No data available")]
+                return []
+            if by == By.XPATH and "contains(normalize-space(.), 'IMM-1-25')" in value:
+                return []
+            if by == By.XPATH and "//table//tbody//tr" in value:
+                if self._counter >= 3:
+                    return [FakeElement(text="IMM-0001-25")]
+                return []
+            return []
+
+    d = VariantDriver()
+    monkeypatch.setattr(service, "_get_driver", lambda: d)
+    monkeypatch.setattr(service, "initialize_page", lambda: None)
+    class DummyWait4:
+        def __init__(self, driver, timeout):
+            pass
+        def until(self, cond):
+            return FakeElement()
+    monkeypatch.setattr('src.services.case_scraper_service.WebDriverWait', DummyWait4)
+
+    found = service.search_case('IMM-1-25')
+    assert found is True
+
+
+def test_polling_numeric_variant_handles_various_formatting(monkeypatch):
+    """Ensure search_case detects numeric variants for case numbers formatted with zero-padding and alternate separators."""
+    service = CaseScraperService(headless=True)
+    fake_driver = FakeDriver()
+
+    variants = [
+        'IMM-0005-21',
+        'IMM - 5 - 21',
+        'IMM/5/21',
+        'IMM–5–21',
+        'IMM—005—21',
+        'IMM 005 21',
+        'IMM-05-21',
+    ]
+
+    for variant_text in variants:
+        class VariantDriver2(FakeDriver):
+            def __init__(self, text):
+                super().__init__()
+                self._counter = 0
+                self._vtext = text
+
+            def find_elements(self, by, value):
+                value_lower = value.lower() if isinstance(value, str) else ''
+                if by == By.XPATH and "no data available" in value_lower:
+                    if self._counter < 2:
+                        self._counter += 1
+                        return [FakeElement(text="No data available")]
+                    return []
+                if by == By.XPATH and "contains(normalize-space(.), 'IMM-5-21')" in value:
+                    return []
+                if by == By.XPATH and "//table//tbody//tr" in value:
+                    if self._counter >= 2:
+                        return [FakeElement(text=self._vtext)]
+                    return []
+                return []
+
+        d = VariantDriver2(variant_text)
+        monkeypatch.setattr(service, "_get_driver", lambda: d)
+        monkeypatch.setattr(service, "initialize_page", lambda: None)
+
+        class DummyWaitV:
+            def __init__(self, driver, timeout):
+                pass
+
+            def until(self, cond):
+                return FakeElement()
+
+        monkeypatch.setattr('src.services.case_scraper_service.WebDriverWait', DummyWaitV)
+        assert service.search_case('IMM-5-21') is True
+
+
+def test_polling_placeholder_stops_early(monkeypatch):
+    """If the table rows contain the DataTables placeholder 'No data available in table', polling should stop early and return no-results."""
+    service = CaseScraperService(headless=True)
+    fake_driver = FakeDriver()
+
+    class PlaceholderDriver(FakeDriver):
+        def __init__(self):
+            super().__init__()
+            self._counter = 0
+
+        def find_elements(self, by, value):
+            value_lower = value.lower() if isinstance(value, str) else ''
+            if by == By.XPATH and "no data available" in value_lower:
+                # Return it immediately
+                return [FakeElement(text="No data available")]
+            if by == By.XPATH and "contains(normalize-space(.), 'IMM-5-21')" in value:
+                return []
+            if by == By.XPATH and "//table//tbody//tr" in value:
+                # Return a placeholder row in the results table
+                return [FakeElement(text="No data available in table")]
+            return []
+
+    d = PlaceholderDriver()
+    monkeypatch.setattr(service, "_get_driver", lambda: d)
+    monkeypatch.setattr(service, "initialize_page", lambda: None)
+    # Simulate the case input reporting the correct case value so 'No data available' is not stale
+    class FakeInput(FakeElement):
+        def __init__(self):
+            super().__init__()
+        def get_attribute(self, attr):
+            if attr == 'value':
+                return 'IMM-5-21'
+            return None
+    monk_find_element = lambda by, value: FakeInput()
+    monkeypatch.setattr(d, 'find_element', monk_find_element)
+
+    class DummyWaitP:
+        def __init__(self, driver, timeout):
+            pass
+
+        def until(self, cond):
+            return FakeInput()
+
+    monkeypatch.setattr('src.services.case_scraper_service.WebDriverWait', DummyWaitP)
+
+    found = service.search_case('IMM-5-21')
+    assert found is False
+    # ensure the driver did not poll up to the default safe_stop threshold
+    from src.lib.config import Config
+    safe_stop = int(Config.get_safe_stop_no_records())
+    assert d.poll_count < safe_stop
+
+
+def test_polling_placeholder_stops_early_french(monkeypatch):
+    """Ensure French placeholders also cause early stop."""
+    service = CaseScraperService(headless=True)
+    fake_driver = FakeDriver()
+
+    class FrPlaceholderDriver(FakeDriver):
+        def __init__(self):
+            super().__init__()
+        def find_elements(self, by, value):
+            print('Fr find_elements called value:', value)
+            value_lower = value.lower() if isinstance(value, str) else ''
+            if by == By.XPATH and "aucun résultat" in value_lower:
+                # This is the placeholder match built using the phrase XPATH
+                return [FakeElement(text="Aucun résultat disponible")]
+            if by == By.XPATH and "contains(normalize-space(.), 'IMM-5-21')" in value:
+                return []
+            if by == By.XPATH and "//table//tbody//tr" in value:
+                return [FakeElement(text="Aucun résultat disponible")]
+            return []
+
+    d2 = FrPlaceholderDriver()
+    monkeypatch.setattr(service, "_get_driver", lambda: d2)
+    monkeypatch.setattr(service, "initialize_page", lambda: None)
+    class DummyWaitPf:
+        def __init__(self, driver, timeout):
+            pass
+        def until(self, cond):
+            return FakeElement()
+    monkeypatch.setattr('src.services.case_scraper_service.WebDriverWait', DummyWaitPf)
+
+    # ensure the input reports the correct case value so our placeholder is valid
+    class FakeInput(FakeElement):
+        def __init__(self):
+            super().__init__()
+        def get_attribute(self, attr):
+            if attr == 'value':
+                return 'IMM-5-21'
+            return None
+    monkeypatch.setattr(d2, 'find_element', lambda by, value: FakeInput())
+    found = service.search_case('IMM-5-21')
+    assert found is False
+
+
+def test_polling_placeholder_stops_early_spanish(monkeypatch):
+    """Ensure Spanish placeholders also cause early stop."""
+    service = CaseScraperService(headless=True)
+    fake_driver = FakeDriver()
+
+    class EsPlaceholderDriver(FakeDriver):
+        def __init__(self):
+            super().__init__()
+        def find_elements(self, by, value):
+            print('Es find_elements called value:', value)
+            value_lower = value.lower() if isinstance(value, str) else ''
+            if by == By.XPATH and "sin datos" in value_lower:
+                return [FakeElement(text="Sin datos disponibles")]
+            if by == By.XPATH and "contains(normalize-space(.), 'IMM-5-21')" in value:
+                return []
+            if by == By.XPATH and "//table//tbody//tr" in value:
+                return [FakeElement(text="Sin datos disponibles")]
+            return []
+
+    d3 = EsPlaceholderDriver()
+    monkeypatch.setattr(service, "_get_driver", lambda: d3)
+    monkeypatch.setattr(service, "initialize_page", lambda: None)
+    class DummyWaitEs:
+        def __init__(self, driver, timeout):
+            pass
+        def until(self, cond):
+            return FakeElement()
+    monkeypatch.setattr('src.services.case_scraper_service.WebDriverWait', DummyWaitEs)
+
+    class FakeInput2(FakeElement):
+        def __init__(self):
+            super().__init__()
+        def get_attribute(self, attr):
+            if attr == 'value':
+                return 'IMM-5-21'
+            return None
+    monkeypatch.setattr(d3, 'find_element', lambda by, value: FakeInput2())
+    found = service.search_case('IMM-5-21')
+    assert found is False
+
+
+def test_polling_placeholder_stops_early_portuguese(monkeypatch):
+    """Ensure Portuguese placeholders also cause early stop."""
+    service = CaseScraperService(headless=True)
+    fake_driver = FakeDriver()
+
+    class PtPlaceholderDriver(FakeDriver):
+        def __init__(self):
+            super().__init__()
+        def find_elements(self, by, value):
+            print('Pt find_elements called value:', value)
+            value_lower = value.lower() if isinstance(value, str) else ''
+            if by == By.XPATH and "sem dados" in value_lower:
+                return [FakeElement(text="Sem dados disponíveis")]
+            if by == By.XPATH and "contains(normalize-space(.), 'IMM-5-21')" in value:
+                return []
+            if by == By.XPATH and "//table//tbody//tr" in value:
+                return [FakeElement(text="Sem dados disponíveis")]
+            return []
+
+    d4 = PtPlaceholderDriver()
+    monkeypatch.setattr(service, "_get_driver", lambda: d4)
+    monkeypatch.setattr(service, "initialize_page", lambda: None)
+
+    class DummyWaitPt:
+        def __init__(self, driver, timeout):
+            pass
+        def until(self, cond):
+            return FakeElement()
+
+    monkeypatch.setattr('src.services.case_scraper_service.WebDriverWait', DummyWaitPt)
+    class FakeInput3(FakeElement):
+        def __init__(self):
+            super().__init__()
+        def get_attribute(self, attr):
+            if attr == 'value':
+                return 'IMM-5-21'
+            return None
+    monkeypatch.setattr(d4, 'find_element', lambda by, value: FakeInput3())
+    found = service.search_case('IMM-5-21')
     assert found is False

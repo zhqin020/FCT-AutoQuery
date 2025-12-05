@@ -107,25 +107,11 @@ As an operator, I need failed requests to be classified (no-record vs. transient
 
 - Target site responds with explicit signals that distinguish `no records` (search result empty) from server/network errors. If not, heuristics are required.
 - The repository already contains code to persist successful case data; this feature will reuse the same storage API to check for existing ids.
-- Default safe-stop thresholds: `safe_stop_consecutive_no_record = 500` and `safe_stop_consecutive_fail = 100` unless clarified by stakeholders.
+- Default safe-stop thresholds: `safe_stop_consecutive_no_record = 20` and `safe_stop_consecutive_fail = 100` unless clarified by stakeholders.
 
-## [NEEDS CLARIFICATION: 1]
+## [RESOLVED: Safe-stop threshold]
 
-**Topic**: Safe-stop thresholds for long sparse gaps
-
-**Context**: The spec uses a default of 500 consecutive `no-record` responses to halt the job, which is conservative but may prematurely stop in extremely sparse datasets.
-
-**What we need to know**: Should we keep `500` as the default safe-stop threshold, reduce it (e.g., 100), or make it configurable per-run (recommended)?
-
-Suggested answers:
-
-| Option | Answer | Implications |
-|--------|--------|--------------|
-| A | Keep default 500 | Safer against false termination; may issue more no-record requests before stopping |
-| B | Reduce to 100 | Quicker stop for sparse datasets; risk missing far-out valid ids in very sparse datasets |
-| C | Make it configurable per-run (default 500) | Most flexible; requires CLI flag and tests; preferred for operators |
-
-Your choice: _[Wait for user response]_
+The safe-stop threshold has been set to `safe_stop_consecutive_no_record = 20` per stakeholder selection. CLI remains configurable to override this value on a per-run basis.
 
 ## [NEEDS CLARIFICATION: 2]
 

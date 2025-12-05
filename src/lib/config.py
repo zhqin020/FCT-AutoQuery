@@ -51,7 +51,7 @@ DEFAULT_SAVE_MODAL_HTML = False
 DEFAULT_ENABLE_RUN_LOGGER = False
 DEFAULT_WRITE_AUDIT = False
 DEFAULT_DOCKET_PARSE_MAX_ERRORS = 3
-DEFAULT_SAFE_STOP_NO_RECORDS = 3
+DEFAULT_SAFE_STOP_NO_RECORDS = 20
 DEFAULT_PERSIST_RAW_HTML = False
 DEFAULT_PROBE_BUDGET = 20
 DEFAULT_BACKOFF_FACTOR = 1.0
@@ -60,6 +60,9 @@ DEFAULT_PROBE_DELAY_MIN = 1.0
 DEFAULT_PROBE_DELAY_MAX = 3.0
 DEFAULT_PROBE_STATE_FILE = "output/probe_state.json"
 DEFAULT_PERSIST_PROBE_STATE = False
+DEFAULT_NO_RESULTS_TTL_DAYS = 365
+DEFAULT_RETRY_COOLDOWN_SECONDS = 3600  # 1 hour cooldown between retries
+DEFAULT_RETRY_HOURS_SINCE_LAST_ATTEMPT = 24  # 24 hours before considering failed cases for retry
 
 
 def _load_toml_config() -> dict:
@@ -177,6 +180,22 @@ class Config:
             _get_from_config("app", "docket_parse_max_errors")
             or os.getenv("FCT_DOCKET_PARSE_MAX_ERRORS")
             or DEFAULT_DOCKET_PARSE_MAX_ERRORS
+        )
+
+    @classmethod
+    def get_retry_cooldown_seconds(cls) -> int:
+        return int(
+            _get_from_config("app", "retry_cooldown_seconds")
+            or os.getenv("FCT_RETRY_COOLDOWN_SECONDS")
+            or DEFAULT_RETRY_COOLDOWN_SECONDS
+        )
+
+    @classmethod
+    def get_retry_hours_since_last_attempt(cls) -> int:
+        return int(
+            _get_from_config("app", "retry_hours_since_last_attempt")
+            or os.getenv("FCT_RETRY_HOURS_SINCE_LAST_ATTEMPT")
+            or DEFAULT_RETRY_HOURS_SINCE_LAST_ATTEMPT
         )
 
     @classmethod
@@ -313,6 +332,18 @@ class Config:
         if isinstance(val, str):
             return val.lower() == "true"
         return bool(val) if val is not None else DEFAULT_PERSIST_PROBE_STATE
+
+    @classmethod
+    def get_no_results_ttl_days(cls) -> Optional[int]:
+        val = _get_from_config("app", "no_results_ttl_days")
+        if val is None:
+            val = os.getenv("FCT_NO_RESULTS_TTL_DAYS")
+        if val is None:
+            return DEFAULT_NO_RESULTS_TTL_DAYS
+        try:
+            return int(val)
+        except Exception:
+            return DEFAULT_NO_RESULTS_TTL_DAYS
 
     @classmethod
     def get_max_backoff_seconds(cls) -> float:

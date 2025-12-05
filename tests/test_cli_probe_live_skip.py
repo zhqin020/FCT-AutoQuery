@@ -8,7 +8,7 @@ def test_probe_live_skips_case_when_tracker_says_so(monkeypatch):
     cli = FederalCourtScraperCLI()
 
     # Force should_skip to be True for IMM-5-21
-    monkeypatch.setattr(cli.tracker, 'should_skip_case', lambda cn, force=False: (cn == 'IMM-5-21', 'no_results_repeated (3)'))
+    monkeypatch.setattr(cli.tracker, 'should_skip_case', lambda cn, force=False: (cn == 'IMM-5-21', 'no_data_repeated (3)'))
 
     # Ensure we would raise if the real scraper was called
     class SpyScraper:

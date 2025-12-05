@@ -77,6 +77,53 @@ Tasks
   - Phase: Implementation + Tests
 
 - T13: Implement metrics emission
+  Progress Summary (updated 2025-12-01)
+
+  - [x] T0: Issue created and linked (`issues/0004-batch-mode-problem.md`).
+  - [x] T1: Design & spec alignment completed. Canonical defaults decided and documented in `specs/0004-batch-mode-problem/spec.md`.
+  - [x] T2: Probe algorithm implemented in `src/services/batch_service.py` and exercised by unit tests.
+  - [x] T3: CLI wiring implemented: `src/cli/main.py` exposes `probe` and `batch` commands and takes `--probe-budget` with default from `Config.get_probe_budget()`.
+  - [x] T4: Scraper helpers extracted and hardened (`src/services/case_scraper_service.py`) — functions like `_parse_date_str`, `_parse_label_value_table`, `_safe_send_keys`, `_dismiss_cookie_banner`, `_submit_search` have unit tests.
+  - [x] T5/T6: Deterministic tests and flaky fallback tests implemented. Fake WebElement harness implemented at `tests/utils/fake_webelement.py`. Unit tests validate stale-element and fallback flows.
+  - [x] T7: Coverage reporting and constitution testing verified (coverage HTML artifacts present in repository).
+  - [x] T8: Documentation & PR: `specs/0004-batch-mode-problem` documents, `issues/0004-batch-mode-problem.md`, and `PULL_REQUEST.md` updated.
+  - [x] T10: Audit schema documented and tests exist in `tests/test_audit_schema.py`.
+
+  Validation / Observations
+
+  - Probe budget usage locations (code & docs) discovered and verified:
+    - `src/lib/config.py`: canonical default `DEFAULT_PROBE_BUDGET = 20`, `Config.get_probe_budget()` accessor.
+    - `src/services/batch_service.py`: probes use `probe_budget` argument and fallback to `Config.get_probe_budget()`.
+    - `src/cli/main.py`: CLI exposes `--probe-budget` with `Config.get_probe_budget()` default and wiring to `batch`/`probe` subcommands.
+    - `specs/0004-batch-mode-problem/spec.md`: `probe_budget` default set in Configuration Defaults.
+    - `issues/0004-batch-mode-problem.md`: documented.
+    - `docs/batch_tracking_integration.py`: references to `probe_budget` and defaults show usage in integration docs/scripts.
+    - Contract/API: `specs/0004-batch-mode-problem/contracts/openapi.yaml` includes `probe_budget` in `POST /batch/probe` schema.
+
+  - Tests referencing probe budget and behavior verified:
+    - `tests/test_batch_service_find_upper_bound.py` (basic and collect modes)
+    - `tests/test_batch_service_backoff.py` (handles transient exceptions and uses backoff)
+    - `tests/test_batch_service_fast_check.py` and `tests/test_batch_service_fast_db_skip.py` (linear scan and skip behaviors)
+    - `tests/test_cli_linear_scan_skip_no_results.py` (CLI wiring and flags)
+
+  - The default `probe_budget` canonical value is set to `20` in `Config`. Tests use explicit probe_budget overrides (e.g., 6, 2, 50) where appropriate to broaden coverage.
+
+  Next steps (if any):
+  
+  1. Mark additional minor follow-up tests/tasks (T9/T11/T12/T13) as in-progress or create follow-up issues where needed.
+  2. Run a focused test suite to validate recent config and CLI changes; optionally expand CI coverage.
+
+  Validation run (2025-12-01):
+
+  - Executed representative tests:
+    - `tests/test_batch_service_find_upper_bound.py::test_find_upper_bound_basic` — PASS
+    - `tests/test_batch_service_backoff.py::test_find_upper_bound_handles_transient_exceptions_and_uses_backoff` — PASS
+
+  All validation tests above passed locally. CI should also reflect these changes and run the full test suite on merge.
+
+  1. Mark additional minor follow-up tests/tasks (T9/T11/T12/T13) as in-progress or create follow-up issues where needed.
+  2. Run a focused test suite to validate recent config and CLI changes; optionally expand CI coverage.
+
   - Description: Emit the defined metrics (`batch.run.duration_seconds`, `batch.job.duration_seconds`, `batch.job.retry_count`, `batch.run.failure_rate`) from the runner and job worker. Add unit tests validating metric names and basic values are emitted (or are available from the metrics-emitter API). Map metric emission points to code locations in `src/`.
   - Files: `src/metrics_emitter.py` (or reuse `src/run_logger.py`), `tests/test_metrics_emission.py`
   - Phase: Implementation + Tests

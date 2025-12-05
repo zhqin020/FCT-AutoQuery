@@ -23,7 +23,7 @@ class BatchService:
         max_limit: int = 100000,
         coarse_step: int = 100,
         refine_range: int = 200,
-        probe_budget: int = 10,
+        probe_budget: Optional[int] = None,
         max_probes: int = 10000,
         rate_limiter: Optional[EthicalRateLimiter] = None,
         check_retries: int = 1,
@@ -32,6 +32,7 @@ class BatchService:
         scrape_case_data: Optional[Callable[[int], Optional[object]]] = None,
         max_cases: int = 100000,
         format_case_number: Optional[Callable[[int], str]] = None,
+        safe_stop: Optional[int] = None,
     ) -> Tuple[int, int]:
         """
         Find an approximate upper bound using exponential probing with backtracking.
@@ -52,7 +53,9 @@ class BatchService:
         probes = 0
         collected_count = 0
 
-        safe_stop = Config.get_safe_stop_no_records()
+        safe_stop = Config.get_safe_stop_no_records() if safe_stop is None else int(safe_stop)
+        if probe_budget is None:
+            probe_budget = Config.get_probe_budget()
 
         # Formatter for numeric id to readable case_id (e.g. IMM-5-21)
         if format_case_number is None:
@@ -102,24 +105,33 @@ class BatchService:
             # Fast local DB check to avoid unnecessary scraping
             if fast_check_case_exists is not None:
                 try:
-                    fast_exists = fast_check_case_exists(number)
+                    fast_result = fast_check_case_exists(number)
+                    if isinstance(fast_result, dict):
+                        # 如果返回的是字典，包含status信息
+                        fast_exists = fast_result.get('exists', False)
+                        status = fast_result.get('status', 'unknown')
+                        retry_count = fast_result.get('retry_count') if isinstance(fast_result.get('retry_count'), (int, float)) else fast_result.get('retry_count')
+                        skip_reason = fast_result.get('skip_reason', '')
+                        logger.info(f"Probing {fmt(number)}: exists={fast_exists}, status={status}, retry_count={retry_count}, reason='{skip_reason}' (fast DB check) (probes={probes}, collected={collected_count})")
+                    else:
+                        # 兼容简单的布尔返回值
+                        fast_exists = bool(fast_result)
+                        logger.info(f"Probing {fmt(number)}: {fast_exists} (fast DB check) (probes={probes}, collected={collected_count})")
+                    
                     if fast_exists:
                         exists = True
                         visited[number] = exists
-                        logger.info(f"Probing {fmt(number)}: {exists} (fast DB check) (probes={probes}, collected={collected_count})")
                         last_success = number
                         last_success_position = i
                         consecutive_no_data = 0
                         i += 1
                         continue
-                except Exception:
+                except Exception as e:
+                    logger.warning(f"Fast DB check failed for {fmt(number)}: {e}")
                     pass
 
-            # Random delay to simulate human browsing and avoid IP blocks
-            delay_min = Config.get_probe_delay_min()
-            delay_max = Config.get_probe_delay_max()
-            if delay_max > 0:
-                time.sleep(random.uniform(delay_min, delay_max))
+            # No generic delay here: delays are applied at the point that actually
+            # performs web access (e.g., in check_case_exists or scrape methods).
 
             was_visited = number in visited
             if was_visited:
@@ -141,9 +153,11 @@ class BatchService:
                                 delay = rate_limiter.record_failure()
                             except Exception:
                                 delay = check_retry_delay
-                            time.sleep(delay)
+                            # Avoid sleeping here; rely on web functions to apply backoff if necessary
+                            pass
                         else:
-                            time.sleep(check_retry_delay)
+                            # Avoid sleeping here; rely on web functions to apply backoff if necessary
+                            pass
                 visited[number] = exists
                 logger.info(f"Probing {fmt(number)}: {exists} (probes={probes}, collected={collected_count})")
 
@@ -208,20 +222,37 @@ class BatchService:
                 if fast_check_case_exists is not None:
                     try:
                         fast_exists = fast_check_case_exists(current)
-                        if fast_exists:
-                            exists = True
-                            visited[current] = exists
-                            logger.info(f"Linear scan {fmt(current)}: {exists} (fast DB check) (probes={probes}, collected={collected_count})")
+                        if isinstance(fast_exists, dict):
+                            # detailed form
+                            fast_exists_flag = fast_exists.get('exists', False)
+                            status = fast_exists.get('status', 'unknown')
+                            retry_count = fast_exists.get('retry_count')
+                            skip_reason = fast_exists.get('skip_reason', '')
+                            if fast_exists_flag:
+                                exists = True
+                                visited[current] = exists
+                                logger.info(f"Linear scan {fmt(current)}: {exists} (fast DB check) status={status}, retry_count={retry_count}, reason='{skip_reason}' (probes={probes}, collected={collected_count})")
+                                upper = current
+                                consecutive_no_data_linear = 0
+                                current += 1
+                                continue
+                        else:
+                            if fast_exists:
+                                exists = True
+                                visited[current] = exists
+                                logger.info(f"Linear scan {fmt(current)}: {exists} (fast DB check) (probes={probes}, collected={collected_count})")
+                                upper = current
+                                consecutive_no_data_linear = 0
+                                current += 1
+                                continue
                             upper = current
                             consecutive_no_data_linear = 0
                             current += 1
                             continue
                     except Exception:
                         pass
-                delay_min = Config.get_probe_delay_min()
-                delay_max = Config.get_probe_delay_max()
-                if delay_max > 0:
-                    time.sleep(random.uniform(delay_min, delay_max))
+                # No generic delay here: any required delays for web access should
+                # be handled by the `check_case_exists`/`scrape_case_data` helpers.
 
                 was_visited = current in visited
                 if was_visited:
@@ -238,14 +269,8 @@ class BatchService:
                             attempt += 1
                             probes += 1
                             logger.warning(f"Linear scan attempt {attempt} failed for {fmt(current)}: {e}")
-                            if rate_limiter is not None:
-                                try:
-                                    delay = rate_limiter.record_failure()
-                                except Exception:
-                                    delay = check_retry_delay
-                                time.sleep(delay)
-                            else:
-                                time.sleep(check_retry_delay)
+                            # Avoid sleeping here; rely on web functions to apply backoff if necessary
+                            pass
                     visited[current] = exists
                     logger.info(f"Linear scan {fmt(current)}: {exists} (probes={probes}, collected={collected_count})")
                 if exists:

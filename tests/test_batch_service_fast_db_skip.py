@@ -36,7 +36,7 @@ def test_cli_check_skips_no_results_repeated(monkeypatch):
     cli = FederalCourtScraperCLI()
     # Stub tracker.should_skip_case to return True indicating repeated no results
     monkeypatch.setattr(cli, 'tracker', cli.tracker)
-    monkeypatch.setattr(cli.tracker, 'should_skip_case', lambda cn, force=False: (True, 'no_results_repeated (3)'))
+    monkeypatch.setattr(cli.tracker, 'should_skip_case', lambda cn, force=False: (True, 'no_data_repeated (3)'))
     # Ensure exporter case_exists is not called; set it to raise if invoked
     def raise_on_exporter(*args, **kwargs):
         raise AssertionError('exporter.case_exists should not be called')
@@ -53,5 +53,5 @@ def test_cli_check_skips_no_results_repeated(monkeypatch):
 
     check = create_tracking_integrated_check_exists(cli, run_id='r1', year=2025)
     assert check(5) is False
-    # Ensure skip was recorded as 'skipped' not 'no_results'
+    # Ensure skip was recorded as 'skipped' not 'no_data'
     assert recorded['outcome'] == 'skipped'

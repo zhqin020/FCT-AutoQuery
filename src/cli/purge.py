@@ -119,7 +119,7 @@ def purge_year(
     # DB enumeration placeholder: in full implementation this queries DB for rows
     if not files_only:
         # For dry-run we can perform a safe, read-only enumeration of DB
-        # candidate case ids derived from the case identifier (court_file_no)
+        # candidate case ids derived from the case identifier (case_number)
         # so operators can preview exactly which rows would be deleted.
         if dry_run:
             try:
@@ -139,12 +139,12 @@ def purge_year(
                     cols = [d[0] for d in cur.description] if cur.description else []
 
                     id_candidates = ["id", "case_id", "caseid", "case_number"]
-                    court_candidates = ["court_file_no", "case_number", "case_no", "caseid", "case_id"]
+                    court_candidates = ["case_number", "case_number", "case_no", "caseid", "case_id"]
 
                     id_col = next((c for c in id_candidates if c in cols), None)
                     court_col = next((c for c in court_candidates if c in cols), None)
 
-                    # If the table uses `court_file_no` as the primary identifier
+                    # If the table uses `case_number` as the primary identifier
                     # (no numeric `id` column), use it as the id column as well.
                     if not id_col and court_col:
                         id_col = court_col

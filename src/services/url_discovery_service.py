@@ -39,10 +39,10 @@ class UrlDiscoveryService:
             # Query for the highest case number in the given year
             cursor.execute(
                 """
-                SELECT court_file_no
+                SELECT case_number
                 FROM cases
-                WHERE court_file_no LIKE %s
-                ORDER BY court_file_no DESC
+                WHERE case_number LIKE %s
+                ORDER BY case_number DESC
                 LIMIT 1
             """,
                 (f"IMM-%-{year % 100:02d}",),
@@ -53,7 +53,7 @@ class UrlDiscoveryService:
             conn.close()
 
             if result:
-                return result["court_file_no"]
+                return result["case_number"]
             return None
 
         except Exception as e:
@@ -185,7 +185,7 @@ class UrlDiscoveryService:
                 SELECT COUNT(*) as total_cases,
                        MAX(scraped_at) as last_scraped
                 FROM cases
-                WHERE court_file_no LIKE %s
+                WHERE case_number LIKE %s
             """,
                 (f"IMM-%-{year % 100:02d}",),
             )

@@ -21,14 +21,23 @@ class TrackingIntegration:
                            error_message: Optional[str] = None,
                            outcome: Optional[str] = None):
         """Record a probe result to tracking system."""
-        # Allow callers to override the recorded outcome (e.g., 'skipped').
+        # If the caller provides an explicit outcome, use that. If an error message
+        # is present, prefer recording 'error' so it isn't confused with 'no_data'.
         if outcome:
             final_outcome = outcome
+        elif error_message:
+            final_outcome = 'error'
         else:
-            final_outcome = "success" if exists else "no_results"
+            final_outcome = "success" if exists else "no_data"
         
+        # Use stored DB value if exists to preserve matching for joins
+        try:
+            stored_no = self.tracker.get_stored_case_case_number(case_number) or case_number
+        except Exception:
+            stored_no = case_number
         self.tracker.record_case_processing(
-            court_file_no=case_number,
+            case_number=case_number,
+            db_case_number=stored_no,
             run_id=self.run_id,
             outcome=final_outcome,
             processing_mode="batch_probe",
@@ -46,11 +55,19 @@ class TrackingIntegration:
         """Record a scrape result to tracking system."""
         if outcome:
             final_outcome = outcome
+        elif error_message:
+            final_outcome = 'error'
         else:
             final_outcome = "success" if success else "failed"
         
+        # Use stored DB value if exists to preserve matching for joins
+        try:
+            stored_no = self.tracker.get_stored_case_case_number(case_number) or case_number
+        except Exception:
+            stored_no = case_number
         self.tracker.record_case_processing(
-            court_file_no=case_number,
+            case_number=case_number,
+            db_case_number=stored_no,
             run_id=self.run_id,
             outcome=final_outcome,
             processing_mode="batch_collect",
@@ -80,7 +97,10 @@ def create_tracking_integrated_check_exists(cli_instance, run_id: str, year: int
         case_number = f"IMM-{number}-{year % 100:02d}"
         
         # Check if we should skip this case
-        should_skip, reason = cli_instance.tracker.should_skip_case(case_number, force=cli_instance.force)
+        try:
+            should_skip, reason = cli_instance.tracker.should_skip_case(case_number, force=cli_instance.force, run_id=run_id)
+        except TypeError:
+            should_skip, reason = cli_instance.tracker.should_skip_case(case_number, force=cli_instance.force)
         if should_skip:
             logger.info(f"Skipping {case_number}: {reason}")
             integration.record_probe_result(case_number, False, error_message=f"Skipped: {reason}", outcome='skipped')
@@ -131,7 +151,10 @@ def create_tracking_integrated_scrape_case(cli_instance, run_id: str, year: int 
         case_number = f"IMM-{number}-{year % 100:02d}"
         
         # Check if we should skip this case
-        should_skip, reason = cli_instance.tracker.should_skip_case(case_number, force=cli_instance.force)
+        try:
+            should_skip, reason = cli_instance.tracker.should_skip_case(case_number, force=cli_instance.force, run_id=run_id)
+        except TypeError:
+            should_skip, reason = cli_instance.tracker.should_skip_case(case_number, force=cli_instance.force)
         if should_skip:
             logger.info(f"Skipping scrape {case_number}: {reason}")
             integration.record_scrape_result(case_number, False, error_message=f"Skipped: {reason}", outcome='skipped')

@@ -588,9 +588,90 @@ class CaseScraperService:
                 for i in range(max_polls):
                     polls += 1
                     try:
-                        no_data_elems = driver.find_elements(By.XPATH, "//td[contains(text(), 'No data available')]")
-                        td_matches = driver.find_elements(By.XPATH, f"//table//td[contains(normalize-space(.), '{case_number}')]")
-                        table_rows = driver.find_elements(By.XPATH, "//table//tbody//tr")
+                        # Additional placeholder phrases for no-results: English + French variants
+                        no_data_elems = []
+                        placeholder_phrases = [
+                            'no data available',
+                            'no results',
+                            'aucun résultat',
+                            'aucun résultat trouvé',
+                            'aucune donnée',
+                            'aucune donnée disponible',
+                            'aucun résultat disponible',
+                            # Spanish
+                            'sin datos disponibles',
+                            'sin datos',
+                            'sin resultados',
+                            'no hay datos',
+                            # Portuguese
+                            'sem dados disponíveis',
+                            'sem dados',
+                            'sem resultados',
+                            # Add shorter tokens to be more forgiving on localized phrases
+                            'aucun',
+                            'aucune',
+                            'sin',
+                            'sem',
+                        ]
+                        try:
+                            # Build an XPATH that checks for any of these phrases (case-insensitive)
+                            xpath_expr = ' or '.join([f"contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{p}')" for p in placeholder_phrases])
+                            # Restrict placeholder detection to the candidate results table where possible
+                            # to avoid false positives from other page tables (e.g., examples, templates)
+                            no_data_elems = []
+                            result_table = None
+                            try:
+                                # Prefer a table which appears to contain results (headers like 'court file' / 'court number')
+                                tables = driver.find_elements(By.XPATH, "//table")
+                                candidates = []
+                                for t in tables:
+                                    try:
+                                        ths = [h.text.strip().lower() for h in t.find_elements(By.XPATH, ".//th") if h.text and h.text.strip()]
+                                        joined = " | ".join(ths)
+                                        if any(h in joined for h in ["court file", "court number", "court file no", "court file number"]):
+                                            result_table = t
+                                            break
+                                        candidates.append((len(ths), t))
+                                    except Exception:
+                                        continue
+                                if result_table is None and candidates:
+                                    # pick the table with the most header columns as fallback
+                                    _, result_table = max(candidates, key=lambda x: x[0])
+                            except Exception:
+                                result_table = None
+
+                            if result_table is not None:
+                                no_data_elems = result_table.find_elements(By.XPATH, f".//td[{xpath_expr}]")
+                            else:
+                                no_data_elems = driver.find_elements(By.XPATH, f"//td[{xpath_expr}]")
+                        except Exception:
+                            no_data_elems = driver.find_elements(By.XPATH, "//td[contains(text(), 'No data available')]")
+                        # Prefer scoping to a single 'results' table when possible
+                        result_table = None
+                        try:
+                            tables = driver.find_elements(By.XPATH, "//table")
+                            candidates = []
+                            for t in tables:
+                                try:
+                                    ths = [h.text.strip().lower() for h in t.find_elements(By.XPATH, ".//th") if h.text and h.text.strip()]
+                                    joined = " | ".join(ths)
+                                    if any(h in joined for h in ["court file", "court number", "court file no", "court file number"]):
+                                        result_table = t
+                                        break
+                                    candidates.append((len(ths), t))
+                                except Exception:
+                                    continue
+                            if result_table is None and candidates:
+                                _, result_table = max(candidates, key=lambda x: x[0])
+                        except Exception:
+                            result_table = None
+
+                        if result_table is not None:
+                            td_matches = result_table.find_elements(By.XPATH, f".//td[contains(normalize-space(.), '{case_number}')]")
+                            table_rows = result_table.find_elements(By.XPATH, ".//tbody//tr")
+                        else:
+                            td_matches = driver.find_elements(By.XPATH, f"//table//td[contains(normalize-space(.), '{case_number}')]")
+                            table_rows = driver.find_elements(By.XPATH, "//table//tbody//tr")
                     except Exception:
                         no_data_elems = []
                         td_matches = []
@@ -628,9 +709,98 @@ class CaseScraperService:
                         td_match_count = len(td_matches)
                         table_row_count = len(table_rows)
                         logger.warning(f"Poll {i+1}: detected 'No data available' (rows={table_row_count} td_matches={td_match_count}, streak={no_data_streak})")
+                        # If a placeholder row also indicates 'No data' we can stop early
+                        try:
+                            sample_row_text = (table_rows[0].text if table_rows and len(table_rows) > 0 and hasattr(table_rows[0], 'text') else None)
+                            sample_text_lower = str(sample_row_text).strip().lower() if sample_row_text else ''
+                            # If sample row contains any of the known placeholder phrases, stop early
+                            try:
+                                import unicodedata
+                                import re as _re
+                                def _strip_accents(s: str) -> str:
+                                    nk = unicodedata.normalize('NFD', s)
+                                    return ''.join(c for c in nk if unicodedata.category(c) != 'Mn')
+
+                                sample_text_norm = _strip_accents(sample_text_lower)
+                                # If sample row looks like a case identifier (IMM-...), treat
+                                # it as a data row and skip placeholder early-exit.
+                                if sample_row_text and _re.search(r"\bimm[-\s]\d+[-\s]\d{2}\b", sample_row_text, flags=_re.IGNORECASE):
+                                    logger.debug(f"Poll {i+1}: sample row looks like a real case (not placeholder); continuing to poll (sample={sample_row_text})")
+                                else:
+                                    norm_phrases = [_strip_accents(p) for p in placeholder_phrases]
+                                    if sample_row_text and (any((p in sample_text_lower) for p in placeholder_phrases) or any((np in sample_text_norm) for np in norm_phrases)):
+                                        logger.info(f"Poll {i+1}: detected placeholder in sample row – treating as no-results (early exit) (sample={sample_row_text})")
+                                    no_data = True
+                                    break
+                            except Exception:
+                                if sample_row_text and any((p in sample_text_lower) for p in placeholder_phrases):
+                                    logger.info(f"Poll {i+1}: detected placeholder in sample row – treating as no-results (early exit) (sample={sample_row_text})")
+                                    no_data = True
+                                    break
+                        except Exception:
+                            pass
                         if no_data_streak >= no_data_threshold:
                             no_data = True
                             break
+                    # If we have table rows but no td matches, try numeric variant detection
+                    if not td_matches and table_rows:
+                        try:
+                            import re
+                            # Try to detect variants: padded zeros, alternate separators, spaces
+                            m = re.search(r"IMM-?(\d+)-\d{2}", case_number)
+                            if m:
+                                num = str(int(m.group(1)))
+                                padded_original = m.group(1)
+                                sep = r"[-\s–—/]"
+                                pattern = re.compile(rf"IMM{sep}0*{num}{sep}\d{{2}}", flags=re.IGNORECASE)
+                                for r in table_rows[:5]:
+                                    try:
+                                        txt = r.text or ''
+                                        if (
+                                            case_number in txt
+                                            or pattern.search(txt)
+                                            or f"-{num}-" in txt
+                                            or f"-{padded_original}-" in txt
+                                        ):
+                                            found_row = True
+                                            td_match_count = 1
+                                            table_row_count = len(table_rows)
+                                            logger.info(f"Poll {i+1}: numeric variant match in table rows for {case_number} (rows={table_row_count})")
+                                            break
+                                    except Exception:
+                                        continue
+                                if found_row:
+                                    break
+                        except Exception:
+                            logger.debug("Failed numeric variant detection during polling", exc_info=True)
+                        else:
+                            # If no numeric variant matches, capture a short debug sample of the first row text
+                            try:
+                                sample_row_text = (table_rows[0].text if table_rows and len(table_rows) > 0 and hasattr(table_rows[0], 'text') else None)
+                                logger.debug(f"Poll {i+1}: table rows present but no td match; sample_row_text={sample_row_text}")
+                                # If sample row expresses one of the known placeholders,
+                                # treat it as a definitive no-results and stop early.
+                                sample_text_lower = str(sample_row_text).strip().lower() if sample_row_text else ''
+                                try:
+                                    import unicodedata as _ud
+                                    import re as _re2
+                                    sample_text_norm2 = ''.join(c for c in _ud.normalize('NFD', sample_text_lower) if _ud.category(c) != 'Mn')
+                                    norm_phrases2 = [''.join(c for c in _ud.normalize('NFD', p) if _ud.category(c) != 'Mn') for p in placeholder_phrases]
+                                    # If the sample looks like another case identifier (IMM-...),
+                                    # treat it as real data and skip placeholder handling.
+                                    if sample_row_text and _re2.search(r"\bimm[-\s]\d+[-\s]\d{2}\b", sample_row_text, flags=_re2.IGNORECASE):
+                                        logger.debug(f"Poll {i+1}: sample row looks like a real case (not placeholder); continuing to poll (sample={sample_row_text})")
+                                    elif sample_row_text and (any((p in sample_text_lower) for p in placeholder_phrases) or any((np in sample_text_norm2) for np in norm_phrases2)):
+                                        logger.info(f"Poll {i+1}: detected placeholder in table sample row for {case_number} — treating as no-results (early exit) (sample={sample_row_text})")
+                                        no_data = True
+                                        break
+                                except Exception:
+                                    if sample_row_text and any((p in sample_text_lower) for p in placeholder_phrases):
+                                        logger.info(f"Poll {i+1}: detected placeholder in table sample row for {case_number} — treating as no-results (early exit) (sample={sample_row_text})")
+                                        no_data = True
+                                        break
+                            except Exception:
+                                pass
                         # else, continue polling to allow data to arrive
 
                     # periodic debug summary to trace progress (every 5 polls)
@@ -668,6 +838,46 @@ class CaseScraperService:
                         nrows_final = len(table_rows_final)
                     except Exception:
                         nrows_final = 0
+                    # If the first row in the final table rows is one of the
+                    # localized placeholders (e.g., French 'Aucun résultat'),
+                    # treat it as no-results and return False. This captures
+                    # cases where earlier placeholder detection did not
+                    # trigger due to query differences.
+                    try:
+                        sample_final = table_rows_final[0].text if table_rows_final and len(table_rows_final) > 0 else ''
+                        sample_final_lower = str(sample_final).strip().lower() if sample_final else ''
+                        try:
+                            import unicodedata as _ud3
+                            sample_final_norm = ''.join(c for c in _ud3.normalize('NFD', sample_final_lower) if _ud3.category(c) != 'Mn')
+                        except Exception:
+                            sample_final_norm = sample_final_lower
+                        # If any placeholder phrase (or normalized version) appears, early-exit
+                        import re as _re3
+                        if sample_final and (not _re3.search(r"\bimm[-\s]\d+[-\s]\d{2}\b", sample_final, flags=_re3.IGNORECASE)) and (any((p in sample_final_lower) for p in placeholder_phrases) or any((p in sample_final_norm) for p in ["aucun resultat", "aucune donnée", "aucune donnée disponible"])):
+                            logger.info(f"Detected placeholder in final table sample; treating as no-results (sample={sample_final})")
+                            return False
+                    except Exception:
+                        pass
+                    # Try to detect numeric-only matches (e.g., 'IMM-0005-21' in page while searching for 'IMM-5-21')
+                    try:
+                        import re
+                        m = re.search(r"IMM-(\d+)-\d{2}", case_number)
+                        numeric_match = False
+                        if m:
+                            num = str(int(m.group(1)))
+                            for r in table_rows_final[:5]:
+                                try:
+                                    txt = r.text or ''
+                                    if case_number in txt or f"-{num}-" in txt:
+                                        numeric_match = True
+                                        break
+                                except Exception:
+                                    continue
+                        if numeric_match:
+                            logger.info(f"Table rows present and numeric variant detected for case: {case_number} (submit={submit_method})")
+                            return True
+                    except Exception:
+                        logger.debug("Failed numeric variant detection for table rows", exc_info=True)
                     logger.info(f"Table rows present ({nrows_final}) but specific case not detected: {case_number} (submit={submit_method})")
                     return True
 

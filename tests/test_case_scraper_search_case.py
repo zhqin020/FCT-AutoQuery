@@ -137,3 +137,35 @@ def test_search_case_retry_then_found(monkeypatch):
 
     found = svc.search_case("IMM-999-25")
     assert found is True
+
+
+def test_search_case_found_with_leading_zeros(monkeypatch):
+    svc = CaseScraperService(headless=True)
+    # Create a driver that has a table row containing IMM-0001-25
+    class LeadingZeroDriver(FakeDriver):
+        def __init__(self):
+            super().__init__(present_no_data=False, present_case=False)
+            self.page_source = '<table><tbody><tr><td>IMM-0001-25</td></tr></tbody></table>'
+
+        def find_elements(self, by, selector):
+            # Simulate table rows present
+            if isinstance(selector, str) and selector.endswith("//tbody//tr"):
+                return [1]
+            # No direct td match for 'IMM-1-25'
+            if isinstance(selector, str) and "contains(normalize-space(.), 'IMM-1-25')" in selector:
+                return []
+            # 'No data' not present
+            return []
+
+    drv = LeadingZeroDriver()
+    monkeypatch.setattr(svc, "_get_driver", lambda: drv)
+    monkeypatch.setattr(svc, "initialize_page", lambda: None)
+    svc._initialized = True
+    svc.rate_limiter.wait_if_needed = lambda: None
+    _patch_wait(monkeypatch, svc)
+
+    # Ensure submit helper is no-op so flow proceeds to polling
+    monkeypatch.setattr(svc, "_submit_search", lambda d, e: None)
+
+    found = svc.search_case("IMM-1-25")
+    assert found is True

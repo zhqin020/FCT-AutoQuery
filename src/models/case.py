@@ -9,6 +9,7 @@ and header fields such as `case_type`, `action_type`, `nature_of_proceeding`,
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Optional
+from src.lib.case_utils import canonicalize_case_number
 
 
 @dataclass(init=False)
@@ -17,7 +18,7 @@ class Case:
 
     This dataclass provides a backward-compatible constructor that accepts
     older field names used elsewhere in the codebase and tests, such as
-    `court_file_no`, `case_title`, `court_name`, and `case_date`.
+    `case_number`, `case_title`, `court_name`, and `case_date`.
     """
 
     # canonical fields used throughout the scraper
@@ -49,13 +50,17 @@ class Case:
         html_content: str = "",
         scraped_at: Optional[datetime] = None,
         # legacy / test-suite names
-        court_file_no: Optional[str] = None,
+        case_number: Optional[str] = None,
         case_title: Optional[str] = None,
         court_name: Optional[str] = None,
         case_date: Optional[date] = None,
     ) -> None:
-        # map legacy names to canonical fields
-        self.case_id = case_id or court_file_no or ""
+        # map legacy names to canonical fields and canonicalize the case id
+        raw_case_id = case_id or case_number or ""
+        try:
+            self.case_id = canonicalize_case_number(raw_case_id)
+        except Exception:
+            self.case_id = raw_case_id
         self.case_type = case_type
         self.action_type = action_type
         self.nature_of_proceeding = nature_of_proceeding
@@ -121,7 +126,7 @@ class Case:
 
     # Backwards-compatible properties expected by older code/tests
     @property
-    def court_file_no(self) -> str:
+    def case_number(self) -> str:
         return self.case_id
 
     @property
