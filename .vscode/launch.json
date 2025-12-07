@@ -9,6 +9,20 @@
             "console": "integratedTerminal",
             "justMyCode": true,
             "python": "/home/watson/miniconda3/envs/fct/bin/python"
+        },
+        {
+            "name": "Batch Scrape 2021",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/cli/main.py",
+            "args": ["batch", "2021", "--max-cases", "50", "--start", "100"],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "python": "/home/watson/miniconda3/envs/fct/bin/python"
         }
     ]
 }

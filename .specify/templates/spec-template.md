@@ -1,6 +1,6 @@
 # Feature Specification: [FEATURE NAME]
 
-**Feature Branch**: `[####-feature-name]`  
+**Feature Branch**: `[###-feature-name]`  
 **Created**: [DATE]  
 **Status**: Draft  
 **Input**: User description: "$ARGUMENTS"
@@ -99,14 +99,6 @@
 
 - **[Entity 1]**: [What it represents, key attributes without implementation]
 - **[Entity 2]**: [What it represents, relationships to other entities]
-
-## Constitution Compliance *(mandatory)*
-
-- **CC-001**: Feature MUST align with Testing Standard: [specific alignment, e.g., "Include tests covering happy path, edge cases, and network failures"]
-- **CC-002**: Feature MUST comply with Git Workflow & Branching Strategy: [specific, e.g., "Follow trunk-based development and test-first policy"]
-- **CC-003**: Feature MUST adhere to Coding Standards: [specific, e.g., "Use type hinting, Google docstrings, and ethical scraping"]
-- **CC-004**: Feature MUST meet Issue Management Strategy: [specific, e.g., "Ensure feature starts with a mandatory GitHub issue"]
-- **CC-005**: Feature MUST address Git Workflow: [specific, e.g., "Follow issue-driven branching and PR merge process"]
 
 ## Success Criteria *(mandatory)*
 

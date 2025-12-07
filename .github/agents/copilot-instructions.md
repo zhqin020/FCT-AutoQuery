@@ -1,12 +1,10 @@
-# FCT-AutoQuery Development Guidelines
+# fct-scraper Development Guidelines
 
-Auto-generated from all feature plans. Last updated: 2025-11-20
+Auto-generated from all feature plans. Last updated: 2025-12-06
 
 ## Active Technologies
-- Python 3.11 + Selenium (web automation), requests (HTTP), pandas (data processing), loguru (logging) (0001-federal-court-scraper)
-- CSV and JSON file exports (no database required for public data) (0001-federal-court-scraper)
 
-- Python 3.11 + Selenium (web automation), psycopg2 (PostgreSQL), pytest (testing), loguru (logging) (0001-federal-court-scraper)
+- Python 3.11 + Selenium 4.15+, pandas 2.0+, loguru 0.7+, webdriver-manager 4.0+, psycopg2 (for PostgreSQL) (simple)
 
 ## Project Structure
 
@@ -24,9 +22,8 @@ cd src [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLO
 Python 3.11: Follow standard conventions
 
 ## Recent Changes
-- 0001-federal-court-scraper: Added Python 3.11 + Selenium (web automation), requests (HTTP), pandas (data processing), loguru (logging)
 
-- 0001-federal-court-scraper: Added Python 3.11 + Selenium (web automation), psycopg2 (PostgreSQL), pytest (testing), loguru (logging)
+- simple: Added Python 3.11 + Selenium 4.15+, pandas 2.0+, loguru 0.7+, webdriver-manager 4.0+, psycopg2 (for PostgreSQL)
 
 <!-- MANUAL ADDITIONS START -->
 <!-- MANUAL ADDITIONS END -->

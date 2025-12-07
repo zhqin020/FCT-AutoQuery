@@ -1,0 +1,6 @@
+selenium>=4.15.0
+pandas>=2.0.0
+loguru>=0.7.0
+webdriver-manager>=4.0.0
+psycopg2-binary
+pytest>=7.4.0

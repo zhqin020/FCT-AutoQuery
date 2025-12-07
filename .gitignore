@@ -143,6 +143,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+config.private.toml
 
 # Spyder project settings
 .spyderproject
@@ -205,3 +206,23 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Selenium/WebDriver
+chromedriver
+geckodriver
+msedgedriver
+operadriver
+phantomjs
+webdriver/
+selenium/
+*.log
+logs/
+
+# Web scraping data
+data/
+output/
+*.csv
+*.json
+!contracts/*.json
+
+token/

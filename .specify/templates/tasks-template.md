@@ -5,7 +5,7 @@ description: "Task list template for feature implementation"
 
 # Tasks: [FEATURE NAME]
 
-**Input**: Design documents from `/specs/[####-feature-name]/`
+**Input**: Design documents from `/specs/[###-feature-name]/`
 **Prerequisites**: plan.md (required), spec.md (required for user stories), research.md, data-model.md, contracts/
 
 **Tests**: The examples below include test tasks. Tests are OPTIONAL - only include them if explicitly requested in the feature specification.
@@ -68,11 +68,6 @@ Examples of foundational tasks (adjust based on your project):
 - [ ] T007 Create base models/entities that all stories depend on
 - [ ] T008 Configure error handling and logging infrastructure
 - [ ] T009 Setup environment configuration management
-- [ ] T010 [P] Setup testing framework (pytest) and coverage tools
-- [ ] T011 [P] Configure git workflow and branching strategy enforcement
-- [ ] T012 [P] Implement coding standards (type hinting, docstrings, ethical scraping)
-- [ ] T013 [P] Establish issue management process and issues/ folder
-- [ ] T014 [P] Integrate git workflow steps into development pipeline
 
 **Checkpoint**: Foundation ready - user story implementation can now begin in parallel
 
