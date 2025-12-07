@@ -24,7 +24,7 @@ class BatchService:
     @staticmethod
     def exponential_probe_and_collect(
         check_case_exists: Callable[[int], bool],
-        fast_check_case_exists: Optional[Callable[[int], bool]] = None,
+        fast_check_case_exists: Optional[Callable[[int], dict]] = None,
         start: int = 0,
         max_exponent: Optional[int] = None,
         rate_limiter: Optional[EthicalRateLimiter] = None,
@@ -118,22 +118,42 @@ class BatchService:
 
                 logger.debug(f"Probing i={i}, number={number}, consecutive_no_data={consecutive_no_data}")
 
-                # Directly attempt to scrape the case data
-                try:
-                    case = scrape_case_data(number)
-                    if case:
-                        collected_count += 1
-                        collected_cases.append(case)
-                        last_success = number
-                        last_success_this_round = number
-                        consecutive_no_data = 0
-                        logger.info(f"Successfully collected case {fmt(number)} (collected={collected_count})")
-                    else:
+                # Check if case exists and its status
+                should_scrape = True
+                if fast_check_case_exists:
+                    status_info = fast_check_case_exists(number)
+                    if status_info.get('exists'):
+                        if status_info.get('status') == 'success':
+                            # Treat as existing data
+                            last_success = number
+                            last_success_this_round = number
+                            consecutive_no_data = 0
+                            logger.debug(f"Case {fmt(number)} exists with status success, treating as data")
+                            should_scrape = False
+                        elif status_info.get('status') == 'no_data':
+                            # Treat as no data
+                            consecutive_no_data += 1
+                            logger.debug(f"Case {fmt(number)} exists with status no_data, treating as no data")
+                            should_scrape = False
+                        # If status is 'failed', should_scrape remains True to retry
+
+                if should_scrape and scrape_case_data:
+                    # Directly attempt to scrape the case data
+                    try:
+                        case = scrape_case_data(number)
+                        if case:
+                            collected_count += 1
+                            collected_cases.append(case)
+                            last_success = number
+                            last_success_this_round = number
+                            consecutive_no_data = 0
+                            logger.info(f"Successfully collected case {fmt(number)} (collected={collected_count})")
+                        else:
+                            consecutive_no_data += 1
+                            logger.debug(f"Case {fmt(number)} not found or failed to scrape")
+                    except Exception as e:
+                        logger.debug(f"Failed to scrape case {fmt(number)}: {e}")
                         consecutive_no_data += 1
-                        logger.debug(f"Case {fmt(number)} not found or failed to scrape")
-                except Exception as e:
-                    logger.debug(f"Failed to scrape case {fmt(number)}: {e}")
-                    consecutive_no_data += 1
 
                 if consecutive_no_data >= safe_stop:
                     break

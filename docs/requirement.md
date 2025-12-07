@@ -48,7 +48,8 @@ Implement safe, efficient batch retrieval for `IMM-<number>-<yy>` case ids with:
   3. 每次连续出现 safe_stop 次 'No data available', 或者编号到达B，就返回最后一次有数据的 case number 作为新的起点A继续探测。直到从A到B所有的采集都以'no data available'结束。
   4. 如果扫描到 max_cases 仍未达到 safe_stop，最后一个有效编号就是上限。
   5. 上限数据必须记录在数据库中，有效期为一周，超过一周，再次运行采集程序时，则以现有的上限为基础(init_number)继续探测新的上限， 如果已经有上限数据，并且在有效期内， 则直接进入步骤2. 线性采集阶段。
-
+  6. 上边界不能超过 init_number + max_cases
+  7. 线性采集，采集的范围应该从 init_number 到上边界。
 
 ####   **步骤 2: 线性采集阶段**
   - 编号线性增长，从 init_number 依次采集, step=1

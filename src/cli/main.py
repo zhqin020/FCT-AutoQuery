@@ -741,13 +741,12 @@ class FederalCourtScraperCLI:
             logger.info(f"year: {year}")
             logger.info(f"cases_already_collected: {len(cases)}")
             logger.info(f"collected_case_ids: {[case.case_id for case in cases]}")
-        else:
-            logger.warning("指数探测没有找到有效的上边界，跳过线性收集阶段")
+
             start_num = start or 1
             if max_cases:
                 try:
                     start_num_int = int(start_num)
-                    end_limit = start_num_int + int(max_cases) - 1
+                    end_limit = start_num_int + int(max_cases)
                     if upper > end_limit:
                         logger.info(f"Limiting linear scan upper bound to {end_limit} due to --max-cases={max_cases}")
                         upper = end_limit
@@ -834,6 +833,8 @@ class FederalCourtScraperCLI:
                 # Stop if we reached the limit
                 if max_cases and len(cases) >= max_cases:
                     break
+        else:
+            logger.warning("指数探测没有找到有效的上边界，跳过线性收集阶段")
 
         # Emit run-level metrics
         run_end_time = datetime.now(timezone.utc)
@@ -1298,11 +1299,11 @@ Notes:
                         f"Batch scrape complete: year={args.year}, cases_scraped={len(scraped_cases)}, cases_skipped={len(skipped)}, json={export_result.get('json')}, audit={audit_path}, database={export_result.get('database')}"
                     )
                 else:
-                    print(f"\nNo cases found for year {args.year}")
-                    logger.info(f"No cases found for year {args.year}")
+                    print(f"\nNo cases processed for year {args.year}")
+                    logger.info(f"No cases processed for year {args.year}")
                     if self.emergency_stop:
                         print("Emergency stop was triggered during processing")
-                    sys.exit(1)
+                        sys.exit(1)
 
             elif args.command == "stats":
                 self.show_stats(args.year)
