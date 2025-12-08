@@ -582,9 +582,13 @@ class CaseScraperService:
                 # before treating it as stable. Use the configured safe-stop
                 # threshold so that probe-level and search-level behavior are
                 # consistent.
-                max_polls = 40
+                max_polls = 60  # Increased from 40 to allow more time for data loading
                 poll_delay = 0.5
                 no_data_threshold = int(Config.get_safe_stop_no_records())
+                
+                # Add extra wait for DataTable initialization after search submission
+                logger.debug("Waiting for DataTable to initialize after search")
+                time.sleep(2)  # Allow DataTable to reset and start loading
                 for i in range(max_polls):
                     polls += 1
                     try:
@@ -1216,10 +1220,14 @@ class CaseScraperService:
             if more_link is None and prefound_modal is None:
                 raise Exception("Could not find 'More' link/button for case")
 
+            # Wait for table to stabilize before clicking to avoid stale elements
+            logger.debug("Waiting for table to stabilize before clicking More")
+            time.sleep(1)
+            
             # Try normal click first, then JS click fallback. Handle
             # StaleElementReferenceException by re-finding the control and
             # retrying a few times (the page may re-render while we inspect it).
-            click_attempts = 3
+            click_attempts = 4  # Increased from 3
             clicked = False
             for attempt in range(click_attempts):
                 try:

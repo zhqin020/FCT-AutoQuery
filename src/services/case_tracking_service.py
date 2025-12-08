@@ -104,14 +104,14 @@ class CaseTrackingService:
         if message:
             logger.debug(f"  Message: {message}")
 
-    def _normalize_outcome(self, outcome: str) -> str:
+    def _normalize_outcome(self, outcome) -> str:
         """Normalize common outcome string variants into canonical outcomes.
 
         For backward compatibility and loose input forms, normalize hyphenated
         variants (e.g. 'no-results') into canonical 'no_data' where appropriate.
         """
         if not outcome:
-            return outcome
+            return str(outcome) if outcome is not None else ""
         o = str(outcome).strip().lower()
         # Normalize common hyphen/underscore inconsistencies
         # Common pass-through values; we treat 'no_data' as the canonical value

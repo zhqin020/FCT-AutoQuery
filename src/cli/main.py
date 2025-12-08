@@ -105,37 +105,58 @@ class FederalCourtScraperCLI:
             # Search for the case
             found = self.scraper.search_case(case_number)
             if not found:
-                logger.warning(f"Case {case_number} not found")
-                # record transient failure and backoff
-                try:
-                    delay = self.rate_limiter.record_failure()
-                    time.sleep(delay)
-                except Exception:
-                    # best-effort small sleep
-                    time.sleep(0.1)
-                self.consecutive_failures += 1
+                # Check if page contains 'No data available in table'
+                driver = self.scraper._get_driver()
+                page_text = driver.page_source
+                is_no_data = 'No data available in table' in page_text
                 
-                # Record not found to tracking system (use canonical NO_DATA)
-                try:
-                    self.tracker.record_case_processing(
-                        case_number=case_number,
-                        run_id=self.current_run_id,
-                        outcome="no_data",
-                        error_message="Case not found",
-                        processing_mode="single"
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to record tracking data for {case_number}: {e}")
-                
-                # 标记为 no_data（只有在页面检测到'No data available in table'时才设置）
-                try:
-                    from src.services.simplified_tracking_service import SimplifiedTrackingService, CaseStatus
-                    simplified_tracker = SimplifiedTrackingService()
-                    simplified_tracker.mark_case_attempt(case_number, CaseStatus.NO_DATA)
-                except Exception as e:
-                    logger.warning(f"Failed to mark case no_data for {case_number}: {e}")
-                
-                return None
+                if is_no_data:
+                    logger.warning(f"Case {case_number} has no data available in table")
+                    # Record as no_data
+                    try:
+                        self.tracker.record_case_processing(
+                            case_number=case_number,
+                            run_id=self.current_run_id,
+                            outcome="no_data",
+                            error_message="No data available in table",
+                            processing_mode="single"
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to record tracking data for {case_number}: {e}")
+                    
+                    # 标记为 no_data
+                    try:
+                        from src.services.simplified_tracking_service import SimplifiedTrackingService, CaseStatus
+                        simplified_tracker = SimplifiedTrackingService()
+                        simplified_tracker.mark_case_attempt(case_number, CaseStatus.NO_DATA)
+                    except Exception as e:
+                        logger.warning(f"Failed to mark case no_data for {case_number}: {e}")
+                    
+                    return None
+                else:
+                    logger.warning(f"Case {case_number} not found")
+                    # record transient failure and backoff
+                    try:
+                        delay = self.rate_limiter.record_failure()
+                        time.sleep(delay)
+                    except Exception:
+                        # best-effort small sleep
+                        time.sleep(0.1)
+                    self.consecutive_failures += 1
+                    
+                    # Record not found to tracking system as failed
+                    try:
+                        self.tracker.record_case_processing(
+                            case_number=case_number,
+                            run_id=self.current_run_id,
+                            outcome="failed",
+                            error_message="Case not found",
+                            processing_mode="single"
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to record tracking data for {case_number}: {e}")
+                    
+                    return None
 
             # Scrape the case data with retries that re-run the search page
             case = None
@@ -176,6 +197,10 @@ class FederalCourtScraperCLI:
                 except Exception:
                     time.sleep(0.1)
                 if attempt < max_scrape_attempts:
+                    # Add a longer delay before retry to allow server state to settle
+                    logger.info(f"Waiting before retry attempt {attempt+1}")
+                    time.sleep(3)
+                    
                     # Re-initialize the page to recover from transient DOM state
                     try:
                         logger.info("Re-initializing page before retry (without search mode)")
@@ -313,6 +338,16 @@ class FederalCourtScraperCLI:
             # Do not close the full WebDriver here to enable session reuse
             # across batch operations. Individual modal/page cleanup is
             # performed inside CaseScraperService methods.
+            
+            # Memory cleanup for individual case (if enabled)
+            if Config.get_enable_memory_management():
+                try:
+                    import gc
+                    # Trigger garbage collection after each case to free up memory
+                    collected = gc.collect()
+                    logger.debug(f"Memory cleanup after case {case_number}: {collected} objects collected")
+                except Exception:
+                    pass
 
             # Check for emergency stop
             if self.consecutive_failures >= self.max_consecutive_failures:
@@ -409,6 +444,10 @@ class FederalCourtScraperCLI:
                 except Exception:
                     time.sleep(0.1)
                 if attempt < max_scrape_attempts:
+                    # Add a longer delay before retry to allow server state to settle
+                    logger.info(f"Waiting before retry attempt {attempt+1}")
+                    time.sleep(3)
+                    
                     # Re-initialize the page to recover from transient DOM state
                     try:
                         logger.info("Re-initializing page before retry (without search mode)")
@@ -486,7 +525,7 @@ class FederalCourtScraperCLI:
             pass
     def scrape_batch_cases(
         self, year: int, max_cases: Optional[int] = None, start: Optional[int] = None, max_exponent: Optional[int] = None
-    ) -> tuple[list, list]:
+    ) -> tuple[list, dict]:
         """
         Scrape multiple cases for a given year using exponential probing with collection, then linear collection.
 
@@ -540,7 +579,11 @@ class FederalCourtScraperCLI:
         cases = []
         consecutive_failures = 0
         processed = 0
-        skipped = []
+        skipped = []  # Will be truncated to prevent memory accumulation
+        max_skipped_log = Config.get_max_skipped_log()  # Maximum skipped records to keep in memory
+        skip_report_interval = Config.get_skip_report_interval()  # Report interval for skip statistics
+        skipped_counter = 0  # Track total skipped cases for reporting
+        last_skipped_report = 0  # Track last time we reported skipped stats
 
         # Start batch run tracking
         logger.debug("启动批处理运行跟踪...")
@@ -778,13 +821,33 @@ class FederalCourtScraperCLI:
                     if should_skip:
                         print(f"→ Skipping {case_number}: {reason}")
                         logger.info(f"Skipping {case_number}: {reason}")
+                        # Add to skipped list with automatic truncation
                         skipped.append({"case_number": case_number, "status": "skipped", "reason": reason})
+                        skipped_counter += 1
+                        if len(skipped) > max_skipped_log:
+                            skipped = skipped[-max_skipped_log:]  # Keep only the last N records
+                            logger.debug(f"Skipped list truncated to {max_skipped_log} most recent records")
+                        
+                        # Report skipped statistics periodically
+                        if skipped_counter - last_skipped_report >= skip_report_interval:
+                            logger.info(f"Skip statistics: {skipped_counter} total cases skipped so far")
+                            last_skipped_report = skipped_counter
                         integration.record_scrape_result(case_number, False, outcome='skipped', error_message=reason)
                         continue
                     if not self.force and self.exporter.case_exists(case_number):
                         print(f"→ Skipping {case_number}: already in database")
                         logger.info(f"Skipping {case_number}: exists_in_db")
-                        skipped.append({"case_number": case_number, "status": "skipped"})
+                        # Add to skipped list with automatic truncation
+                        skipped.append({"case_number": case_number, "status": "skipped", "reason": "exists_in_db"})
+                        skipped_counter += 1
+                        if len(skipped) > max_skipped_log:
+                            skipped = skipped[-max_skipped_log:]  # Keep only the last N records
+                            logger.debug(f"Skipped list truncated to {max_skipped_log} most recent records")
+                        
+                        # Report skipped statistics periodically
+                        if skipped_counter - last_skipped_report >= skip_report_interval:
+                            logger.info(f"Skip statistics: {skipped_counter} total cases skipped so far")
+                            last_skipped_report = skipped_counter
                         integration.record_scrape_result(case_number, False, outcome='skipped', error_message="exists_in_db")
                         continue
                 except Exception:
@@ -802,6 +865,14 @@ class FederalCourtScraperCLI:
                         print(f"✓ Successfully scraped case {case.case_id}")
                         logger.info(f"Successfully scraped case {case.case_id}")
                         integration.record_scrape_result(case_number, True, case_id=getattr(case, "case_id", None))
+                        
+                        # Memory management: trigger garbage collection at configured interval
+                        if Config.get_enable_memory_management():
+                            cleanup_interval = Config.get_memory_cleanup_interval()
+                            if len(cases) % cleanup_interval == 0:
+                                import gc
+                                collected = gc.collect()
+                                logger.debug(f"Garbage collection triggered after {len(cases)} cases: {collected} objects collected")
                     else:
                         consecutive_failures += 1
                         case_info = self.tracker.get_case_status(case_number)
@@ -818,6 +889,17 @@ class FederalCourtScraperCLI:
                     except Exception:
                         pass
                     consecutive_failures += 1
+
+                # Log final outcome for this case
+                if any(case.case_id == case_number for case in cases):
+                    logger.info(f"Case {case_number} outcome: collected_during_probing")
+                elif case_number in [s['case_number'] for s in skipped]:
+                    reason = next((s['reason'] for s in skipped if s['case_number'] == case_number), "unknown")
+                    logger.info(f"Case {case_number} outcome: skipped - {reason}")
+                elif 'case' in locals() and case:
+                    logger.info(f"Case {case_number} outcome: scraped")
+                else:
+                    logger.info(f"Case {case_number} outcome: failed_or_no_data")
 
                 # Progress update every 10 cases
                 if processed % 10 == 0:
@@ -880,11 +962,100 @@ class FederalCourtScraperCLI:
         logger.info(f"处理案例数: {processed if 'processed' in locals() else 0}")
         logger.info(f"探测次数: {probes}")
         logger.info(f"收集案例数: {len(cases)}")
-        logger.info(f"跳过案例数: {len(skipped)}")
-        logger.info(f"跳过案例详情: {skipped}")
+        logger.info(f"跳过案例总数: {skipped_counter}")
+        logger.info(f"内存中保留的跳过记录数: {len(skipped)} (显示最近 {max_skipped_log} 条)")
+        if len(skipped) > 0:
+            logger.info(f"最近跳过的案例: {skipped[-10:]}")  # Show only last 10 for brevity
 
-        # Return scraped cases and skipped list for auditing
-        return cases, skipped
+        # Optional: Generate batch summary export if cases were collected (database-only mode)
+        case_count = len(cases)
+        if case_count > 0:
+            try:
+                logger.info(f"Processing {case_count} collected cases for database save")
+                # Only save to database, avoid duplicate JSON export
+                # Cases are already saved individually during scraping
+                saved_count = 0
+                failed_count = 0
+                
+                for case in cases:
+                    try:
+                        # Check if case already exists in database to avoid duplicate saves
+                        if not self.exporter.case_exists(case.case_number):
+                            status, msg = self.exporter.save_case_to_database(case)
+                            if status == "success":
+                                saved_count += 1
+                            else:
+                                failed_count += 1
+                                logger.warning(f"Failed to save {case.case_number}: {msg}")
+                        else:
+                            logger.debug(f"Case {case.case_number} already exists in database, skipping")
+                    except Exception as e:
+                        failed_count += 1
+                        logger.error(f"Error saving case {case.case_number}: {e}")
+                
+                logger.info(f"Batch database save completed: {saved_count} new cases saved, {failed_count} failed")
+                
+                # Generate a minimal batch report (not full data export)
+                batch_report = {
+                    "year": year,
+                    "processed_cases": case_count,
+                    "new_cases_saved": saved_count,
+                    "failed_saves": failed_count,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "run_id": batch_run_id
+                }
+                
+                report_filename = f"batch_report_{year}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
+                report_path = os.path.join(self.exporter.output_dir, report_filename)
+                
+                with open(report_path, 'w', encoding='utf-8') as f:
+                    json.dump(batch_report, f, indent=2, ensure_ascii=False)
+                
+                logger.info(f"Batch report saved to: {report_path}")
+                
+            except Exception as e:
+                logger.warning(f"Failed to process batch database save: {e}")
+
+        # Memory cleanup after batch completion (if enabled)
+        if Config.get_enable_memory_management():
+            logger.info("Performing memory cleanup after batch completion")
+            try:
+                import gc
+                import os
+                
+                # Force garbage collection
+                collected = gc.collect()
+                logger.info(f"Garbage collection completed: {collected} objects collected")
+                
+                # Try to report memory usage if psutil is available
+                try:
+                    import psutil
+                    process = psutil.Process(os.getpid())
+                    memory_info = process.memory_info()
+                    memory_mb = memory_info.rss / 1024 / 1024
+                    logger.info(f"Memory usage after cleanup: {memory_mb:.2f} MB")
+                except ImportError:
+                    logger.debug("psutil not available, skipping memory usage reporting")
+                
+                # Clear large objects from memory
+                try:
+                    # Clear the cases list to free memory (since they're already saved)
+                    logger.info(f"Clearing {case_count} case objects from memory")
+                    cases.clear()
+                except Exception as e:
+                    logger.warning(f"Failed to clear cases list: {e}")
+            except Exception as e:
+                logger.warning(f"Memory cleanup failed: {e}")
+        else:
+            logger.info("Memory management is disabled")
+
+        # Return scraped cases and skipped info for auditing
+        skipped_info = {
+            "total_skipped": skipped_counter,
+            "recent_skipped": skipped,
+            "max_stored": max_skipped_log
+        }
+        return [], skipped_info  # Return empty list since cases were cleared from memory
 
     def show_stats(self, year: Optional[int] = None) -> None:
         """
@@ -1149,7 +1320,7 @@ Notes:
 
             # Friendly Initialization Config summary (ordered, masked where needed)
             try:
-                def _mask_short(val: str) -> str:
+                def _mask_short(val) -> str:
                     if val is None:
                         return ""
                     s = str(val)
@@ -1247,13 +1418,23 @@ Notes:
                     print("Cannot start batch processing - emergency stop is active")
                     sys.exit(1)
 
-                scraped_cases, skipped = self.scrape_batch_cases(
+                scraped_cases, skipped_info = self.scrape_batch_cases(
                     args.year,
                     args.max_cases,
                     start=getattr(args, "start", None),
                     max_exponent=getattr(args, "max_exponent", None),
                 )
-                if scraped_cases or skipped:
+                
+                # Extract skip data for compatibility
+                if isinstance(skipped_info, dict):
+                    total_skipped = skipped_info.get("total_skipped", 0)
+                    recent_skipped = skipped_info.get("recent_skipped", [])
+                else:
+                    # Backward compatibility for old format
+                    total_skipped = len(skipped_info) if skipped_info else 0
+                    recent_skipped = skipped_info if skipped_info else []
+                
+                if scraped_cases or total_skipped > 0:
                     # Export scraped cases and save to DB (only if there are scraped cases)
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                     base_filename = f"federal_court_cases_{timestamp}"
@@ -1269,8 +1450,13 @@ Notes:
                         "timestamp": timestamp,
                         "year": args.year,
                         "scraped_count": len(scraped_cases),
-                        "skipped_count": len(skipped),
-                        "skipped": skipped,
+                        "skipped_count": total_skipped,
+                        "skipped_summary": {
+                            "total": total_skipped,
+                            "recent_count": len(recent_skipped),
+                            "max_stored": skipped_info.get("max_stored", 100) if isinstance(skipped_info, dict) else 100,
+                            "recent_items": recent_skipped
+                        },
                         "export": export_result,
                     }
 
@@ -1289,14 +1475,14 @@ Notes:
 
                     print(f"\nBatch scrape complete:")
                     print(f"  Cases scraped: {len(scraped_cases)}")
-                    print(f"  Cases skipped: {len(skipped)}")
+                    print(f"  Cases skipped: {total_skipped}")
                     print(f"  JSON: {export_result.get('json')}")
                     print(f"  Audit: {audit_path}")
                     if export_result.get("database"):
                         print(f"  Database: {export_result['database']}")
                     # Mirror the console output into structured info logs for operators
                     logger.info(
-                        f"Batch scrape complete: year={args.year}, cases_scraped={len(scraped_cases)}, cases_skipped={len(skipped)}, json={export_result.get('json')}, audit={audit_path}, database={export_result.get('database')}"
+                        f"Batch scrape complete: year={args.year}, cases_scraped={len(scraped_cases)}, cases_skipped={total_skipped}, json={export_result.get('json')}, audit={audit_path}, database={export_result.get('database')}"
                     )
                 else:
                     print(f"\nNo cases processed for year {args.year}")
