@@ -27,6 +27,7 @@ class CaseStatus:
     SUCCESS = 'success'      # 成功采集，跳过
     NO_DATA = 'no_data'      # 确认案例无数据（页面显示'No data available in table'），跳过
     FAILED = 'failed'        # 采集失败，可重试
+    ERROR = 'error'          # 系统错误，可重试
     PENDING = 'pending'      # 待采集
 
 
@@ -208,7 +209,29 @@ class SimplifiedTrackingService:
                     VALUES (%s, %s, %s, 1, %s)
                     ON CONFLICT (case_number) 
                     DO UPDATE SET 
-                        status = EXCLUDED.status,
+                        status = CASE 
+                            WHEN cases.status = 'success' THEN EXCLUDED.status
+                            WHEN cases.status = 'no_data' THEN EXCLUDED.status
+                            ELSE cases.status  -- Keep existing failed/error status
+                        END,
+                        last_attempt_at = EXCLUDED.last_attempt_at,
+                        retry_count = cases.retry_count + 1,
+                        error_message = EXCLUDED.error_message
+                """, (case_number, status, now, error_message))
+                
+            elif status == CaseStatus.ERROR:
+                # 系统错误，增加重试计数但不覆盖failed状态
+                cursor.execute("""
+                    INSERT INTO cases (case_number, status, last_attempt_at, retry_count, error_message)
+                    VALUES (%s, %s, %s, 1, %s)
+                    ON CONFLICT (case_number) 
+                    DO UPDATE SET 
+                        status = CASE 
+                            WHEN cases.status = 'success' THEN EXCLUDED.status
+                            WHEN cases.status = 'no_data' THEN EXCLUDED.status
+                            WHEN cases.status = 'failed' THEN cases.status  -- Keep failed status
+                            ELSE EXCLUDED.status  -- Allow error to be set or update existing error
+                        END,
                         last_attempt_at = EXCLUDED.last_attempt_at,
                         retry_count = cases.retry_count + 1,
                         error_message = EXCLUDED.error_message

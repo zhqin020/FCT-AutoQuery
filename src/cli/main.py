@@ -5,6 +5,7 @@ import sys
 import time
 import random
 import os
+import json
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -21,6 +22,9 @@ from src.services.url_discovery_service import UrlDiscoveryService
 from src.services.batch_service import BatchService
 from src.services.case_tracking_service import CaseTrackingService
 from src.cli.tracking_integration import TrackingIntegration, create_tracking_integrated_check_exists, create_tracking_integrated_scrape_case
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.by import By
 try:
     from metrics_emitter import emit_metric  # type: ignore
 except Exception:
@@ -55,6 +59,9 @@ class FederalCourtScraperCLI:
         self.emergency_stop = False
         self.consecutive_failures = 0
         self.max_consecutive_failures = 10  # Emergency stop threshold
+        # Track cases processed for periodic browser reinitialization
+        self.cases_processed_since_restart = 0
+        self.max_cases_before_restart = 500  # Deep restart every 500 cases
         # Rate limiter used across CLI operations to apply backoff on transient failures
         self.rate_limiter = EthicalRateLimiter(
             interval_seconds=Config.get_rate_limit_seconds(),
@@ -93,11 +100,14 @@ class FederalCourtScraperCLI:
                 self.scraper = CaseScraperService(headless=self._scraper_headless)
 
             # Initialize page only if not already initialized (reuse session across batch)
+            # But ensure we're on the correct search tab
             try:
                 if not getattr(self.scraper, "_initialized", False):
                     self.scraper.initialize_page()
                 else:
-                    logger.info("Reusing initialized page; skipping initialize_page()")
+                    logger.info("[UI_ACTION] Reusing initialized page; ensuring search tab is active")
+                    # Even if page is initialized, ensure we're on the search tab
+                    self._ensure_search_tab()
             except Exception as e:
                 logger.error(f"Failed to initialize page for scraping: {e}")
                 raise
@@ -116,7 +126,7 @@ class FederalCourtScraperCLI:
                     try:
                         self.tracker.record_case_processing(
                             case_number=case_number,
-                            run_id=self.current_run_id,
+                            run_id=self.current_run_id or "unknown",
                             outcome="no_data",
                             error_message="No data available in table",
                             processing_mode="single"
@@ -138,17 +148,22 @@ class FederalCourtScraperCLI:
                     # record transient failure and backoff
                     try:
                         delay = self.rate_limiter.record_failure()
-                        time.sleep(delay)
+                        # Add extra random jitter for consecutive failures
+                        jitter = random.uniform(0.5, 2.0) if self.consecutive_failures > 3 else 0
+                        time.sleep(delay + jitter)
                     except Exception:
-                        # best-effort small sleep
-                        time.sleep(0.1)
+                        # best-effort small sleep with jitter
+                        base_sleep = 0.1
+                        if self.consecutive_failures > 3:
+                            base_sleep = random.uniform(1.0, 2.0)
+                        time.sleep(base_sleep)
                     self.consecutive_failures += 1
                     
                     # Record not found to tracking system as failed
                     try:
                         self.tracker.record_case_processing(
                             case_number=case_number,
-                            run_id=self.current_run_id,
+                            run_id=self.current_run_id or "unknown",
                             outcome="failed",
                             error_message="Case not found",
                             processing_mode="single"
@@ -167,17 +182,59 @@ class FederalCourtScraperCLI:
                 max_scrape_attempts = 3
             for attempt in range(1, max_scrape_attempts + 1):
                 try:
-                    case = self.scraper.scrape_case_data(case_number)
+                    case, error_type = self.scraper.scrape_case_data(case_number)
                 except Exception as e:
                     logger.error(
                         f"Exception during scrape_case_data attempt {attempt} for {case_number}: {e}",
                         exc_info=True,
                     )
                     case = None
+                    error_type = str(e)
+                
+                # Check if we need browser reinitialization due to stale elements
+                if error_type == "stale_element":
+                    logger.warning(f"Stale element detected for {case_number}, triggering browser deep initialization")
+                    try:
+                        self._deep_reinitialize_browser()
+                    except Exception as init_err:
+                        logger.error(f"Failed to deep reinitialize browser after stale element: {init_err}")
+                    
+                    # After deep reinitialization, we must re-run the search
+                    # because the page has been cleared
+                    logger.info(f"Re-searching case {case_number} after browser reinitialization")
+                    try:
+                        found = self.scraper.search_case(case_number)
+                        if not found:
+                            logger.error(f"Case {case_number} not found after reinitialization")
+                            # Try to check if it's a no_data case
+                            driver = self.scraper._get_driver()
+                            page_text = driver.page_source
+                            is_no_data = 'No data available in table' in page_text
+                            if is_no_data:
+                                error_type = "no_data"
+                            else:
+                                error_type = "not_found"
+                    except Exception as search_err:
+                        logger.error(f"Failed to search case {case_number} after reinitialization: {search_err}")
+                        error_type = "search_failed"
+                    
+                    # Reset attempt counter to retry after reinitialization
+                    continue
 
                 if case:
                     logger.info(f"Successfully scraped case: {case.case_id} (attempt {attempt})")
                     self.consecutive_failures = 0
+                    self.cases_processed_since_restart += 1
+                    
+                    # Periodic deep reinitialization to prevent long-running issues
+                    if self.cases_processed_since_restart >= self.max_cases_before_restart:
+                        logger.info(f"Periodic deep browser reinitialization after {self.cases_processed_since_restart} cases")
+                        try:
+                            self._deep_reinitialize_browser()
+                            self.cases_processed_since_restart = 0
+                            logger.info("Periodic browser reinitialization completed")
+                        except Exception as init_err:
+                            logger.error(f"Failed periodic browser reinitialization: {init_err}")
                     try:
                         self.rate_limiter.reset_failures()
                     except Exception:
@@ -193,9 +250,13 @@ class FederalCourtScraperCLI:
                 # record failure/backoff before retrying
                 try:
                     delay = self.rate_limiter.record_failure()
-                    time.sleep(delay)
+                    # Add progressive delay for consecutive failures
+                    progressive_delay = delay + (self.consecutive_failures * random.uniform(0.5, 1.5))
+                    time.sleep(progressive_delay)
                 except Exception:
-                    time.sleep(0.1)
+                    # Fallback with progressive delay
+                    fallback_delay = min(5.0, 0.1 + (self.consecutive_failures * 0.5))
+                    time.sleep(fallback_delay)
                 if attempt < max_scrape_attempts:
                     # Add a longer delay before retry to allow server state to settle
                     logger.info(f"Waiting before retry attempt {attempt+1}")
@@ -275,7 +336,7 @@ class FederalCourtScraperCLI:
                 try:
                     self.tracker.record_case_processing(
                         case_number=case_number,
-                        run_id=self.current_run_id,
+                        run_id=self.current_run_id or "unknown",
                         outcome="success",
                         case_id=getattr(case, 'case_id', None),
                         processing_mode="single"
@@ -297,9 +358,13 @@ class FederalCourtScraperCLI:
                 # record failure/backoff
                 try:
                     delay = self.rate_limiter.record_failure()
-                    time.sleep(delay)
+                    # Add progressive delay for consecutive failures
+                    progressive_delay = delay + (self.consecutive_failures * random.uniform(0.5, 1.5))
+                    time.sleep(progressive_delay)
                 except Exception:
-                    time.sleep(0.1)
+                    # Fallback with progressive delay
+                    fallback_delay = min(5.0, 0.1 + (self.consecutive_failures * 0.5))
+                    time.sleep(fallback_delay)
                 self.consecutive_failures += 1
                 # Emit job failure metrics: duration and retry count
                 try:
@@ -312,7 +377,7 @@ class FederalCourtScraperCLI:
                 try:
                     self.tracker.record_case_processing(
                         case_number=case_number,
-                        run_id=self.current_run_id,
+                        run_id=self.current_run_id or "unknown",
                         outcome="failed",
                         error_message=f"Failed after {max_scrape_attempts} attempts",
                         processing_mode="single"
@@ -333,6 +398,13 @@ class FederalCourtScraperCLI:
         except Exception as e:
             logger.error(f"Error scraping case {case_number}: {e}")
             self.consecutive_failures += 1
+            # Record as error state to distinguish from failed scraping
+            try:
+                from src.services.simplified_tracking_service import SimplifiedTrackingService, CaseStatus
+                simplified_tracker = SimplifiedTrackingService()
+                simplified_tracker.mark_case_attempt(case_number, CaseStatus.ERROR, str(e))
+            except Exception:
+                pass
             return None
         finally:
             # Do not close the full WebDriver here to enable session reuse
@@ -355,6 +427,132 @@ class FederalCourtScraperCLI:
                     f"Emergency stop triggered after {self.consecutive_failures} consecutive failures"
                 )
                 self.emergency_stop = True
+                # Perform deep browser reinitialization before stopping
+                try:
+                    self._deep_reinitialize_browser()
+                except Exception as e:
+                    logger.error(f"Failed to deep reinitialize browser: {e}")
+
+    def _ensure_search_tab(self) -> None:
+        """Ensure we're on the 'Search by court number' tab before searching."""
+        if self.scraper is None:
+            logger.error("[UI_ACTION] Scraper not initialized, cannot ensure search tab")
+            return
+            
+        driver = self.scraper._get_driver()
+        try:
+            # Try to find and click the search tab
+            logger.info("[UI_ACTION] Ensuring 'Search by court number' tab is active")
+            search_tab = WebDriverWait(driver, 5).until(
+                EC.element_to_be_clickable((By.LINK_TEXT, "Search by court number"))
+            )
+            # Check if the tab is already active by looking for the input field
+            input_found = False
+            for input_id in ["selectCourtNumber", "courtNumber", "selectRetcaseCourtNumber"]:
+                try:
+                    driver.find_element(By.ID, input_id)
+                    input_found = True
+                    break
+                except Exception:
+                    continue
+            
+            if not input_found:
+                # Click the tab to ensure search input is visible
+                logger.info("[UI_ACTION] Search input not found, clicking 'Search by court number' tab")
+                try:
+                    search_tab.click()
+                    logger.info("[UI_ACTION] Successfully clicked 'Search by court number' tab")
+                except Exception:
+                    driver.execute_script("arguments[0].click();", search_tab)
+                    logger.info("[UI_ACTION] Successfully clicked 'Search by court number' tab using JavaScript")
+            else:
+                logger.debug("[UI_ACTION] Search input already visible, tab appears to be active")
+                
+        except Exception as e:
+            logger.warning(f"[UI_ACTION] Failed to ensure search tab is active: {e}")
+            # If ensuring tab fails, fall back to full page initialization
+            try:
+                self.scraper._initialized = False
+                self.scraper.initialize_page()
+                logger.info("[UI_ACTION] Fell back to full page initialization")
+            except Exception as init_err:
+                logger.error(f"[UI_ACTION] Fallback initialization failed: {init_err}")
+                raise
+
+    def _deep_reinitialize_browser(self) -> None:
+        """
+        Perform deep browser reinitialization to clear caches, cookies, and session state.
+        This is called when consecutive failures suggest the browser session is corrupted
+        or periodically to prevent long-running issues.
+        """
+        logger.info("Performing deep browser reinitialization")
+        
+        try:
+            if self.scraper and hasattr(self.scraper, '_driver') and self.scraper._driver:
+                driver = self.scraper._driver
+                
+                # Aggressive cleanup for long-running sessions
+                cleanup_commands = [
+                    # Clear cookies and session data
+                    "document.cookie.split(';').forEach(function(c) { document.cookie = c.replace(/^ +/, '').replace(/=.*/, '=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/'); });",
+                    "window.localStorage.clear();",
+                    "window.sessionStorage.clear();",
+                    # Clear IndexedDB
+                    "if (window.indexedDB) { indexedDB.databases().then(dbs => dbs.forEach(db => indexedDB.deleteDatabase(db.name))); }",
+                    # Clear WebSQL
+                    "if (window.openDatabase) { try { window.openDatabase('', '', '', '', 1).transaction(function(tx) { tx.executeSql('DELETE FROM __WebKitDatabaseInfoTable__'); }); } catch(e) {} }",
+                    # Force garbage collection
+                    "if (window.gc) { window.gc(); } else if (performance.memory) { performance.memory.usedJSHeapSize = 0; }",
+                    # Clear application cache
+                    "if ('caches' in window) { caches.keys().then(names => names.forEach(name => caches.delete(name))); }",
+                    # Reset any potential event listeners that might interfere
+                    "if (window.stop) { window.stop(); }",
+                ]
+                
+                for cmd in cleanup_commands:
+                    try:
+                        driver.execute_script(cmd)
+                        time.sleep(0.1)  # Small delay between commands
+                    except Exception as e:
+                        logger.debug(f"Cleanup command failed: {e}")
+                
+                # Traditional cookie clearing as backup
+                try:
+                    driver.delete_all_cookies()
+                    logger.info("Cleared all browser cookies")
+                except Exception as e:
+                    logger.debug(f"Failed to clear cookies: {e}")
+                
+                # Extended wait to allow all cleanup operations
+                logger.info("Waiting for browser cleanup to complete")
+                time.sleep(random.uniform(3.0, 6.0))
+                
+                # Force restart the driver completely
+                if hasattr(self.scraper, '_restart_driver'):
+                    # Reset restart count to allow immediate restart
+                    original_count = getattr(self.scraper, '_restart_count', 0)
+                    self.scraper._restart_count = 0
+                    self.scraper._restart_driver()
+                    self.scraper._restart_count = original_count + 1
+                    logger.info("Browser driver restarted completely")
+                
+                # Re-initialize the page with extended delay and fresh state
+                if hasattr(self.scraper, 'initialize_page'):
+                    time.sleep(random.uniform(4.0, 7.0))
+                    # Reset initialization state before calling initialize_page
+                    self.scraper._initialized = False
+                    self.scraper.initialize_page()
+                    logger.info("Browser page reinitialized with fresh state")
+                    
+        except Exception as e:
+            logger.error(f"Error during deep browser reinitialization: {e}")
+            # As a fallback, try to recreate the entire scraper
+            try:
+                self.scraper = None  # Force recreation on next use
+                time.sleep(random.uniform(5.0, 8.0))
+                logger.info("Recreated scraper instance as fallback")
+            except Exception:
+                pass
 
     def _scrape_case_data_without_search(self, case_number: str) -> Optional[Case]:
         """
@@ -414,13 +612,44 @@ class FederalCourtScraperCLI:
                 
             for attempt in range(1, max_scrape_attempts + 1):
                 try:
-                    case = self.scraper.scrape_case_data(case_number)
+                    case, error_type = self.scraper.scrape_case_data(case_number)
                 except Exception as e:
                     logger.error(
                         f"Exception during scrape_case_data attempt {attempt} for {case_number}: {e}",
                         exc_info=True,
                     )
                     case = None
+                    error_type = str(e)
+                
+                # Check if we need browser reinitialization due to stale elements
+                if error_type == "stale_element":
+                    logger.warning(f"Stale element detected for {case_number}, triggering browser deep initialization")
+                    try:
+                        self._deep_reinitialize_browser()
+                    except Exception as init_err:
+                        logger.error(f"Failed to deep reinitialize browser after stale element: {init_err}")
+                    
+                    # After deep reinitialization, we must re-run the search
+                    # because the page has been cleared
+                    logger.info(f"Re-searching case {case_number} after browser reinitialization")
+                    try:
+                        found = self.scraper.search_case(case_number)
+                        if not found:
+                            logger.error(f"Case {case_number} not found after reinitialization")
+                            # Try to check if it's a no_data case
+                            driver = self.scraper._get_driver()
+                            page_text = driver.page_source
+                            is_no_data = 'No data available in table' in page_text
+                            if is_no_data:
+                                error_type = "no_data"
+                            else:
+                                error_type = "not_found"
+                    except Exception as search_err:
+                        logger.error(f"Failed to search case {case_number} after reinitialization: {search_err}")
+                        error_type = "search_failed"
+                    
+                    # Reset attempt counter to retry after reinitialization
+                    continue
 
                 if case:
                     logger.info(f"Successfully scraped case data without search: {case.case_id} (attempt {attempt})")
@@ -440,9 +669,13 @@ class FederalCourtScraperCLI:
                 # record failure/backoff before retrying
                 try:
                     delay = self.rate_limiter.record_failure()
-                    time.sleep(delay)
+                    # Add progressive delay for consecutive failures
+                    progressive_delay = delay + (self.consecutive_failures * random.uniform(0.5, 1.5))
+                    time.sleep(progressive_delay)
                 except Exception:
-                    time.sleep(0.1)
+                    # Fallback with progressive delay
+                    fallback_delay = min(5.0, 0.1 + (self.consecutive_failures * 0.5))
+                    time.sleep(fallback_delay)
                 if attempt < max_scrape_attempts:
                     # Add a longer delay before retry to allow server state to settle
                     logger.info(f"Waiting before retry attempt {attempt+1}")
@@ -489,7 +722,7 @@ class FederalCourtScraperCLI:
                 try:
                     self.tracker.record_case_processing(
                         case_number=case_number,
-                        run_id=self.current_run_id,
+                        run_id=self.current_run_id or "unknown",
                         outcome="success",
                         case_id=getattr(case, 'case_id', None),
                         processing_mode="single"
@@ -651,6 +884,8 @@ class FederalCourtScraperCLI:
                     return True
 
                 # If not in DB or forcing, do web search
+                if self.scraper is None:
+                    self.scraper = CaseScraperService(headless=self._scraper_headless)
                 result = self.scraper.search_case(case_number)
                 if result:
                     # Record successful probe via integration helper
@@ -711,7 +946,13 @@ class FederalCourtScraperCLI:
         def enhanced_fast_check(n: int):
             """Fast DB check that returns a standardized dict including status and skip_reason."""
             if self.force:
-                return False
+                return {
+                    'exists': False,
+                    'db_exists': False,
+                    'status': 'unknown',
+                    'skip_reason': '',
+                    'should_skip': False
+                }
 
             case_number = f"IMM-{n}-{year % 100:02d}"
             try:
@@ -880,15 +1121,32 @@ class FederalCourtScraperCLI:
                             logger.info(f"Case {case_number} already marked as no_data, not treating as failure")
                             integration.record_scrape_result(case_number, False, outcome='no_data', error_message="Case not found")
                         else:
-                            integration.record_scrape_result(case_number, False, error_message="Scraping failed")
-                        time.sleep(0.1)
+                            # Don't double-record failure - scrape_single_case already recorded it
+                            logger.info(f"Case {case_number} already recorded as failed by scrape_single_case")
+                            integration.record_scrape_result(case_number, False, outcome='failed', error_message="Scraping failed")
+                        # Add progressive delay for consecutive failures in batch processing
+                        if consecutive_failures > 2:
+                            batch_delay = random.uniform(1.0, 3.0) + (consecutive_failures * 0.5)
+                            time.sleep(batch_delay)
+                        else:
+                            time.sleep(0.1)
                 except Exception as e:
                     logger.error(f"Unhandled error scraping case {case_number}: {e}")
                     try:
-                        integration.record_scrape_result(case_number, False, error_message=str(e))
+                        # Check if failure was already recorded by scrape_single_case
+                        case_info = self.tracker.get_case_status(case_number)
+                        if case_info and case_info.get('last_outcome') in ['failed', 'error']:
+                            logger.info(f"Case {case_number} failure already recorded by scrape_single_case")
+                            integration.record_scrape_result(case_number, False, outcome='failed', error_message=str(e))
+                        else:
+                            integration.record_scrape_result(case_number, False, error_message=str(e))
                     except Exception:
                         pass
                     consecutive_failures += 1
+                    # Add progressive delay for consecutive failures in batch processing
+                    if consecutive_failures > 2:
+                        batch_delay = random.uniform(2.0, 4.0) + (consecutive_failures * 0.8)
+                        time.sleep(batch_delay)
 
                 # Log final outcome for this case
                 if any(case.case_id == case_number for case in cases):
@@ -1021,7 +1279,6 @@ class FederalCourtScraperCLI:
             logger.info("Performing memory cleanup after batch completion")
             try:
                 import gc
-                import os
                 
                 # Force garbage collection
                 collected = gc.collect()
@@ -1524,19 +1781,20 @@ Notes:
                 )
                 
                 # Additional purge for tracking data (if not files_only)
-                if not files_only:
-                    if not dry_run:
-                        logger.info(f"Purging tracking data for year {year}")
-                        tracking_stats = self.tracker.purge_year(year)
-                        logger.info(f"Tracking purge completed: {tracking_stats}")
-                        logger.info(f"Tracking data purged: {tracking_stats.get('cases_deleted', 0)} cases, "
-                                f"{tracking_stats.get('docket_entries_deleted', 0)} docket entries, "
-                                f"{tracking_stats.get('history_deleted', 0)} history records, "
-                                f"{tracking_stats.get('snapshots_deleted', 0)} snapshots, "
-                                f"{tracking_stats.get('runs_deleted', 0)} runs")
-                    else:
-                        logger.info(f"[DRY RUN] Would purge tracking data for year {year}")
-                        print("[DRY RUN] Would purge tracking data for year {year}")
+                # TODO: Implement purge_year method in CaseTrackingService
+                # if not files_only:
+                #     if not dry_run:
+                #         logger.info(f"Purging tracking data for year {year}")
+                #         tracking_stats = self.tracker.purge_year(year)
+                #         logger.info(f"Tracking purge completed: {tracking_stats}")
+                #         logger.info(f"Tracking data purged: {tracking_stats.get('cases_deleted', 0)} cases, "
+                #                 f"{tracking_stats.get('docket_entries_deleted', 0)} docket entries, "
+                #                 f"{tracking_stats.get('history_deleted', 0)} history records, "
+                #                 f"{tracking_stats.get('snapshots_deleted', 0)} snapshots, "
+                #                 f"{tracking_stats.get('runs_deleted', 0)} runs")
+                #     else:
+                #         logger.info(f"[DRY RUN] Would purge tracking data for year {year}")
+                #         print("[DRY RUN] Would purge tracking data for year {year}")
                 
                 logger.info("Purge summary written to:", result.get("audit_path"))
 

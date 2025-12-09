@@ -166,7 +166,14 @@ def create_tracking_integrated_scrape_case(cli_instance, run_id: str, year: int 
             if cli_instance.scraper is None:
                 cli_instance.scraper = cli_instance.scraper_class(headless=cli_instance._scraper_headless)
             
-            case = cli_instance.scraper.scrape_case_data(case_number)
+            case_result = cli_instance.scraper.scrape_case_data(case_number)
+            
+            # Handle new return format (case, error_type)
+            if isinstance(case_result, tuple) and len(case_result) == 2:
+                case, error_type = case_result
+            else:
+                case = case_result
+                error_type = None
             
             # Record processing time
             processing_time_ms = int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000)
@@ -179,7 +186,10 @@ def create_tracking_integrated_scrape_case(cli_instance, run_id: str, year: int 
                     processing_time_ms=processing_time_ms
                 )
             else:
-                integration.record_scrape_result(case_number, False, processing_time_ms, "No case data returned")
+                error_message = "No case data returned"
+                if error_type:
+                    error_message = f"Scraping failed: {error_type}"
+                integration.record_scrape_result(case_number, False, processing_time_ms, error_message)
             
             return case
             

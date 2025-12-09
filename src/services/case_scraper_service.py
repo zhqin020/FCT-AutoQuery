@@ -1,6 +1,7 @@
 """Case scraping service for Federal Court cases using search form."""
 
 import time
+import random
 from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
@@ -75,7 +76,7 @@ class CaseScraperService:
             interval_seconds=Config.get_rate_limit_seconds(),
             backoff_factor=Config.get_backoff_factor(),
             max_backoff_seconds=Config.get_max_backoff_seconds(),
-        )  # 3-6s random delay
+        )  # Configurable random delay
         self._driver: Optional[webdriver.Chrome] = None
         self._initialized = False
         # Restart tracking
@@ -178,40 +179,52 @@ class CaseScraperService:
 
     def _safe_send_keys(self, driver, element, text: str) -> None:
         """Safely send keys to an element, using JS fallback if necessary."""
+        element_id = element.get_attribute('id') or element.get_attribute('name') or '<anonymous>'
+        logger.info(f"[UI_ACTION] Typing text '{text}' into input element (id: {element_id})")
+        
         try:
             element.clear()
+            logger.debug(f"[UI_ACTION] Cleared input element (id: {element_id})")
         except Exception:
             # ignore clear failures
-            pass
+            logger.debug(f"[UI_ACTION] Failed to clear input element (id: {element_id}), continuing")
 
         try:
             element.send_keys(text)
+            logger.info(f"[UI_ACTION] Successfully typed '{text}' using send_keys (id: {element_id})")
             return
         except Exception:
             # Fallback: set value via JS and dispatch input events
+            logger.info(f"[UI_ACTION] send_keys failed, trying JavaScript fallback (id: {element_id})")
             try:
                 driver.execute_script(
                     "arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input'));",
                     element,
                     text,
                 )
+                logger.info(f"[UI_ACTION] Successfully typed '{text}' using JavaScript fallback (id: {element_id})")
                 return
             except Exception as e:
-                logger.debug(f"_safe_send_keys JS fallback failed: {e}")
+                logger.error(f"[UI_ACTION] JavaScript fallback failed for typing '{text}' (id: {element_id}): {e}")
                 raise
 
     def _submit_search(self, driver, input_element) -> None:
         """Find and click a submit control related to the input_element, with fallbacks."""
         # Try to find a submit button in the same form
+        submit = None
+        submit_method = "unknown"
+        
         try:
             submit = input_element.find_element(
                 By.XPATH, "ancestor::form//button[@type='submit']"
             )
+            submit_method = "form_button_submit"
         except Exception:
             try:
                 submit = input_element.find_element(
                     By.XPATH, "ancestor::form//input[@type='submit']"
                 )
+                submit_method = "form_input_submit"
             except Exception:
                 submit = None
 
@@ -226,29 +239,41 @@ class CaseScraperService:
                         )
                     )
                 )
+                submit_method = "page_search_button"
             except Exception:
                 submit = None
 
         if submit is None:
             # As a last resort, submit the form via JS
+            logger.info("[UI_ACTION] No submit button found, trying JavaScript form submission")
             try:
                 driver.execute_script(
                     "var f = arguments[0].closest('form'); if(f){f.submit();} else {document.forms[0] && document.forms[0].submit();}",
                     input_element,
                 )
+                logger.info("[UI_ACTION] Successfully submitted form using JavaScript")
                 return
             except Exception as e:
-                logger.debug(f"JS form submit fallback failed: {e}")
+                logger.error(f"[UI_ACTION] JavaScript form submission failed: {e}")
                 raise
 
+        # Log submit button details before clicking
+        submit_id = submit.get_attribute('id') or submit.get_attribute('name') or '<anonymous>'
+        submit_text = submit.text.strip() or submit.get_attribute('value') or '<no text>'
+        logger.info(f"[UI_ACTION] Clicking submit button using method: {submit_method} (id: {submit_id}, text: '{submit_text}')")
+        
         # Click using JS if normal click fails
         try:
             submit.click()
+            logger.info(f"[UI_ACTION] Successfully clicked submit button (id: {submit_id}) using native click")
         except Exception:
+            logger.info(f"[UI_ACTION] Native click failed, trying JavaScript click (id: {submit_id})")
             try:
                 driver.execute_script("arguments[0].click();", submit)
+                logger.info(f"[UI_ACTION] Successfully clicked submit button (id: {submit_id}) using JavaScript")
             except Exception as e:
-                logger.debug(f"Submit click failed: {e}")
+                logger.error(f"[UI_ACTION] Submit click failed for button (id: {submit_id}): {e}")
+                raise
                 raise
 
     def initialize_page(self) -> None:
@@ -260,7 +285,7 @@ class CaseScraperService:
         driver = self._get_driver()
 
         try:
-            logger.info("Loading court files page")
+            logger.info(f"[UI_ACTION] Loading court files page: {self.BASE_URL}")
             driver.get(self.BASE_URL)
 
             # Wait up to 30s for the page body to be present (restore stable behavior)
@@ -276,15 +301,46 @@ class CaseScraperService:
                 logger.debug("Cookie dismissal attempt failed or not needed")
 
             # Click "Search by court number" tab
-            logger.info("Switching to search tab")
+            logger.info("[UI_ACTION] Clicking 'Search by court number' tab")
             # Use a stable wait for the tab to become clickable (10s)
             search_tab = WebDriverWait(driver, 10).until(
                 EC.element_to_be_clickable((By.LINK_TEXT, "Search by court number"))
             )
             try:
+                # Log tab details before clicking
+                tab_id = search_tab.get_attribute('id') or '<no id>'
+                tab_class = search_tab.get_attribute('class') or '<no class>'
+                tab_text = search_tab.text.strip() or '<no text>'
+                logger.debug(f"[UI_ACTION] Tab found - id: {tab_id}, class: {tab_class}, text: '{tab_text}'")
+                
                 search_tab.click()
+                logger.info("[UI_ACTION] Successfully clicked 'Search by court number' tab using native click")
+                
+                # Wait and verify tab is active
+                time.sleep(1)
+                try:
+                    # Check if the tab content is now visible
+                    active_tab = driver.find_element(By.ID, "tab02")
+                    if active_tab.is_displayed():
+                        logger.info("[UI_ACTION] Confirmed 'Search by court number' tab is active and visible")
+                    else:
+                        logger.warning("[UI_ACTION] Tab clicked but content may not be visible")
+                except Exception:
+                    logger.debug("[UI_ACTION] Could not verify tab visibility (may be normal)")
+                    
             except Exception:
+                logger.info("[UI_ACTION] Native click failed, trying JavaScript click for 'Search by court number' tab")
                 driver.execute_script("arguments[0].click();", search_tab)
+                logger.info("[UI_ACTION] Successfully clicked 'Search by court number' tab using JavaScript")
+                
+                # Also verify after JavaScript click
+                time.sleep(1)
+                try:
+                    active_tab = driver.find_element(By.ID, "tab02")
+                    if active_tab.is_displayed():
+                        logger.info("[UI_ACTION] Confirmed 'Search by court number' tab is active and visible (after JS click)")
+                except Exception:
+                    logger.debug("[UI_ACTION] Could not verify tab visibility after JS click")
 
             # Wait for tab content to load. The site has changed ids over time
             # so try a small set of likely input ids and accept whichever appears.
@@ -294,14 +350,17 @@ class CaseScraperService:
                 "selectRetcaseCourtNumber",
             ]
             found_case_input = None
+            logger.info("[UI_ACTION] Waiting for search input field to appear...")
             for pid in possible_case_inputs:
                 try:
                     WebDriverWait(driver, 3).until(
                         EC.presence_of_element_located((By.ID, pid))
                     )
                     found_case_input = pid
+                    logger.info(f"[UI_ACTION] Found search input field with id: {pid}")
                     break
                 except Exception:
+                    logger.debug(f"[UI_ACTION] Input field with id {pid} not found, trying next...")
                     continue
 
             # Persist discovered case input id and mark initialized to avoid
@@ -377,6 +436,57 @@ class CaseScraperService:
             except Exception as fallback_exc:
                 logger.error(f"Fallback initialize failed: {fallback_exc}")
                 raise
+
+    def _detect_anti_bot_measures(self, driver) -> bool:
+        """Detect if anti-bot measures are active (CAPTCHA, rate limiting, etc.).
+        
+        Returns:
+            bool: True if anti-bot measures detected
+        """
+        try:
+            page_source = driver.page_source.lower()
+            
+            # Common anti-bot indicators
+            anti_bot_indicators = [
+                'captcha',
+                'recaptcha',
+                'h-captcha',
+                'turnstile',
+                'cf-browser-verification',
+                'cloudflare',
+                'access denied',
+                'too many requests',
+                'rate limit',
+                'blocked',
+                'suspicious activity',
+                ' automated',
+                'bot detected',
+                'security check',
+                'verification required',
+                'please wait',
+                'checking your browser',
+                'ddos protection',
+                'challenge platform',
+                'javascript challenge'
+            ]
+            
+            detection_count = sum(1 for indicator in anti_bot_indicators if indicator in page_source)
+            
+            if detection_count >= 2:
+                logger.warning(f"Anti-bot measures detected (indicators: {detection_count})")
+                return True
+            
+            # Check for unusual redirects or status codes
+            current_url = driver.current_url.lower()
+            if any(indicator in current_url for indicator in ['captcha', 'challenge', 'blocked', 'verify']):
+                logger.warning(f"Anti-bot URL detected: {current_url}")
+                return True
+                
+            return False
+            
+        except Exception as e:
+            logger.debug(f"Failed to detect anti-bot measures: {e}")
+            return False
 
     def _restart_driver(self) -> webdriver.Chrome:
         """Attempt to restart the WebDriver up to configured limit.
@@ -458,6 +568,47 @@ class CaseScraperService:
         """
         if not self._initialized:
             self.initialize_page()
+        
+        # Additional verification after initialization to ensure everything is ready
+        # This addresses the issue where deep initialization leaves the input in an invalid state
+        driver = self._get_driver()
+        
+        # Verify we're on the correct tab and input is ready
+        try:
+            # Check if the search tab is active
+            logger.info("[UI_ACTION] Verifying page state after initialization")
+            
+            # Wait a moment for any pending operations to complete
+            time.sleep(1)
+            
+            # Try to find the input field to verify it's ready
+            input_found = False
+            for cid in ["selectCourtNumber", "courtNumber", "selectRetcaseCourtNumber"]:
+                try:
+                    input_elem = driver.find_element(By.ID, cid)
+                    if input_elem.is_displayed() and input_elem.is_enabled():
+                        input_found = True
+                        logger.info(f"[UI_ACTION] Verified input field is ready: {cid}")
+                        break
+                except Exception:
+                    continue
+            
+            if not input_found:
+                logger.warning("[UI_ACTION] Input field not ready after initialization, attempting re-initialization")
+                self._initialized = False
+                self.initialize_page()
+            else:
+                logger.info("[UI_ACTION] Page state verification successful")
+                
+        except Exception as verify_err:
+            logger.warning(f"[UI_ACTION] Page verification failed: {verify_err}")
+            # Try to re-initialize if verification fails
+            try:
+                self._initialized = False
+                self.initialize_page()
+                logger.info("[UI_ACTION] Successfully re-initialized after verification failure")
+            except Exception:
+                logger.error("[UI_ACTION] Re-initialization failed, proceeding anyway")
 
         driver = self._get_driver()
 
@@ -511,61 +662,172 @@ class CaseScraperService:
                     # If this was the first attempt, re-initialize and retry
                     if attempt == 0:
                         try:
+                            # Add smart delay before re-initialization for consecutive failures
+                            if not hasattr(self, '_consecutive_search_failures'):
+                                self._consecutive_search_failures = 0
+                            self._consecutive_search_failures += 1
+                            
+                            # Progressive delay based on consecutive search failures
+                            if self._consecutive_search_failures > 2:
+                                retry_delay = random.uniform(3.0, 6.0) + (self._consecutive_search_failures * 1.0)
+                                logger.info(f"Applying progressive delay {retry_delay:.1f}s due to {self._consecutive_search_failures} consecutive search failures")
+                                time.sleep(retry_delay)
+                            
                             self.initialize_page()
                             driver = self._get_driver()
                             continue
                         except Exception:
                             pass
-                    return False
+                    else:
+                        # Reset counter on successful second attempt
+                        if hasattr(self, '_consecutive_search_failures'):
+                            self._consecutive_search_failures = 0
+                        return False
 
                 # Use robust send keys with JS fallback
                 try:
-                    case_input.clear()
+                    if case_input is not None:
+                        # Log input details before clearing
+                        input_id = case_input.get_attribute('id') or case_input.get_attribute('name') or '<anonymous>'
+                        input_class = case_input.get_attribute('class') or '<no class>'
+                        input_type = case_input.get_attribute('type') or '<no type>'
+                        logger.debug(f"[UI_ACTION] Input element found - id: {input_id}, class: {input_class}, type: {input_type}")
+                        
+                        # Clear input with verification
+                        try:
+                            case_input.clear()
+                            logger.info(f"[UI_ACTION] Cleared input field (id: {input_id})")
+                        except Exception as clear_err:
+                            logger.warning(f"[UI_ACTION] Failed to clear input field (id: {input_id}): {clear_err}")
+                            # Try JavaScript clear as fallback
+                            try:
+                                driver.execute_script("arguments[0].value = '';", case_input)
+                                logger.info(f"[UI_ACTION] Cleared input field using JavaScript fallback (id: {input_id})")
+                            except Exception:
+                                logger.error(f"[UI_ACTION] JavaScript clear also failed (id: {input_id})")
                 except Exception:
-                    pass
-                self._safe_send_keys(driver, case_input, case_number)
+                    logger.warning("[UI_ACTION] case_input is None, cannot clear input field")
+                    
+                if case_input is not None:
+                    self._safe_send_keys(driver, case_input, case_number)
 
-                # Diagnostic: log the input element state after typing
-                try:
-                    cur_val = None
+                # Enhanced verification: verify the input was actually set
+                input_verified = False
+                verification_attempts = 0
+                max_verification_attempts = 3
+                
+                while not input_verified and verification_attempts < max_verification_attempts:
+                    verification_attempts += 1
+                    
+                    # Diagnostic: log the input element state after typing
                     try:
-                        cur_val = case_input.get_attribute("value")
-                    except Exception:
                         cur_val = None
-                    logger.debug(
-                        f"Post-type input state: id={getattr(case_input, 'id', None) or getattr(case_input, 'name', None) or '<anonymous>'} value={cur_val} placeholder={case_input.get_attribute('placeholder') if hasattr(case_input, 'get_attribute') else None}"
-                    )
-                except Exception:
-                    logger.debug("Failed to read input element state after typing")
+                        placeholder_val = None
+                        element_id = None
+                        element_name = None
+                        is_displayed = None
+                        is_enabled = None
+                        try:
+                            if case_input is not None:
+                                cur_val = case_input.get_attribute("value")
+                                placeholder_val = case_input.get_attribute('placeholder')
+                                element_id = getattr(case_input, 'id', None)
+                                element_name = getattr(case_input, 'name', None)
+                                is_displayed = case_input.is_displayed()
+                                is_enabled = case_input.is_enabled()
+                        except Exception:
+                            pass
+                            
+                        logger.info(
+                            f"[UI_ACTION] Input verification attempt {verification_attempts}: "
+                            f"id={element_id or element_name or '<anonymous>'}, "
+                            f"value='{cur_val}', expected='{case_number}', "
+                            f"displayed={is_displayed}, enabled={is_enabled}, "
+                            f"placeholder={placeholder_val}"
+                        )
+                        
+                        # Check if the value was actually set
+                        if cur_val and str(cur_val).strip() == str(case_number).strip():
+                            input_verified = True
+                            logger.info(f"[UI_ACTION] Input verification successful - value correctly set to '{case_number}'")
+                        else:
+                            logger.warning(f"[UI_ACTION] Input verification failed - expected '{case_number}', found '{cur_val}'")
+                            
+                            # Try to re-input the value
+                            if verification_attempts < max_verification_attempts:
+                                logger.info(f"[UI_ACTION] Retrying input for '{case_number}' (attempt {verification_attempts})")
+                                try:
+                                    case_input.clear()
+                                    self._safe_send_keys(driver, case_input, case_number)
+                                    time.sleep(0.5)  # Small delay before retry
+                                except Exception as retry_err:
+                                    logger.error(f"[UI_ACTION] Retry input failed: {retry_err}")
+                                    
+                    except Exception as verify_err:
+                        logger.error(f"[UI_ACTION] Input verification error on attempt {verification_attempts}: {verify_err}")
+                        
+                if not input_verified:
+                    logger.error(f"[UI_ACTION] CRITICAL: Failed to verify input after {max_verification_attempts} attempts")
+                    # Continue anyway but log the critical failure
+                else:
+                    logger.info(f"[UI_ACTION] Input successfully verified after {verification_attempts} attempts")
                 # Small stabilization pause to allow client-side handlers
                 # (e.g. input listeners) to process the entered value before
-                # submitting. Matches the harness behavior which waits after
-                # typing the case number.
-                time.sleep(2)
+                # submitting. Use random delay to avoid detection.
+                stabilization_delay = random.uniform(1.5, 3.0)
+                time.sleep(stabilization_delay)
 
                 # Try a tab-specific submit first (more reliable on this site)
                 submit_method = None
                 try:
                     tab_submit = driver.find_element(By.ID, "tab02Submit")
+                    
+                    # Log submit button details before clicking
+                    submit_id = tab_submit.get_attribute('id') or '<no id>'
+                    submit_class = tab_submit.get_attribute('class') or '<no class>'
+                    submit_type = tab_submit.get_attribute('type') or '<no type>'
+                    submit_text = tab_submit.text.strip() or tab_submit.get_attribute('value') or '<no text>'
+                    submit_enabled = tab_submit.is_enabled()
+                    submit_displayed = tab_submit.is_displayed()
+                    
+                    logger.info(f"[UI_ACTION] Found tab submit button - id: {submit_id}, class: {submit_class}, "
+                              f"type: {submit_type}, text: '{submit_text}', enabled: {submit_enabled}, displayed: {submit_displayed}")
+                    
+                    # Check if input field has value before submitting
+                    current_input_value = ""
+                    try:
+                        if case_input is not None:
+                            current_input_value = case_input.get_attribute("value") or ""
+                    except Exception:
+                        pass
+                    
+                    if not current_input_value.strip():
+                        logger.error(f"[UI_ACTION] CRITICAL: Submitting empty input field! Current value: '{current_input_value}'")
+                    else:
+                        logger.info(f"[UI_ACTION] Submitting with input value: '{current_input_value}'")
+                    
                     try:
                         driver.execute_script("arguments[0].click();", tab_submit)
                         submit_method = "tab02Submit(js)"
-                        logger.debug("Clicked tab02Submit (JS)")
+                        logger.info("[UI_ACTION] Successfully clicked tab02Submit using JavaScript")
                     except Exception:
                         tab_submit.click()
                         submit_method = "tab02Submit(native)"
-                        logger.debug("Clicked tab02Submit (native)")
-                except Exception:
+                        logger.info("[UI_ACTION] Successfully clicked tab02Submit using native click")
+                        
+                except Exception as find_err:
+                    logger.warning(f"[UI_ACTION] Could not find tab02Submit button: {find_err}")
                     # Fall back to the generic submit helper
                     try:
                         self._submit_search(driver, case_input)
                         submit_method = "generic_submit_helper"
+                        logger.info("[UI_ACTION] Used generic submit helper")
                     except Exception as submit_err:
-                        logger.warning(f"Submit attempt failed: {submit_err}")
+                        logger.error(f"[UI_ACTION] All submit attempts failed: {submit_err}")
                         submit_method = "failed_submit"
                         # Continue and let the wait for results determine outcome
 
-                logger.debug(f"Submit method used: {submit_method}")
+                logger.info(f"[UI_ACTION] Submit method used: {submit_method}")
 
                 # Poll for results: check repeatedly for the case row or an explicit
                 # 'No data available' marker. Polling is often more reliable than
@@ -587,8 +849,10 @@ class CaseScraperService:
                 no_data_threshold = int(Config.get_safe_stop_no_records())
                 
                 # Add extra wait for DataTable initialization after search submission
+                # Use random delay to appear more human-like
                 logger.debug("Waiting for DataTable to initialize after search")
-                time.sleep(2)  # Allow DataTable to reset and start loading
+                init_delay = random.uniform(1.5, 2.5)
+                time.sleep(init_delay)  # Allow DataTable to reset and start loading
                 for i in range(max_polls):
                     polls += 1
                     try:
@@ -701,7 +965,8 @@ class CaseScraperService:
                         # continue polling until the page reflects the current request.
                         try:
                             cur_val = None
-                            cur_val = case_input.get_attribute('value') if hasattr(case_input, 'get_attribute') else None
+                            if case_input is not None and hasattr(case_input, 'get_attribute'):
+                                cur_val = case_input.get_attribute('value')
                         except Exception:
                             cur_val = None
                         if cur_val is None or str(cur_val).strip() != str(case_number).strip():
@@ -891,6 +1156,10 @@ class CaseScraperService:
                 # handled by the outer exception path. Proceed to diagnostics
                 # and return.
 
+                # Check for anti-bot measures before giving up
+                if self._detect_anti_bot_measures(driver):
+                    logger.warning(f"Anti-bot measures detected while searching for {case_number}")
+                
                 # Save diagnostics before giving up
                 try:
                     logs = Path("logs")
@@ -912,12 +1181,15 @@ class CaseScraperService:
 
                 logger.warning(f"No results table found for case: {case_number}")
                 return False
+            
+            # If we've exhausted all attempts without finding results, return False
+            return False
 
         except Exception as e:
             logger.error(f"Error searching case {case_number}: {e}")
             return False
 
-    def scrape_case_data(self, case_number: str) -> Optional[Case]:
+    def scrape_case_data(self, case_number: str) -> tuple[Optional[Case], Optional[str]]:
         """Scrape case data from the modal after clicking More.
 
         Args:
@@ -934,7 +1206,15 @@ class CaseScraperService:
             # Click the "More" link — prefer locating the control inside the
             # result row that contains the case_number. This is more robust
             # against pages that show many results or render 'More' controls per-row.
-            logger.info(f"Clicking More for case: {case_number}")
+            logger.info(f"[UI_ACTION] Starting to click 'More' button for case: {case_number}")
+            
+            # Log current page state before attempting to click More
+            try:
+                current_url = driver.current_url
+                page_title = driver.title
+                logger.debug(f"[UI_ACTION] Current page before More click: URL={current_url}, Title='{page_title}'")
+            except Exception:
+                logger.debug("[UI_ACTION] Could not capture current page info")
             more_link = None
             # If a fallback (row click) causes the modal to appear without a
             # clickable per-row control, we capture that here and continue
@@ -1172,7 +1452,7 @@ class CaseScraperService:
             if more_link is None:
                 try:
                     logger.info(
-                        "Attempting fallback: click last-cell button or anchor in the target row"
+                        "[UI_ACTION] Attempting fallback: click last-cell button or anchor in the target row"
                     )
                     last_ctl = None
                     if target_row is not None:
@@ -1185,15 +1465,17 @@ class CaseScraperService:
 
                     if last_ctl is not None:
                         more_link = last_ctl
-                        logger.info("Using last-cell control as More fallback")
+                        last_ctl_id = last_ctl.get_attribute('id') or '<anonymous>'
+                        logger.info(f"[UI_ACTION] Using last-cell control as 'More' fallback (id: {last_ctl_id})")
                     else:
                         # Try clicking the row itself (some pages bind click to row)
                         if target_row is not None:
                             try:
+                                logger.info("[UI_ACTION] Clicking target row directly as fallback to open modal")
                                 driver.execute_script(
                                     "arguments[0].click();", target_row
                                 )
-                                logger.info("Clicked target row as fallback")
+                                logger.info("[UI_ACTION] Successfully clicked target row as fallback")
                                 # Give page a short moment for modal to appear
                                 time.sleep(0.5)
                                 # Quick check: maybe the row-click already opened the
@@ -1221,7 +1503,7 @@ class CaseScraperService:
                 raise Exception("Could not find 'More' link/button for case")
 
             # Wait for table to stabilize before clicking to avoid stale elements
-            logger.debug("Waiting for table to stabilize before clicking More")
+            logger.info("[UI_ACTION] Waiting for table to stabilize before clicking 'More' button")
             time.sleep(1)
             
             # Try normal click first, then JS click fallback. Handle
@@ -1231,9 +1513,17 @@ class CaseScraperService:
             clicked = False
             for attempt in range(click_attempts):
                 try:
-                    more_link.click()
-                    clicked = True
-                    break
+                    if more_link is not None:
+                        more_link_id = more_link.get_attribute('id') or '<anonymous>'
+                        more_link_text = more_link.text.strip() or '<no text>'
+                        logger.info(f"[UI_ACTION] Clicking 'More' button (id: {more_link_id}, text: '{more_link_text}') using native click")
+                        more_link.click()
+                        logger.info(f"[UI_ACTION] Successfully clicked 'More' button (id: {more_link_id})")
+                        clicked = True
+                        break
+                    else:
+                        # Try to re-find the element
+                        raise Exception("More link is None, attempting to re-find")
                 except StaleElementReferenceException:
                     logger.info(f"More element became stale on click attempt {attempt+1}, retrying")
                     # Re-find the element before retrying
@@ -1267,9 +1557,13 @@ class CaseScraperService:
                     continue
                 except Exception:
                     try:
-                        driver.execute_script("arguments[0].click();", more_link)
-                        clicked = True
-                        break
+                        if more_link is not None:
+                            more_link_id = more_link.get_attribute('id') or '<anonymous>'
+                            logger.info(f"[UI_ACTION] Native click failed, trying JavaScript click for 'More' button (id: {more_link_id})")
+                            driver.execute_script("arguments[0].click();", more_link)
+                            logger.info(f"[UI_ACTION] Successfully clicked 'More' button (id: {more_link_id}) using JavaScript")
+                            clicked = True
+                            break
                     except StaleElementReferenceException:
                         logger.info("More element became stale during JS click, retrying")
                         # clear and let the loop re-find
@@ -1277,10 +1571,26 @@ class CaseScraperService:
                         time.sleep(1)
                         continue
                     except Exception as click_err:
-                        raise click_err
+                        if more_link is None:
+                            # Try to re-find the element
+                            logger.info("More link is None, attempting to re-find element")
+                            if target_row is not None:
+                                for xp in candidate_xpaths:
+                                    try:
+                                        more_link = target_row.find_element(By.XPATH, xp)
+                                        logger.debug(f"Re-found More element via {xp}")
+                                        break
+                                    except Exception:
+                                        continue
+                        else:
+                            raise click_err
 
             if not clicked:
                 raise Exception("Failed to click 'More' control after retries")
+
+            # Add delay after clicking More to ensure modal is fully loaded
+            logger.info("[UI_ACTION] Waiting 3 seconds after clicking 'More' button for modal to fully load")
+            time.sleep(3)
 
             # Wait for modal to appear. Accept several common modal patterns
             modal = None
@@ -1491,8 +1801,16 @@ class CaseScraperService:
             except Exception:
                 logger.debug("Case summary not serializable")
 
-            return case
+            return case, None
 
+        except StaleElementReferenceException as e:
+            logger.error(f"Stale element reference while scraping case {case_number}: {e}")
+            # Suggest browser reinitialization due to stale elements
+            try:
+                self._close_modal()
+            except Exception:
+                pass
+            return None, "stale_element"
         except Exception as e:
             logger.error(f"Error scraping case {case_number}: {e}")
             # Try to close modal if open
@@ -1500,7 +1818,7 @@ class CaseScraperService:
                 self._close_modal()
             except Exception:
                 pass
-            return None
+            return None, str(e)
 
     def _extract_case_header(self, modal_element) -> dict:
         """Extract case header information from modal.
@@ -2200,6 +2518,7 @@ class CaseScraperService:
     def _close_modal(self) -> None:
         """Close the modal dialog."""
         driver = self._get_driver()
+        logger.info("[UI_ACTION] Starting to close modal dialog")
 
         try:
             # Try different close methods
@@ -2212,21 +2531,28 @@ class CaseScraperService:
 
             for by, selector in close_selectors:
                 try:
+                    logger.info(f"[UI_ACTION] Looking for close button using selector: {selector}")
                     close_button = WebDriverWait(driver, 5).until(
                         EC.element_to_be_clickable((by, selector))
                     )
+                    close_button_id = close_button.get_attribute('id') or '<anonymous>'
+                    close_button_class = close_button.get_attribute('class') or '<no class>'
+                    close_button_text = close_button.text.strip() or close_button.get_attribute('title') or '<no text>'
+                    logger.info(f"[UI_ACTION] Clicking close button (id: {close_button_id}, class: {close_button_class}, text: '{close_button_text}', selector: {selector})")
                     close_button.click()
-                    logger.debug("Modal closed successfully")
+                    logger.info(f"[UI_ACTION] Successfully closed modal using close button (id: {close_button_id})")
                     return
-                except:
+                except Exception as e:
+                    logger.debug(f"[UI_ACTION] Failed to close modal with selector {selector}: {e}")
                     continue
 
             # Fallback: refresh page
-            logger.warning("Could not close modal, refreshing page")
+            logger.warning("[UI_ACTION] Could not find any close button, refreshing page to close modal")
             driver.refresh()
 
         except Exception as e:
-            logger.error(f"Error closing modal: {e}")
+            logger.error(f"[UI_ACTION] Error closing modal: {e}")
+            logger.info("[UI_ACTION] Refreshing page due to modal close error")
             driver.refresh()
 
     def scrape_single_case(self, url: str) -> Case:
