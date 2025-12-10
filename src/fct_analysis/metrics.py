@@ -5,7 +5,7 @@ Provides `compute_durations(df)` returning DataFrame with `age_of_case`,
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import pandas as pd
@@ -22,7 +22,8 @@ def _to_date(d: Any) -> pd.Timestamp | pd.NaT:
 
 def compute_durations(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    today = pd.to_datetime(datetime.utcnow().date())
+    # Use timezone-aware UTC date for 'today' to avoid deprecation warnings
+    today_date = datetime.now(timezone.utc).date()
 
     df["filing_date_parsed"] = df.get("filing_date").apply(_to_date) if "filing_date" in df else pd.NaT
 
@@ -31,7 +32,8 @@ def compute_durations(df: pd.DataFrame) -> pd.DataFrame:
         if fd is pd.NaT or fd is None:
             return None
         try:
-            return int((today - fd).days)
+            # Compute using dates to avoid tz-aware vs naive Timestamp issues
+            return int((today_date - fd.date()).days)
         except Exception:
             return None
 
