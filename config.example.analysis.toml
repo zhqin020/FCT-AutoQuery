@@ -1,0 +1,37 @@
+# FCT Analysis Configuration Example
+# Copy to config.toml or config.private.toml and customize
+
+[app]
+# Base output directory
+output_dir = "output"
+# Per-case JSON subdirectory (for year-based structure)
+per_case_subdir = "json"
+
+[database]
+# Database connection settings
+host = "localhost"
+port = 5432
+database = "fct_db"
+user = "fct_user"
+password = "fctpass"
+
+[analysis]
+# Data source priority: database > directory > file
+input_format = "database"  # "database", "directory", or "file"
+
+# Output subdirectory for analysis results
+output_subdir = "analysis"
+json_subdir = "json"
+
+# Analysis mode: "rule" (fast) or "llm" (accurate)
+mode = "rule"
+
+# Database integration settings
+skip_analyzed = true  # Skip already analyzed cases
+update_mode = "smart"  # How to handle analyzed cases: "smart", "force", "skip"
+
+# Ollama configuration
+ollama_url = "http://localhost:11434"
+
+# Audit settings
+sample_audit = 0  # Number of LLM samples to save for audit

@@ -48,6 +48,25 @@ DEFAULT_ENABLE_RUN_LOGGER = True
 DEFAULT_WRITE_AUDIT = False
 DEFAULT_DOCKET_PARSE_MAX_ERRORS = 3
 
+# Analysis module defaults
+DEFAULT_ANALYSIS_INPUT_FORMAT = "database"  # database, file, directory
+DEFAULT_ANALYSIS_OUTPUT_SUBDIR = "analysis"
+DEFAULT_ANALYSIS_JSON_SUBDIR = "json"
+DEFAULT_ANALYSIS_MODE = "rule"
+DEFAULT_OLLAMA_URL = "http://localhost:11434"
+DEFAULT_ANALYSIS_SAMPLE_AUDIT = 0
+DEFAULT_ANALYSIS_SKIP_ANALYZED = True
+DEFAULT_ANALYSIS_UPDATE_MODE = "smart"  # smart, force, skip
+
+# Analysis logging defaults
+DEFAULT_ANALYSIS_LOG_LEVEL = "INFO"
+DEFAULT_ANALYSIS_LOG_FILE = "logs/fct-analyze.log"
+DEFAULT_ANALYSIS_LOG_BASE = "fct-analyze"
+DEFAULT_ANALYSIS_LOG_MAX_INDEX = 5
+DEFAULT_ANALYSIS_CHECKPOINT_FILE = "0005_checkpoint.ndjson"
+DEFAULT_ANALYSIS_AUDIT_FAILURES_FILE = "logs/0005_llm_audit_failures.ndjson"
+DEFAULT_ANALYSIS_AUDIT_SAMPLES_FILE = "logs/0005_llm_audit_samples.ndjson"
+
 
 def _load_toml_config() -> dict:
     """Load config from `config.private.toml` then `config.toml` if available.
@@ -306,3 +325,138 @@ class Config:
             "user": cls.get_db_user(),
             "password": cls.get_db_password(),
         }
+
+    # Analysis module configuration
+    @classmethod
+    def get_analysis_input_format(cls) -> str:
+        return (
+            _get_from_config("analysis", "input_format")
+            or os.getenv("FCT_ANALYSIS_INPUT_FORMAT")
+            or DEFAULT_ANALYSIS_INPUT_FORMAT
+        )
+
+    @classmethod
+    def get_analysis_output_subdir(cls) -> str:
+        return (
+            _get_from_config("analysis", "output_subdir")
+            or os.getenv("FCT_ANALYSIS_OUTPUT_SUBDIR")
+            or DEFAULT_ANALYSIS_OUTPUT_SUBDIR
+        )
+
+    @classmethod
+    def get_analysis_json_subdir(cls) -> str:
+        return (
+            _get_from_config("analysis", "json_subdir")
+            or os.getenv("FCT_ANALYSIS_JSON_SUBDIR")
+            or DEFAULT_ANALYSIS_JSON_SUBDIR
+        )
+
+    @classmethod
+    def get_analysis_mode(cls) -> str:
+        return (
+            _get_from_config("analysis", "mode")
+            or os.getenv("FCT_ANALYSIS_MODE")
+            or DEFAULT_ANALYSIS_MODE
+        )
+
+    @classmethod
+    def get_ollama_url(cls) -> str:
+        return (
+            _get_from_config("analysis", "ollama_url")
+            or os.getenv("FCT_ANALYSIS_OLLAMA_URL")
+            or DEFAULT_OLLAMA_URL
+        )
+
+    @classmethod
+    def get_analysis_sample_audit(cls) -> int:
+        return int(
+            _get_from_config("analysis", "sample_audit")
+            or os.getenv("FCT_ANALYSIS_SAMPLE_AUDIT")
+            or DEFAULT_ANALYSIS_SAMPLE_AUDIT
+        )
+
+    @classmethod
+    def get_analysis_skip_analyzed(cls) -> bool:
+        val = _get_from_config("analysis", "skip_analyzed")
+        if val is None:
+            val = os.getenv("FCT_ANALYSIS_SKIP_ANALYZED")
+        if isinstance(val, str):
+            return val.lower() == "true"
+        return bool(val) if val is not None else DEFAULT_ANALYSIS_SKIP_ANALYZED
+
+    @classmethod
+    def get_analysis_update_mode(cls) -> str:
+        return (
+            _get_from_config("analysis", "update_mode")
+            or os.getenv("FCT_ANALYSIS_UPDATE_MODE")
+            or DEFAULT_ANALYSIS_UPDATE_MODE
+        )
+
+    # Analysis logging configuration
+    @classmethod
+    def get_analysis_log_level(cls) -> str:
+        return (
+            _get_from_config("analysis", "log_level")
+            or os.getenv("FCT_ANALYSIS_LOG_LEVEL")
+            or DEFAULT_ANALYSIS_LOG_LEVEL
+        )
+
+    @classmethod
+    def get_analysis_log_file(cls) -> str:
+        return (
+            _get_from_config("analysis", "log_file")
+            or os.getenv("FCT_ANALYSIS_LOG_FILE")
+            or DEFAULT_ANALYSIS_LOG_FILE
+        )
+
+    @classmethod
+    def get_analysis_log_base(cls) -> str:
+        return (
+            _get_from_config("analysis", "log_base")
+            or os.getenv("FCT_ANALYSIS_LOG_BASE")
+            or DEFAULT_ANALYSIS_LOG_BASE
+        )
+
+    @classmethod
+    def get_analysis_log_max_index(cls) -> int:
+        return int(
+            _get_from_config("analysis", "log_max_index")
+            or os.getenv("FCT_ANALYSIS_LOG_MAX_INDEX")
+            or DEFAULT_ANALYSIS_LOG_MAX_INDEX
+        )
+
+    @classmethod
+    def get_analysis_checkpoint_file(cls) -> str:
+        return (
+            _get_from_config("analysis", "checkpoint_file")
+            or os.getenv("FCT_ANALYSIS_CHECKPOINT_FILE")
+            or DEFAULT_ANALYSIS_CHECKPOINT_FILE
+        )
+
+    @classmethod
+    def get_analysis_audit_failures_file(cls) -> str:
+        return (
+            _get_from_config("analysis", "audit_failures_file")
+            or os.getenv("FCT_ANALYSIS_AUDIT_FAILURES_FILE")
+            or DEFAULT_ANALYSIS_AUDIT_FAILURES_FILE
+        )
+
+    @classmethod
+    def get_analysis_audit_samples_file(cls) -> str:
+        return (
+            _get_from_config("analysis", "audit_samples_file")
+            or os.getenv("FCT_ANALYSIS_AUDIT_SAMPLES_FILE")
+            or DEFAULT_ANALYSIS_AUDIT_SAMPLES_FILE
+        )
+
+    @classmethod
+    def get_analysis_output_path(cls, filename: str) -> Path:
+        output_dir = Path(cls.get_output_dir()) / cls.get_analysis_output_subdir() / "simple"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return output_dir / filename
+
+    @classmethod
+    def get_analysis_json_path(cls) -> Path:
+        json_dir = Path(cls.get_output_dir()) / cls.get_analysis_json_subdir()
+        json_dir.mkdir(parents=True, exist_ok=True)
+        return json_dir

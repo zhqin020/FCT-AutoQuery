@@ -15,6 +15,24 @@ from pathlib import Path
 import pandas as pd
 
 
+def _parse_cases_list(data: List[dict]) -> pd.DataFrame:
+    """Parse a list of case dictionaries (for database/directory sources)."""
+    rows: List[dict] = []
+    for case in data:
+        case_number = case.get("case_number") or case.get("case_id")
+        filing_date = _normalize_date(case.get("filing_date") or case.get("date"))
+        docket_entries = case.get("docket_entries") or []
+        rows.append({
+            "case_number": case_number,
+            "filing_date": filing_date,
+            "docket_entries": docket_entries,
+            "raw": case,
+        })
+
+    df = pd.DataFrame(rows)
+    return df
+
+
 def _normalize_date(d: str) -> str | None:
     if not d:
         return None
@@ -60,17 +78,4 @@ def parse_cases(input_path: str) -> pd.DataFrame:
         with open(input_path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
 
-    rows: List[dict] = []
-    for case in data:
-        case_number = case.get("case_number") or case.get("case_id")
-        filing_date = _normalize_date(case.get("filing_date") or case.get("date"))
-        docket_entries = case.get("docket_entries") or []
-        rows.append({
-            "case_number": case_number,
-            "filing_date": filing_date,
-            "docket_entries": docket_entries,
-            "raw": case,
-        })
-
-    df = pd.DataFrame(rows)
-    return df
+    return _parse_cases_list(data)
