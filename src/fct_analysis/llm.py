@@ -43,8 +43,24 @@ def extract_entities_with_ollama(
     Raises:
         ConnectionError: When Ollama is not reachable
     """
-    if not requests:
-        raise ConnectionError("requests library not available")
+    if requests is None:
+        raise ConnectionError("requests library is not available")
+    last_exc = None
+    for attempt in range(max_retries + 1):
+        try:
+            response = requests.post(
+                f"{base_url}/api/generate",
+                json=payload,
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            data = response.json()
+            raw_output = data.get("response", "")
+            return _parse_llm_output(raw_output)
+        except (requests.RequestException, requests.Timeout) as e:
+            last_exc = e
+            time.sleep(retry_delay)
+    raise ConnectionError(f"Failed to connect to Ollama after {max_retries + 1} attempts: {last_exc}")
     
     if not text or not text.strip():
         return None
@@ -109,3 +125,24 @@ def _parse_llm_output(raw_output: str) -> dict[str, Any] | None:
     except (json.JSONDecodeError, Exception):
         pass
     return None
+
+def extract_entities_batch(
+    texts: list[str],
+    model: str = "qwen2.5-7b-instruct",
+    ollama_url: str | None = None,
+    retries: int = 1,
+    backoff: float = 0.5,
+    timeout: float = 6.0,
+) -> list[dict]:
+    """Extract entities for a batch of texts. Returns list of dicts.
+
+    This helper simply iterates and calls `extract_entities_with_ollama` per item;
+    a future optimization could batch multiple prompts into a single request if
+    the server supports it.
+    """
+    results = []
+    for t in texts:
+        results.append(
+            extract_entities_with_ollama(t, model=model, ollama_url=ollama_url, retries=retries, backoff=backoff, timeout=timeout)
+        )
+    return results
