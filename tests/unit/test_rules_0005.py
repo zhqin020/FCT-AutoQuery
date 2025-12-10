@@ -1,3 +1,11 @@
+from fct_analysis import rules
+
+
+def test_classify_mandamus():
+    row = {"style_of_cause": "Application for Mandamus", "docket_entries": [{"summary": "compel"}]}
+    out = rules.classify_case_rule(row)
+    assert out["type"] == "Mandamus"
+    assert out["status"] in ("Discontinued", "Granted", "Dismissed", "Ongoing")
 from fct_analysis.rules import classify_case_rule
 
 

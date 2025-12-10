@@ -1,0 +1,6 @@
+## 核心规则
+
+1. 在启动console 或运行命令之前，必须激活环境： conda activate fct
+2. 问题解决完成，应该在issues 目录下记录和总结，更新issue文件，持续解决直到状态为 CLOSED
+3. 项目的日志在 logs 目录下, 最新的日志文件是： logs/scraper-1.log
+4. 测试文件只能保存在 tests 目录下, 名称为 test_*.py

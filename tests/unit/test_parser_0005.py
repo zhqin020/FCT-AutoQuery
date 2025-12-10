@@ -1,3 +1,18 @@
+import json
+from pathlib import Path
+
+from fct_analysis import parser
+
+
+def test_parse_cases(tmp_path):
+    sample = [
+        {"case_number": "IMM-1", "filing_date": "2024-12-01", "docket_entries": [{"summary": "Rule 9 received", "entry_date": "2024-12-02"}]}
+    ]
+    p = tmp_path / "cases.json"
+    p.write_text(json.dumps(sample))
+    df = parser.parse_cases(p)
+    assert "case_number" in df.columns
+    assert df.iloc[0]["case_number"] == "IMM-1"
 from fct_analysis.parser import parse_cases
 from pathlib import Path
 

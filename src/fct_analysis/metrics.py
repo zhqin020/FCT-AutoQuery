@@ -1,3 +1,35 @@
+"""Metrics computations for fct_analysis.
+
+Provides simple duration calculations used by the MVP.
+"""
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any
+
+import pandas as pd
+
+
+def _parse_date(d: Any) -> Any:
+    if pd.isna(d) or d is None:
+        return pd.NaT
+    try:
+        return pd.to_datetime(d).date()
+    except Exception:
+        return pd.NaT
+
+
+def compute_durations(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df["filing_date_parsed"] = df["filing_date"].apply(_parse_date)
+    today = datetime.utcnow().date()
+    df["age_of_case"] = df["filing_date_parsed"].apply(
+        lambda d: (today - d).days if d is not pd.NaT and d is not None else None
+    )
+    # Placeholder: no outcome_date in MVP; time_to_close left as None
+    df["time_to_close"] = None
+    df["rule9_wait"] = None
+    return df
 """Metrics computations for feature 0005.
 
 Provides `compute_durations(df)` which returns a copy of the DataFrame with

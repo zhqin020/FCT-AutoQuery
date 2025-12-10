@@ -7,8 +7,8 @@
 **Purpose**: Project initialization and basic structure required by the feature
 
 - [ ] T000 Create Issue file `issues/0005-llm-data-analysis.md` (path: `issues/0005-llm-data-analysis.md`) — REQUIRED by project constitution before implementation begins
-- [ ] T000b Ensure feature branch name references the Issue (e.g., `feat/0005-llm-data-analysis`). If necessary, rename the working branch to comply with constitution
-- [ ] T00X Add environment activation note and CI check: validate `conda activate fct` or document CI environment used for tests (path: `specs/0005-llm-data-analysis/quickstart.md` or CI config)
+ - [ ] T000b Ensure feature branch name references the Issue (e.g., `feat/0005-llm-data-analysis`). If necessary, rename the working branch to comply with constitution (path: repository root)
+ - [ ] T00X Add environment activation note and CI check: validate `conda activate fct` or document CI environment used for tests (path: `specs/0005-llm-data-analysis/quickstart.md` or CI config)
 - [ ] T001 Create Python package `src/fct_analysis/__init__.py` and folder structure `src/fct_analysis/` (path: `src/fct_analysis/`)
 - [ ] T002 Add CLI entrypoint module at `src/fct_analysis/cli.py` and make `src/fct_analysis` importable
 - [ ] T003 [P] Create tests directory and fixture folder `tests/fixtures/` (path: `tests/fixtures/`)
@@ -41,8 +41,7 @@
 
 ### Tests (write first)
 
-- [ ] T013 [P] [US1] Add fixture `tests/fixtures/0005_cases.json` with 8-12 representative cases (path: `tests/fixtures/0005_cases.json`)
- - [ ] T013 [P] [US1] Add fixture `tests/fixtures/0005_cases.json` with 8-12 representative cases (path: `tests/fixtures/0005_cases.json`) — NOTE: fixture currently exists locally but is ignored by `.gitignore`; decide whether to commit (force-add) or configure CI to fetch it. Add one of the follow-ups:
+ - [ ] T013 [P] [US1] Add fixture `tests/fixtures/0005_cases.json` with 8-12 representative cases (path: `tests/fixtures/0005_cases.json`) — NOTE: fixture currently exists locally but may be ignored by `.gitignore`; decide whether to commit (force-add) or configure CI to download at test time. Add one of the follow-ups:
  - [ ] T013a Commit fixture to repository (`git add -f tests/fixtures/0005_cases.json` + commit) so CI can run offline
  - [ ] T013b Configure CI to download fixture at test time (update CI config accordingly)
 - [ ] T014 [P] [US1] Add unit tests for parser: `tests/unit/test_parser_0005.py` (path: `tests/unit/test_parser_0005.py`) — tests must assert the parser accepts exporter JSON and extracts `case_number`, `filing_date`, and `docket_entries[].summary`.

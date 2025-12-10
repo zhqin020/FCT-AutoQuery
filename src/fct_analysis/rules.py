@@ -1,3 +1,41 @@
+"""Rule-based classifier for case type and status.
+
+This module contains minimal, deterministic keyword rules used by the MVP.
+"""
+from __future__ import annotations
+
+from typing import Any
+
+
+MANDAMUS_KEYWORDS = ("mandamus", "compel", "delay")
+
+
+def _text_from_row(row: Any) -> str:
+    parts = [
+        str(row.get("style_of_cause", "") or ""),
+    ]
+    for de in row.get("docket_entries", []) or []:
+        parts.append(str(de.get("summary", "")))
+    return " ".join(parts).lower()
+
+
+def classify_case_rule(row: Any) -> dict[str, str]:
+    """Given a row-like mapping, return a minimal classification dict.
+
+    Returns: {"type": "Mandamus"|"Other", "status": "Ongoing"|"Discontinued"|"Granted"|"Dismissed"}
+    """
+    text = _text_from_row(row)
+    ctype = "Mandamus" if any(k in text for k in MANDAMUS_KEYWORDS) else "Other"
+    # Simple status priority checks
+    if "notice of discontinuance" in text:
+        status = "Discontinued"
+    elif "granted" in text or "allowed" in text:
+        status = "Granted"
+    elif "dismissed" in text:
+        status = "Dismissed"
+    else:
+        status = "Ongoing"
+    return {"type": ctype, "status": status}
 """Rule-based classifier for feature 0005 (quick mode).
 
 Provides `classify_case_rule(case_obj)` which returns a dict with `type` and

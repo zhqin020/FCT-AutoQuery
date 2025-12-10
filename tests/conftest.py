@@ -2,6 +2,12 @@ import pytest
 
 
 @pytest.fixture
+def sample_cases_path(tmp_path):
+    return tmp_path / "sample_cases.json"
+import pytest
+
+
+@pytest.fixture
 def sample_fixture_path(tmp_path_factory):
     # convenience fixture if tests prefer temporary copies
     return None
