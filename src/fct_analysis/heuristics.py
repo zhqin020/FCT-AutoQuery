@@ -1,6 +1,7 @@
-"""Heuristic extractors for Visa Office and Judge from case text.
+"""Simple heuristic extractors for Visa Office and Judge.
 
-These are cheap, fast heuristics used before falling back to LLM calls.
+These are lightweight, deterministic functions used before falling back to LLM.
+They use regexes and known name lists to pick likely values from free text.
 """
 from __future__ import annotations
 
@@ -8,46 +9,24 @@ import re
 from typing import Optional
 
 
-COMMON_VISA_OFFICES = [
-    "Beijing",
-    "Ankara",
-    "New Delhi",
-    "Delhi",
-    "Mumbai",
-    "London",
-    "Islamabad",
-    "Lagos",
-    "Accra",
-    "Manila",
-    "Mexico City",
-    "Tehran",
-    "Cairo",
-    "Nairobi",
-]
+VISABOX_RE = re.compile(r"\b(Beijing|Ankara|New Delhi|Delhi|Toronto|Vancouver|London|Mumbai|Ottawa)\b", re.I)
+JUDGE_RE = re.compile(r"\bJustice\s+([A-Z][a-z]+)|\bJudge\s+([A-Z][a-z]+)", re.I)
 
 
 def extract_visa_office_heuristic(text: str) -> Optional[str]:
     if not text:
         return None
-    for office in COMMON_VISA_OFFICES:
-        if re.search(r"\b" + re.escape(office) + r"\b", text, re.I):
-            return office
-    # look for patterns like 'Visa Office: X' or 'Visa Office - X'
-    m = re.search(r"Visa Office[:\-]\s*([A-Za-z \.\-]{2,40})", text, re.I)
+    m = VISABOX_RE.search(text)
     if m:
-        return m.group(1).strip()
+        return m.group(1)
     return None
 
 
 def extract_judge_heuristic(text: str) -> Optional[str]:
     if not text:
         return None
-    # common patterns: 'Judge Smith', 'per Justice Smith', 'Justice Smith'
-    m = re.search(r"(?:Judge|Justice|per Justice)\.?:?\s*([A-Z][A-Za-z\-]+(?:\s[A-Z][A-Za-z\-]+)?)", text)
+    m = JUDGE_RE.search(text)
     if m:
-        return m.group(1).strip()
-    # patterns like 'Reasons of [Name]'
-    m2 = re.search(r"Reasons of Judge\s+([A-Z][A-Za-z\-]+)", text)
-    if m2:
-        return m2.group(1).strip()
+        # group may be in either group 1 or 2
+        return (m.group(1) or m.group(2))
     return None

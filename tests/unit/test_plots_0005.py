@@ -4,12 +4,23 @@ pd = pytest.importorskip("pandas")
 
 from fct_analysis.parser import parse_cases
 from fct_analysis import plots
+from fct_analysis import cli, rules
 from pathlib import Path
 
 
 def test_plots_create_pngs(tmp_path: Path):
     fixture = Path("tests/fixtures/0005_cases.json")
     df = parse_cases(str(fixture))
+    
+    # Apply classification like CLI does
+    types = []
+    statuses = []
+    for _, row in df.iterrows():
+        res = rules.classify_case_rule(row.get("raw") or row)
+        types.append(res.get("type"))
+        statuses.append(res.get("status"))
+    df["type"] = types
+    df["status"] = statuses
 
     out = tmp_path / "plots"
     out.mkdir()
