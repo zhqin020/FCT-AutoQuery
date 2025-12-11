@@ -54,12 +54,14 @@ DEFAULT_ANALYSIS_OUTPUT_SUBDIR = "analysis"
 DEFAULT_ANALYSIS_JSON_SUBDIR = "json"
 DEFAULT_ANALYSIS_MODE = "rule"
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
+DEFAULT_OLLAMA_MODEL = None  # Use currently running model if not specified
+DEFAULT_OLLAMA_TIMEOUT = 120
 DEFAULT_ANALYSIS_SAMPLE_AUDIT = 0
 DEFAULT_ANALYSIS_SKIP_ANALYZED = True
 DEFAULT_ANALYSIS_UPDATE_MODE = "smart"  # smart, force, skip
 
 # Analysis logging defaults
-DEFAULT_ANALYSIS_LOG_LEVEL = "INFO"
+DEFAULT_ANALYSIS_LOG_LEVEL = "DEBUG"
 DEFAULT_ANALYSIS_LOG_FILE = "logs/fct-analyze.log"
 DEFAULT_ANALYSIS_LOG_BASE = "fct-analyze"
 DEFAULT_ANALYSIS_LOG_MAX_INDEX = 5
@@ -368,6 +370,24 @@ class Config:
         )
 
     @classmethod
+    def get_ollama_model(cls) -> Optional[str]:
+        """Get the configured LLM model name, or None to use running model."""
+        return (
+            _get_from_config("analysis", "ollama_model")
+            or os.getenv("FCT_ANALYSIS_OLLAMA_MODEL")
+            or DEFAULT_OLLAMA_MODEL
+        )
+
+    @classmethod
+    def get_ollama_timeout(cls) -> int:
+        """Get the Ollama timeout in seconds."""
+        return int(
+            _get_from_config("analysis", "ollama_timeout")
+            or os.getenv("FCT_ANALYSIS_OLLAMA_TIMEOUT")
+            or DEFAULT_OLLAMA_TIMEOUT
+        )
+
+    @classmethod
     def get_analysis_sample_audit(cls) -> int:
         return int(
             _get_from_config("analysis", "sample_audit")
@@ -390,6 +410,34 @@ class Config:
             _get_from_config("analysis", "update_mode")
             or os.getenv("FCT_ANALYSIS_UPDATE_MODE")
             or DEFAULT_ANALYSIS_UPDATE_MODE
+        )
+
+    # Ollama LLM configuration
+    @classmethod
+    def get_ollama_url(cls) -> str:
+        return (
+            _get_from_config("analysis", "ollama_url")
+            or _get_from_config("llm", "ollama_url")
+            or os.getenv("OLLAMA_URL")
+            or DEFAULT_OLLAMA_URL
+        )
+
+    @classmethod
+    def get_ollama_model(cls) -> Optional[str]:
+        return (
+            _get_from_config("analysis", "ollama_model")
+            or _get_from_config("llm", "ollama_model")
+            or os.getenv("OLLAMA_MODEL")
+            or DEFAULT_OLLAMA_MODEL
+        )
+
+    @classmethod
+    def get_ollama_timeout(cls) -> int:
+        return int(
+            _get_from_config("analysis", "ollama_timeout")
+            or _get_from_config("llm", "ollama_timeout")
+            or os.getenv("OLLAMA_TIMEOUT")
+            or DEFAULT_OLLAMA_TIMEOUT
         )
 
     # Analysis logging configuration

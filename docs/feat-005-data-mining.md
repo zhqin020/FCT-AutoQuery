@@ -179,3 +179,318 @@
 *   **阶段三 (Advanced Analytics)**: 增加 Rule 9 延迟分析、法官倾向性分析、可视化图表生成。
 
 ---
+# LLM vs NLP
+
+现状：**有结构化数据，但关键标签（强制令 / 驳回 / 胜诉 / hearing / 撤案等）埋在 summary 的自然语言文本里。**
+
+这种情况的最佳做法非常明确：
+
+# ✅ **优先不用大语言模型 —— 先用可维护的关键词/规则 NLP 方案**
+
+因为：
+
+* 法院 summary 的格式相对固定（司法系统文本一致性很高）
+* 法律结果的表达方式有限（dismissed / allowed / discontinuance / mandamus / JR 等）
+* 你需要的是 100% 可重复、可解释的分类结果（LLM 不稳定，成本高）
+* 你的数据量可能很大，LLM 成本会明显增加
+
+**总结：你的场景更适合传统 NLP（规则 + 关键词 + 正则 + 模式匹配），而不是大模型。**
+
+---
+
+# 👍 **推荐的最佳技术解决方案**
+
+## **1. 用关键词/正则抽取标签**
+
+比如 summary 中常出现：
+
+### **Outcome**
+
+* `dismissed` → 驳回
+* `allowed` → 胜诉
+* `partially allowed` → 部分胜诉
+* `settled` / `resolved` → 和解
+* `discontinued` / `withdrawn` → 撤案
+
+### **Case Type**
+
+* `mandamus` → 强制令
+* `judicial review` / `JR` → 司法复核
+* `leave granted` → leave 阶段决定
+* `appeal` → 上诉
+
+### **Procedural events**
+
+* `hearing scheduled` → 有 hearing
+* `no hearing` / `on the record` → 无听证
+* `motion` → 动议
+* `extension` → 延期
+
+➡ 这些都能直接通过词典映射标签。
+
+---
+
+# 🧠 **2. 用 text patterns（短语模式）提高准确率**
+
+例如：
+
+```
+r"The application is dismissed( with costs)?"
+r"The application for judicial review is allowed"
+r"Leave is granted"
+r"The matter is remitted"
+r"The parties reached a settlement"
+r"The application is discontinued"
+```
+
+这些模式在联邦法院 summary 中极其常见，能覆盖 80%+ 的情况。
+
+---
+
+# 📈 **3. 对于极少数模糊 summary，才使用 LLM（可选的混合方案）**
+
+例如 summary 像这样：
+
+> “The Court finds that the delay is unreasonable; however, given subsequent actions of IRCC, the application is now moot.”
+
+这里很难通过关键词判断到底是：
+
+* 驳回（moot dismiss）？
+* 已解决导致 moot？
+* 部分允许？
+
+**这种长句语义复杂的情况，LLM 才能补充。**
+
+我推荐：
+
+**主系统使用规则 NLP
+→ 不确定或无法判断的少数 summary → 送给 LLM 做二次解析。**
+
+LLM 调用次数会非常低，成本大幅降低。
+
+---
+下面我会给你一套**完整、可直接运行的 Python 代码**，用于：
+
+* 自动识别是否是 Mandamus 强制令案件
+* 自动识别案件结果（Dismissed / Allowed / Discontinued 等）
+* 月度统计案件数量、Mandamus 占比
+* 月度趋势图需要时可输出 DataFrame（你可直接在 notebook 或本地画图）
+
+代码以你上传的 JSON 文件格式为基础（每个文件一个案件，包含 docket_entries 列表和 summary 文本）。
+
+---
+
+# ✅ **一、核心思路（规则 NLP，不用大模型）**
+
+我们从 docket_entries 中寻找：
+
+### ① **Mandamus 标记（强制令）**
+
+在 summary 中查找关键字：
+
+```
+"Mandamus", "writ of mandamus"
+```
+
+### ② **案件结果判定**
+
+根据 docket_entries 里最后几条 summary 判断：
+
+* **Dismissed**:
+  `"dismissed"`, `"application is dismissed"`
+* **Allowed**:
+  `"allowed"`, `"granted"`
+* **Discontinued / Withdrawn**:
+  `"discontinued"`, `"notice of discontinuance"`, `"withdrawn"`
+* **Still Active / Pending**:
+  无结果关键字 → 默认 Pending
+
+### ③ **按 entry_date 分组统计（月度趋势）**
+
+---
+
+# ✅ 二、完整 Python 代码
+
+你把所有案件 JSON 文件放在一个目录，例如：`data/`
+
+```python
+import os
+import json
+import pandas as pd
+import re
+from datetime import datetime
+
+# -------------------------
+# 规则 NLP：关键词匹配
+# -------------------------
+
+MANDAMUS_KEYWORDS = [
+    r"mandamus",
+    r"writ of mandamus"
+]
+
+OUTCOME_PATTERNS = {
+    "dismissed": [
+        r"dismissed",
+        r"application.*dismissed"
+    ],
+    "allowed": [
+        r"allowed",
+        r"granted",
+        r"application.*allowed"
+    ],
+    "discontinued": [
+        r"discontinued",
+        r"notice of discontinuance",
+        r"withdrawn"
+    ],
+}
+
+def text_match(text, patterns):
+    """判断文本是否匹配任意关键词"""
+    text = text.lower()
+    for p in patterns:
+        if re.search(p, text):
+            return True
+    return False
+
+
+# -------------------------
+# 提取案件标签
+# -------------------------
+
+def extract_case_features(case_json):
+    case_id = case_json["case_id"]
+    filing_date = case_json.get("filing_date", None)
+
+    docket = case_json.get("docket_entries", [])
+
+    all_summary = " ".join([d["summary"] for d in docket if "summary" in d]).lower()
+
+    # ---- Mandamus 判断 ----
+    is_mandamus = text_match(all_summary, MANDAMUS_KEYWORDS)
+
+    # ---- Outcome 判定（从最后到最前搜索） ----
+    outcome = "pending"
+    for d in reversed(docket):
+        summary = d.get("summary", "").lower()
+        if text_match(summary, OUTCOME_PATTERNS["discontinued"]):
+            outcome = "discontinued"
+            break
+        if text_match(summary, OUTCOME_PATTERNS["dismissed"]):
+            outcome = "dismissed"
+            break
+        if text_match(summary, OUTCOME_PATTERNS["allowed"]):
+            outcome = "allowed"
+            break
+
+    # ---- 月份 ----
+    if filing_date:
+        month = filing_date[:7]  # yyyy-mm
+    else:
+        month = None
+
+    return {
+        "case_id": case_id,
+        "filing_date": filing_date,
+        "month": month,
+        "is_mandamus": is_mandamus,
+        "outcome": outcome
+    }
+
+
+# -------------------------
+# 读取目录所有 JSON 文件
+# -------------------------
+
+def load_all_cases(path="data"):
+    rows = []
+    for fn in os.listdir(path):
+        if fn.endswith(".json"):
+            with open(os.path.join(path, fn), "r") as f:
+                case_json = json.load(f)
+                row = extract_case_features(case_json)
+                rows.append(row)
+
+    df = pd.DataFrame(rows)
+    return df
+
+
+# -------------------------
+# 统计函数
+# -------------------------
+
+def generate_statistics(df):
+    # 月度总案件数
+    monthly_total = df.groupby("month")["case_id"].count().rename("total_cases")
+
+    # Mandamus 月度数量
+    monthly_mandamus = df[df["is_mandamus"]].groupby("month")["case_id"].count().rename("mandamus_cases")
+
+    # 结果统计
+    monthly_outcome = df.pivot_table(index="month", columns="outcome", values="case_id", aggfunc="count").fillna(0)
+
+    # 合并总表
+    summary = pd.concat([monthly_total, monthly_mandamus, monthly_outcome], axis=1).fillna(0)
+
+    # 增加 mandamus 占比
+    summary["mandamus_ratio"] = summary["mandamus_cases"] / summary["total_cases"]
+
+    return summary
+
+
+# -------------------------
+# 主程序执行
+# -------------------------
+
+if __name__ == "__main__":
+    df = load_all_cases("data")
+
+    print("\n=== 原始标签数据 ===")
+    print(df)
+
+    summary = generate_statistics(df)
+
+    print("\n=== 月度趋势统计 ===")
+    print(summary)
+```
+
+---
+
+# ✅ 三、程序输出内容包括：
+
+## **1. 每个案件的自动标签**
+
+例如：
+
+| case_id   | month   | mandamus | outcome      |
+| --------- | ------- | -------- | ------------ |
+| IMM-96-25 | 2025-01 | True     | pending      |
+| IMM-2-25  | 2025-01 | True     | pending      |
+| IMM-6-25  | 2024-12 | False    | discontinued |
+
+（前三条来源于你提供的 JSON 文件）
+
+---
+
+## **2. 月度趋势统计**
+
+例如输出类似：
+
+| month   | total | mandamus | dismissed | allowed | discontinued | mandamus_ratio |
+| ------- | ----- | -------- | --------- | ------- | ------------ | -------------- |
+| 2024-12 | 1     | 0        | 0         | 0       | 1            | 0              |
+| 2025-01 | 2     | 2        | 0         | 0       | 0            | 1.0            |
+
+---
+
+# 🚀 想要图表？
+
+如果你需要，我可以继续提供：
+
+* 月度折线图（Mandamus 趋势）
+* 结果分布柱状图
+* 各类趋势图的 Python matplotlib/plotly 代码
+
+---
+

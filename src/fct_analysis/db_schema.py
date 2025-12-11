@@ -46,8 +46,8 @@ class AnalysisDBManager:
             -- Analysis results
             case_type VARCHAR(50),
             case_status VARCHAR(50),
-            visa_office VARCHAR(100),
-            judge VARCHAR(100),
+            visa_office VARCHAR(200),
+            judge VARCHAR(200),
             
             -- Duration metrics
             time_to_close INTEGER,
@@ -261,6 +261,10 @@ class AnalysisDBManager:
             logger.info("Creating analysis table...")
             if not self.create_analysis_table():
                 return False
+        else:
+            # Apply schema updates to existing table
+            logger.info("Updating existing analysis table schema...")
+            self._update_table_schema()
         
         # Copy existing cases if requested
         if copy_cases:
@@ -270,6 +274,35 @@ class AnalysisDBManager:
         
         logger.info("Database migration completed successfully")
         return True
+    
+    def _update_table_schema(self) -> bool:
+        """Update existing table schema with longer field lengths."""
+        try:
+            with connect(**self.db_config) as conn:
+                with conn.cursor() as cursor:
+                    # Update varchar field lengths
+                    updates = [
+                        "ALTER TABLE case_analysis ALTER COLUMN visa_office TYPE VARCHAR(200)",
+                        "ALTER TABLE case_analysis ALTER COLUMN judge TYPE VARCHAR(200)",
+                    ]
+                    
+                    for sql in updates:
+                        try:
+                            cursor.execute(sql)
+                            logger.info(f"Applied schema update: {sql}")
+                        except DatabaseError as e:
+                            # Column might already have the correct length or other issues
+                            if "already exists" in str(e) or "does not exist" in str(e):
+                                logger.info(f"Schema update skipped: {e}")
+                            else:
+                                logger.warning(f"Schema update failed: {e}")
+                    
+                    conn.commit()
+                    return True
+                    
+        except (OperationalError, DatabaseError) as e:
+            logger.error(f"Failed to update table schema: {e}")
+            return False
 
 
 class AnalysisResultStorage:
@@ -323,16 +356,16 @@ class AnalysisResultStorage:
         try:
             with connect(**self.db_config) as conn:
                 with conn.cursor() as cursor:
-                    # Prepare fields for upsert
+                    # Prepare fields for upsert with length limits
                     field_mapping = {
-                        'type': 'case_type',
-                        'status': 'case_status', 
-                        'visa_office': 'visa_office',
-                        'judge': 'judge',
-                        'time_to_close': 'time_to_close',
-                        'age_of_case': 'age_of_case',
-                        'rule9_wait': 'rule9_wait',
-                        'outcome_date': 'outcome_date'
+                        'type': ('case_type', 50),
+                        'status': ('case_status', 50),
+                        'visa_office': ('visa_office', 200),
+                        'judge': ('judge', 200),
+                        'time_to_close': ('time_to_close', None),
+                        'age_of_case': ('age_of_case', None),
+                        'rule9_wait': ('rule9_wait', None),
+                        'outcome_date': ('outcome_date', None)
                     }
                     
                     # Build INSERT and UPDATE clauses
@@ -341,10 +374,17 @@ class AnalysisResultStorage:
                     update_fields = ['analysis_version = EXCLUDED.analysis_version', 
                                     'analyzed_at = CURRENT_TIMESTAMP']
                     
-                    for field_name, db_field in field_mapping.items():
+                    for field_name, (db_field, max_length) in field_mapping.items():
                         if field_name in analysis_result and analysis_result[field_name] is not None:
+                            value = analysis_result[field_name]
+                            
+                            # Truncate string values to prevent database errors
+                            if max_length and isinstance(value, str) and len(value) > max_length:
+                                value = value[:max_length]
+                                logger.debug(f"Truncated {field_name} for case {case_id} to {max_length} characters")
+                            
                             insert_fields.append(db_field)
-                            insert_values.append(analysis_result[field_name])
+                            insert_values.append(value)
                             update_fields.append(f"{db_field} = EXCLUDED.{db_field}")
                     
                     # Store additional analysis data as JSON
