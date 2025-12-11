@@ -1199,31 +1199,35 @@ class FederalCourtScraperCLI:
             except Exception as e:
                 logger.error(f"Failed to finish batch run tracking: {e}")
 
+        # Calculate actual processed count (includes both exponential probing and linear collection)
+        # processed only tracks linear collection, so we need to estimate total processing
+        # For simplicity, we'll use the maximum of processed and a reasonable estimate from probing
+        processed_estimate = processed
+        if processed_estimate == 0 and len(cases) > 0:
+            # If processed is 0 but we have cases, they were collected during probing
+            # Estimate based on probes and success rate
+            processed_estimate = max(probes, len(cases))
+        
         # Display post-run statistics
         post_run_stats = stats_service.calculate_run_statistics(
             year=year,
             start_time=run_start_time,
             end_time=run_end_time,
             upper_bound=upper,
-            processed_count=processed if 'processed' in locals() else 0,
+            processed_count=processed_estimate,
             probes_used=probes,
             cases_collected=len(cases),
             run_id=batch_run_id
         )
         stats_service.log_and_display_statistics(post_run_stats, f"本次运行统计信息 (Run Statistics) - {year}")
-        logger.info("=== 最终运行统计 ===")
-        logger.info(f"年份: {year}")
-        logger.info(f"运行ID: {batch_run_id}")
-        logger.info(f"开始时间: {run_start_time}")
-        logger.info(f"结束时间: {run_end_time}")
-        logger.info(f"上边界: {upper}")
-        logger.info(f"处理案例数: {processed if 'processed' in locals() else 0}")
-        logger.info(f"探测次数: {probes}")
-        logger.info(f"收集案例数: {len(cases)}")
-        logger.info(f"跳过案例总数: {skipped_counter}")
-        logger.info(f"内存中保留的跳过记录数: {len(skipped)} (显示最近 {max_skipped_log} 条)")
+        
+        # Display final summary (concise)
+        logger.info("=== 最终运行摘要 ===")
+        logger.info(f"处理案例数: {processed_estimate} | 探测次数: {probes} | 收集案例数: {len(cases)}")
+        if skipped_counter > 0:
+            logger.info(f"跳过案例总数: {skipped_counter} (内存保留: {len(skipped)} 条)")
         if len(skipped) > 0:
-            logger.info(f"最近跳过的案例: {skipped[-10:]}")  # Show only last 10 for brevity
+            logger.debug(f"最近跳过的案例: {skipped[-10:]}")  # Show only last 10 for brevity
 
         # Optional: Generate batch summary export if cases were collected (database-only mode)
         case_count = len(cases)

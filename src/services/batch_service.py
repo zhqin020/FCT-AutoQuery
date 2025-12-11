@@ -99,12 +99,12 @@ class BatchService:
             if rounds > 100:
                 logger.warning(f"Reached max probe rounds {rounds}, breaking to prevent infinite loop")
                 break
-            logger.info(f"Starting exponential probe round {rounds} from {current_start} (probes={probes}, collected={collected_count})")
-
             # Reset for this round
             i = 0
             consecutive_no_data = 0
             last_success_this_round = None
+
+            logger.info(f"Starting exponential probe round {rounds} from {current_start} (probes={probes}, collected={collected_count})")
 
             # Exponential probing for this segment
             while i <= max_exponent and collected_count < max_cases:
@@ -117,6 +117,9 @@ class BatchService:
                     break
 
                 logger.debug(f"Probing i={i}, number={number}, consecutive_no_data={consecutive_no_data}")
+                
+                # Increment probes counter for each case checked
+                probes += 1
 
                 # Check if case exists and its status
                 should_scrape = True

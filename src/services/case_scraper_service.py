@@ -144,6 +144,9 @@ class CaseScraperService:
         This is best-effort: we try several common XPaths and click the
         first clickable match using a JS click to avoid overlay blocking.
         """
+        # First, try to dismiss maintenance notifications that might block UI
+        self._dismiss_maintenance_notifications(driver)
+        
         # Common button texts and simple heuristics (case-insensitive)
         xpaths = [
             "//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'accept')]",
@@ -171,6 +174,51 @@ class CaseScraperService:
                             el.click()
                             logger.info(f"Dismissed cookie/consent banner using xpath (native click): {xp}")
                             time.sleep(0.2)
+                            return
+                        except Exception:
+                            continue
+            except Exception:
+                continue
+
+    def _dismiss_maintenance_notifications(self, driver) -> None:
+        """Try to dismiss maintenance notifications that might block UI interactions."""
+        # Common maintenance notification selectors
+        maintenance_selectors = [
+            "//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'close')]",
+            "//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'fermer')]", 
+            "//button[contains(@class, 'close')]",
+            "//button[contains(@class, 'modal-close')]",
+            "//div[contains(@class, 'modal')]//button[contains(., 'Close')]",
+            "//div[contains(@class, 'notification')]//button[contains(., 'Close')]",
+            "//div[contains(@class, 'alert')]//button[contains(., 'Close')]",
+            "//div[contains(@class, 'maintenance')]//button",
+            "//span[@aria-hidden='true' and contains(text(), '×')]",
+        ]
+
+        for selector in maintenance_selectors:
+            try:
+                elements = driver.find_elements(By.XPATH, selector)
+                for element in elements:
+                    try:
+                        # Check if element is visible and clickable
+                        if element.is_displayed() and element.is_enabled():
+                            element_id = element.get_attribute('id') or '<anonymous>'
+                            element_class = element.get_attribute('class') or '<no class>'
+                            element_text = element.text.strip() or '<no text>'
+                            
+                            logger.info(f"[UI_ACTION] Found potential maintenance close button (id: {element_id}, class: {element_class}, text: '{element_text}')")
+                            
+                            # Try JavaScript click first (more reliable for overlays)
+                            driver.execute_script("arguments[0].click();", element)
+                            logger.info(f"[UI_ACTION] Successfully dismissed maintenance notification using JS click")
+                            time.sleep(0.5)
+                            return
+                    except Exception as e:
+                        try:
+                            # Fallback to native click
+                            element.click()
+                            logger.info(f"[UI_ACTION] Successfully dismissed maintenance notification using native click")
+                            time.sleep(0.5)
                             return
                         except Exception:
                             continue
@@ -299,6 +347,12 @@ class CaseScraperService:
             except Exception:
                 # Non-fatal if dismissal fails
                 logger.debug("Cookie dismissal attempt failed or not needed")
+
+            # Additional attempt to dismiss any maintenance notifications
+            try:
+                self._dismiss_maintenance_notifications(driver)
+            except Exception:
+                logger.debug("Maintenance notification dismissal attempt failed or not needed")
 
             # Click "Search by court number" tab
             logger.info("[UI_ACTION] Clicking 'Search by court number' tab")
@@ -1639,7 +1693,45 @@ class CaseScraperService:
 
             # Extract docket entries (pass case_number so entries get case_id)
             logger.debug("Extracting docket entries from modal")
-            docket_entries = self._extract_docket_entries(modal, case_number)
+            
+            # Wait a bit longer for modal content to fully load
+            time.sleep(2)
+            
+            # Try to find the main modal with better selector
+            main_modal = None
+            try:
+                # Look for the main modal dialog
+                main_modal = driver.find_element(By.ID, "ModalForm")
+                logger.debug("Found main ModalForm dialog")
+            except Exception:
+                try:
+                    # Fallback to any visible modal
+                    main_modal = driver.find_element(By.XPATH, "//div[contains(@class, 'modal') and contains(@class, 'show')]")
+                    logger.debug("Found visible modal dialog")
+                except Exception:
+                    logger.debug("Using original modal element")
+                    main_modal = modal
+            
+            # Log modal content for debugging
+            try:
+                modal_text = main_modal.text
+                logger.debug(f"Modal text preview (first 500 chars): {modal_text[:500]}")
+                
+                # Count tables in modal
+                tables = main_modal.find_elements(By.TAG_NAME, "table")
+                logger.debug(f"Found {len(tables)} table(s) in modal")
+                
+                for i, table in enumerate(tables):
+                    rows = table.find_elements(By.TAG_NAME, "tr")
+                    logger.debug(f"Table {i}: {len(rows)} rows")
+                    if rows:
+                        first_row_text = rows[0].text
+                        logger.debug(f"Table {i} first row: {first_row_text}")
+                        
+            except Exception as e:
+                logger.warning(f"Failed to analyze modal content: {e}")
+            
+            docket_entries = self._extract_docket_entries(main_modal, case_number)
             logger.debug(f"Extracted {len(docket_entries)} docket entries")
 
             # Normalize and create Case object
@@ -1699,6 +1791,7 @@ class CaseScraperService:
                 pass
             # Remove any unexpected keys before passing to Case
             allowed = {
+                "case_id",
                 "case_type",
                 "action_type",
                 "nature_of_proceeding",
@@ -1906,39 +1999,63 @@ class CaseScraperService:
         except Exception:
             pass
 
-        # Strategy 4: find <strong>Label :</strong> inside paragraphs and take parent paragraph's text after removing strong texts
+        # Strategy 4: Extract from modal body paragraphs with <strong> tags (actual structure)
         try:
-            strongs = modal_element.find_elements(By.XPATH, ".//p//strong")
-            # prefer longer label keys first to avoid short-key collisions (e.g., 'type' vs 'type of action')
-            sorted_labels = sorted(label_variants.items(), key=lambda kv: -len(kv[0]))
-            for s in strongs:
+            modal_body = modal_element.find_element(By.CLASS_NAME, "modal-body")
+            
+            # Extract case_id from modal title first
+            try:
+                title_element = modal_element.find_element(By.ID, "modalTitle")
+                title_text = title_element.text.strip()
+                # Look for case number pattern in title (e.g., "IMM-2000-25")
+                import re
+                case_match = re.search(r'([A-Z]+-\d+-\d+)', title_text)
+                if case_match:
+                    data["case_id"] = case_match.group(1)
+            except Exception:
+                pass
+            
+            # Find all <strong> elements in the modal body
+            strong_elements = modal_body.find_elements(By.TAG_NAME, "strong")
+            
+            for strong in strong_elements:
                 try:
-                    label = s.text.strip().strip(":").lower()
-                    parent = s.find_element(By.XPATH, "ancestor::p[1]")
-                    full = parent.text.strip()
-                    # remove all strong texts inside this parent to leave the value(s)
-                    strong_texts = [
-                        st.text
-                        for st in parent.find_elements(By.XPATH, ".//strong")
-                        if st.text
-                    ]
-                    sval = full
-                    for st in strong_texts:
-                        sval = sval.replace(st, "")
-                    sval = sval.strip(" :\u00a0")
-
-                    # match label to our canonical keys (longest-first)
-                    for key, fld in sorted_labels:
-                        if key == label or key in label:
-                            if fld == "filing_date":
-                                data[fld] = _parse_date_str(sval)
-                            else:
-                                data[fld] = sval or None
-                            break
-                except Exception:
+                    label_text = strong.text.strip().rstrip(":")
+                    
+                    # Get the parent element's text content
+                    parent = strong.find_element(By.XPATH, "./..")
+                    parent_text = parent.text.strip()
+                    
+                    # Extract the value after the strong label
+                    value_text = ""
+                    if strong.text in parent_text:
+                        # Split on the strong text and take what comes after
+                        parts = parent_text.split(strong.text, 1)
+                        if len(parts) > 1:
+                            value_text = parts[1].strip(" :\u00a0")  # Also strip non-breaking spaces
+                    
+                    # Map labels to field names
+                    if value_text:
+                        label_lower = label_text.lower()
+                        if "type of action" in label_lower:
+                            data["action_type"] = value_text
+                        elif "type" in label_lower and "action" not in label_lower:
+                            data["case_type"] = value_text
+                        elif "nature of proceeding" in label_lower:
+                            data["nature_of_proceeding"] = value_text
+                        elif "filing date" in label_lower:
+                            data["filing_date"] = _parse_date_str(value_text)
+                        elif "office" in label_lower and "language" not in label_lower:
+                            data["office"] = value_text
+                        elif "language" in label_lower:
+                            data["language"] = value_text
+                        
+                except Exception as e:
+                    logger.debug(f"Failed to extract from strong element: {e}")
                     continue
-        except Exception:
-            pass
+                    
+        except Exception as e:
+            logger.debug(f"Failed to extract case header from modal body: {e}")
 
         # Strategy 5: some modals render case id, style of cause, and nature on the same paragraph/line
         try:
@@ -2253,6 +2370,17 @@ class CaseScraperService:
         try:
             # Choose the correct table for docket entries: prefer tables with headers matching 'ID' and 'Recorded Entry Summary' or 'Date Filed'
             tables = modal_element.find_elements(By.XPATH, ".//table")
+            logger.debug(f"Found {len(tables)} tables in modal for docket extraction")
+            
+            # Log detailed information about each table
+            for i, tbl in enumerate(tables):
+                try:
+                    tbl_text = tbl.text[:200] if tbl.text else "No text"
+                    tbl_class = tbl.get_attribute('class') or "No class"
+                    logger.debug(f"Table {i}: class='{tbl_class}', text='{tbl_text}'")
+                except Exception as e:
+                    logger.debug(f"Failed to analyze table {i}: {e}")
+            
             table = None
             # Score candidate tables and pick the best match. Heuristics:
             #  - Prefer tables with multiple data rows
@@ -2285,8 +2413,25 @@ class CaseScraperService:
                             if first_td and len(first_td) >= 2:
                                 v0 = (first_td[0].text or "").strip()
                                 v1 = (first_td[1].text or "").strip()
-                                if v0 == "#" or v1.upper() == "YYYY-MM-DD":
-                                    score -= 100
+                                if v0 == "#" or v1.upper() == "YYYY-MM-DD" or v0 == "City":
+                                    score -= 200  # Heavily penalize template table
+                        except Exception:
+                            pass
+                    
+                    # Prefer tables that have actual numeric IDs (not placeholders)
+                    if nrows > 1:
+                        try:
+                            # Check if first column has numeric values
+                            has_numeric_ids = False
+                            for row in data_rows[:3]:  # Check first few rows
+                                tds = row.find_elements(By.TAG_NAME, "td")
+                                if tds:
+                                    first_val = (tds[0].text or "").strip()
+                                    if first_val.isdigit():
+                                        has_numeric_ids = True
+                                        break
+                            if has_numeric_ids:
+                                score += 50
                         except Exception:
                             pass
 
@@ -2299,6 +2444,15 @@ class CaseScraperService:
                         ]
                         if any("information about the court file" in c for c in caps):
                             score += 50
+                    except Exception:
+                        pass
+                    
+                    # Check for table classes that indicate the main data table
+                    try:
+                        table_class = t.get_attribute('class') or ''
+                        if 'table-striped' in table_class and 'table-bordered' in table_class:
+                            score += 30
+                        logger.debug(f"Table {i} class: {table_class}")
                     except Exception:
                         pass
 
@@ -2320,17 +2474,35 @@ class CaseScraperService:
                             if h.text and h.text.strip()
                         ]
                         joined = " | ".join(ths)
-                        if any(
+                        logger.debug(f"Table {i} headers: {ths}")
+                        
+                        # High priority for exact match with "recorded entry summary"
+                        if "recorded entry summary" in joined:
+                            score += 100
+                        elif any(
                             k in joined
                             for k in ["recorded entry", "recorded entry summary"]
                         ):
                             score += 40
-                        if "id" in joined and (
-                            "date filed" in joined or "date" in joined
-                        ):
+                            
+                        # Check for key column combinations
+                        id_date = "id" in joined and ("date filed" in joined or "date" in joined)
+                        id_summary = "id" in joined and ("recorded entry" in joined or "summary" in joined)
+                        
+                        if id_date and id_summary:
+                            score += 50  # Perfect match
+                        elif id_date:
                             score += 30
+                        elif id_summary:
+                            score += 25
+                            
                         if "recorded" in joined and "summary" in joined:
                             score += 30
+                            
+                        # Check for office column
+                        if "office" in joined:
+                            score += 10
+                            
                     except Exception:
                         joined = ""
 
@@ -2338,20 +2510,45 @@ class CaseScraperService:
                     if nrows == 1 and score >= 10:
                         score += 5
 
-                    candidates.append((score, t, nrows))
+                    candidates.append((score, t, nrows, i))  # Add index for tie-breaking
                 except Exception:
                     continue
 
             # Choose best scored candidate (highest score); if none, fallback to first table
             if candidates:
-                # Prefer highest score, but if all scores are non-positive
-                # choose the candidate with the most data rows (more likely real data)
-                candidates.sort(key=lambda it: it[0], reverse=True)
-                best_score, best_table, best_nrows = candidates[0]
-                if best_score <= 0:
-                    # choose the candidate that has the most rows as a better fallback
+                # Sort by score first, then by number of rows (prefer more data), then by table index (prefer later tables)
+                candidates.sort(key=lambda it: (it[0], it[1], it[2]), reverse=True)
+                best_score, best_table, best_nrows, table_idx = candidates[0]
+                
+                # If best score is too low (likely all are templates), prefer the table with most rows
+                if best_score < 20:
                     try:
-                        _, table, _ = max(candidates, key=lambda it: it[2])
+                        # Find table with most actual data rows (excluding template rows)
+                        best_table_for_data = None
+                        max_real_rows = 0
+                        for score, table, nrows, idx in candidates:
+                            if nrows > max_real_rows:
+                                # Check if this table has real data (not just placeholder)
+                                has_real_data = False
+                                try:
+                                    first_row = table.find_element(By.XPATH, ".//tbody//tr[1]")
+                                    first_tds = first_row.find_elements(By.TAG_NAME, "td")
+                                    if first_tds:
+                                        first_val = (first_tds[0].text or "").strip()
+                                        if first_val and first_val != "#" and first_val != "City" and first_val.isdigit():
+                                            has_real_data = True
+                                except Exception:
+                                    pass
+                                    
+                                if has_real_data or nrows > max_real_rows:
+                                    best_table_for_data = table
+                                    max_real_rows = nrows
+                        
+                        if best_table_for_data:
+                            table = best_table_for_data
+                            logger.debug(f"Selected table with most real data rows: {max_real_rows}")
+                        else:
+                            table = best_table
                     except Exception:
                         try:
                             table = modal_element.find_element(By.XPATH, ".//table")
@@ -2365,7 +2562,42 @@ class CaseScraperService:
                 except Exception:
                     table = None
             if table is None:
-                return entries
+                logger.warning("No suitable table found for docket entries extraction")
+                # As a fallback, try to find any table with content
+                if tables:
+                    logger.debug("Attempting to use first available table as fallback")
+                    
+                    # Try to find a table with multiple rows and reasonable content
+                    for fallback_idx, fallback_table in enumerate(tables):
+                        try:
+                            fallback_rows = fallback_table.find_elements(By.TAG_NAME, "tr")
+                            logger.debug(f"Fallback table {fallback_idx} has {len(fallback_rows)} rows")
+                            
+                            # Check if this table has more than just a header row
+                            if len(fallback_rows) > 1:
+                                # Check if it has actual data (not just placeholders)
+                                has_data = False
+                                for row_idx, row in enumerate(fallback_rows[1:], 1):
+                                    cells = row.find_elements(By.TAG_NAME, "td")
+                                    cell_texts = [c.text.strip() for c in cells]
+                                    if any(cell_texts and ct != "#" and ct != "YYYY-MM-DD" for ct in cell_texts):
+                                        has_data = True
+                                        break
+                                        
+                                if has_data:
+                                    logger.debug(f"Using fallback table {fallback_idx} with actual data")
+                                    table = fallback_table
+                                    break
+                        except Exception as e:
+                            logger.warning(f"Failed to analyze fallback table {fallback_idx}: {e}")
+                            continue
+                    
+                    # If still no table found, use the first one
+                    if table is None:
+                        table = tables[0]
+                        logger.debug("Using first table as last resort")
+                else:
+                    return entries
             # Determine header mapping if present
             headers = []
             try:
@@ -2387,8 +2619,9 @@ class CaseScraperService:
             def norm(s: str) -> str:
                 return (s or "").strip().lower()
 
-            # candidate tokens for columns
+            # candidate tokens for columns (updated based on HTML analysis)
             date_keys = [
+                "date filed",
                 "date",
                 "recorded",
                 "recorded date",
@@ -2397,6 +2630,7 @@ class CaseScraperService:
             ]
             office_keys = ["office", "registry", "court office", "location", "centre"]
             summary_keys = [
+                "recorded entry summary",
                 "document",
                 "description",
                 "summary",
@@ -2420,18 +2654,41 @@ class CaseScraperService:
             summary_idx_header = find_index_by_keys(summary_keys)
 
             rows = table.find_elements(By.TAG_NAME, "tr")
+            logger.debug(f"Found {len(rows)} rows in selected table")
+            
             # If header row present, skip it when it contains th elements
-            start_idx = 1 if rows and rows[0].find_elements(By.TAG_NAME, "th") else 0
+            has_th = rows and rows[0].find_elements(By.TAG_NAME, "th")
+            start_idx = 1 if has_th else 0
+            logger.debug(f"Has header row: {has_th}, starting from index: {start_idx}")
 
             # Track parsing errors and abort on repeated failures to avoid saving partial/incorrect data
             parse_error_count = 0
             max_parse_errors = Config.get_docket_parse_max_errors()
+            
+            # Log header information if present
+            if has_th:
+                try:
+                    header_cells = rows[0].find_elements(By.TAG_NAME, "th")
+                    header_texts = [h.text.strip() for h in header_cells]
+                    logger.debug(f"Table headers: {header_texts}")
+                except Exception as e:
+                    logger.warning(f"Failed to extract header texts: {e}")
 
             for r_idx, row in enumerate(rows[start_idx:], 1):
                 try:
                     cells = row.find_elements(By.TAG_NAME, "td")
                     cell_texts = [c.text.strip() for c in cells]
+                    logger.debug(f"Processing row {r_idx}: {len(cells)} cells, texts: {cell_texts}")
+                    
+                    # Skip rows with no content or placeholder content
                     if not any(cell_texts):
+                        logger.debug(f"Skipping row {r_idx}: no content")
+                        continue
+                        
+                    # Skip placeholder rows like the template row
+                    if (len(cell_texts) >= 2 and 
+                        (cell_texts[0] == "#" and cell_texts[1].upper() == "YYYY-MM-DD")):
+                        logger.debug(f"Skipping row {r_idx}: placeholder/template row")
                         continue
 
                     entry_date = None
@@ -2491,14 +2748,21 @@ class CaseScraperService:
                                         )[1][1]
                                 office = cand_off
 
-                    entry = DocketEntry(
-                        case_id=case_id or "",
-                        doc_id=r_idx,
-                        entry_date=entry_date,
-                        entry_office=office,
-                        summary=summary,
-                    )
-                    entries.append(entry)
+                    logger.debug(f"Creating docket entry: date={entry_date}, office={office}, summary={summary}")
+                    
+                    # Only create entry if we have at least some meaningful data
+                    if summary or entry_date:
+                        entry = DocketEntry(
+                            case_id=case_id or "",
+                            doc_id=r_idx,
+                            entry_date=entry_date,
+                            entry_office=office,
+                            summary=summary,
+                        )
+                        entries.append(entry)
+                        logger.debug(f"Successfully created docket entry {r_idx}")
+                    else:
+                        logger.debug(f"Skipping entry {r_idx}: no meaningful data (summary or date required)")
                 except Exception as e:
                     # If element became stale, abort so higher-level logic can re-run the search and retry
                     if isinstance(e, StaleElementReferenceException):
@@ -2521,32 +2785,70 @@ class CaseScraperService:
         logger.info("[UI_ACTION] Starting to close modal dialog")
 
         try:
-            # Try different close methods
+            # First try to find the main modal dialog
+            main_modal = None
+            try:
+                main_modal = driver.find_element(By.ID, "ModalForm")
+                logger.debug("[UI_ACTION] Found main ModalForm dialog")
+            except Exception:
+                try:
+                    main_modal = driver.find_element(By.XPATH, "//div[contains(@class, 'modal') and contains(@class, 'show')]")
+                    logger.debug("[UI_ACTION] Found visible modal dialog")
+                except Exception:
+                    logger.debug("[UI_ACTION] Could not find specific modal, will search for close buttons globally")
+
+            # Try different close methods with better selectors
             close_selectors = [
-                (By.CLASS_NAME, "close"),
+                # Try modal-specific close buttons first
+                (By.XPATH, "//div[contains(@class, 'modal')]//button[contains(@class, 'close')]"),
+                (By.XPATH, "//div[contains(@class, 'modal')]//button[@data-dismiss='modal']"),
+                (By.XPATH, "//div[@id='ModalForm']//button[contains(@class, 'close')]"),
+                (By.XPATH, "//div[@id='ModalForm']//button[@data-dismiss='modal']"),
+                # Try text-based selectors
                 (By.XPATH, "//button[contains(text(), 'Close')]"),
                 (By.XPATH, "//button[contains(text(), 'Fermer')]"),
+                # Try the × symbol
                 (By.XPATH, "//span[@aria-hidden='true' and contains(text(), '×')]"),
+                (By.XPATH, "//button[contains(@class, 'close')]"),
+                # Fallback generic selectors
+                (By.CLASS_NAME, "close"),
             ]
 
             for by, selector in close_selectors:
                 try:
                     logger.info(f"[UI_ACTION] Looking for close button using selector: {selector}")
-                    close_button = WebDriverWait(driver, 5).until(
+                    close_button = WebDriverWait(driver, 3).until(
                         EC.element_to_be_clickable((by, selector))
                     )
                     close_button_id = close_button.get_attribute('id') or '<anonymous>'
                     close_button_class = close_button.get_attribute('class') or '<no class>'
                     close_button_text = close_button.text.strip() or close_button.get_attribute('title') or '<no text>'
-                    logger.info(f"[UI_ACTION] Clicking close button (id: {close_button_id}, class: {close_button_class}, text: '{close_button_text}', selector: {selector})")
-                    close_button.click()
-                    logger.info(f"[UI_ACTION] Successfully closed modal using close button (id: {close_button_id})")
-                    return
+                    
+                    # Try JavaScript click first (more reliable for modal buttons)
+                    try:
+                        driver.execute_script("arguments[0].click();", close_button)
+                        logger.info(f"[UI_ACTION] Successfully closed modal using JS click (id: {close_button_id}, class: {close_button_class}, text: '{close_button_text}')")
+                        return
+                    except Exception:
+                        # Fallback to native click
+                        close_button.click()
+                        logger.info(f"[UI_ACTION] Successfully closed modal using native click (id: {close_button_id}, class: {close_button_class}, text: '{close_button_text}')")
+                        return
                 except Exception as e:
                     logger.debug(f"[UI_ACTION] Failed to close modal with selector {selector}: {e}")
                     continue
 
-            # Fallback: refresh page
+            # Fallback: try pressing ESC key
+            try:
+                from selenium.webdriver.common.keys import Keys
+                driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+                logger.info("[UI_ACTION] Tried to close modal with ESC key")
+                time.sleep(1)
+                return
+            except Exception as e:
+                logger.debug(f"[UI_ACTION] ESC key failed: {e}")
+
+            # Final fallback: refresh page
             logger.warning("[UI_ACTION] Could not find any close button, refreshing page to close modal")
             driver.refresh()
 
