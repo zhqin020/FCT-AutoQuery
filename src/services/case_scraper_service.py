@@ -50,33 +50,48 @@ def _parse_date_str(s: str):
         "%B %d, %Y",
         "%d %B %Y",
         "%Y/%m/%d",
+        "%d-%b-%Y",
     ]
     for fmt in fmts:
         try:
+            from datetime import datetime
+
             return datetime.strptime(s, fmt).date()
         except Exception:
             continue
+
+    # Last resort: try dateutil if available
+    try:
+        from dateutil.parser import parse as _dateutil_parse  # type: ignore
+
+        return _dateutil_parse(s).date()
+    except Exception:
+        pass
 
     return None
 
 
 class CaseScraperService:
-    """Service for scraping Federal Court cases using search form."""
-
     BASE_URL = "https://www.fct-cf.ca/en/court-files-and-decisions/court-files"
-
     def __init__(self, headless: bool = True):
-        """Initialize the case scraper service.
-
-        Args:
-            headless: Whether to run browser in headless mode
-        """
+        # runtime options
         self.headless = headless
+        # Rate/backoff config
+        self._backoff_factor = Config.get_backoff_factor()
+        self._max_backoff_seconds = Config.get_max_backoff_seconds()
+        self._rate_limit_seconds = Config.get_rate_limit_seconds()
+
+        # Rate limiter instance used for backoff between UI interactions
         self.rate_limiter = EthicalRateLimiter(
             interval_seconds=Config.get_rate_limit_seconds(),
             backoff_factor=Config.get_backoff_factor(),
             max_backoff_seconds=Config.get_max_backoff_seconds(),
-        )  # Configurable random delay
+        )
+
+        # Discovered/used input id for case search
+        self._case_input_id = None
+
+        # driver state
         self._driver: Optional[webdriver.Chrome] = None
         self._initialized = False
         # Restart tracking
@@ -1711,6 +1726,56 @@ class CaseScraperService:
                 except Exception:
                     logger.debug("Using original modal element")
                     main_modal = modal
+
+            # Prefer the actual case modal content. Sometimes a maintenance/info modal
+            # appears first; if so, dismiss it and wait for the case modal to appear.
+            try:
+                attempts = 0
+                while attempts < 3:
+                    attempts += 1
+                    try:
+                        txt = (main_modal.text or "").lower()
+                    except Exception:
+                        txt = ""
+
+                    # maintenance modal heuristics
+                    if any(k in txt for k in ("planned 5-day interruption", "due to maintenance", "important: planned")):
+                        logger.debug("Detected maintenance modal; attempting to close it and wait for case modal")
+                        try:
+                            # try close button within the modal
+                            try:
+                                btn = main_modal.find_element(By.XPATH, ".//button[contains(@class,'close') or contains(., 'Close')]")
+                                driver.execute_script("arguments[0].click();", btn)
+                                time.sleep(0.5)
+                            except Exception:
+                                # global attempt to close any modal
+                                driver.execute_script("document.querySelectorAll('.modal .close').forEach(function(b){b.click()})")
+                                time.sleep(0.5)
+                        except Exception:
+                            logger.debug("Failed to close maintenance modal via JS/native click")
+
+                        # Wait for a modal that looks like a case modal
+                        try:
+                            candidate = WebDriverWait(driver, 6).until(
+                                EC.presence_of_element_located((By.XPATH, "//div[contains(., 'Recorded Entry Information') or contains(., 'Information about the court file') or contains(., 'Office :')]") )
+                            )
+                            main_modal = candidate
+                            logger.debug("Found candidate case modal after dismissing maintenance")
+                            break
+                        except Exception:
+                            # try to re-acquire any visible modal
+                            try:
+                                main_modal = driver.find_element(By.XPATH, "//div[contains(@class, 'modal') and contains(@class, 'show')]")
+                            except Exception:
+                                main_modal = modal
+                            # continue loop
+                            continue
+                    else:
+                        # looks like not a maintenance modal, proceed
+                        break
+            except Exception:
+                # non-fatal; proceed with whatever modal we have
+                pass
             
             # Log modal content for debugging
             try:
@@ -1730,6 +1795,18 @@ class CaseScraperService:
                         
             except Exception as e:
                 logger.warning(f"Failed to analyze modal content: {e}")
+
+            # If critical header fields are missing, run the robust modal-text fallback
+            try:
+                if (not case_data.get("filing_date") or not case_data.get("office") or not case_data.get("language")):
+                    logger.debug("Invoking modal-text fallback extraction for missing headers")
+                    try:
+                        self._fallback_extract_headers_from_modal_text(main_modal, case_data)
+                        logger.debug(f"Header after modal-text fallback: {case_data}")
+                    except Exception as e:
+                        logger.debug(f"modal-text fallback failed: {e}")
+            except Exception:
+                pass
             
             docket_entries = self._extract_docket_entries(main_modal, case_number)
             logger.debug(f"Extracted {len(docket_entries)} docket entries")
@@ -2025,16 +2102,34 @@ class CaseScraperService:
                     # Get the parent element's text content
                     parent = strong.find_element(By.XPATH, "./..")
                     parent_text = parent.text.strip()
-                    
-                    # Extract the value after the strong label
+
+                    # Extract the value after the strong label robustly:
+                    # clean the strong label and split using a regex that tolerates
+                    # optional colon, spaces and non-breaking spaces.
                     value_text = ""
-                    if strong.text in parent_text:
-                        # Split on the strong text and take what comes after
-                        parts = parent_text.split(strong.text, 1)
-                        if len(parts) > 1:
-                            value_text = parts[1].strip(" :\u00a0")  # Also strip non-breaking spaces
+                    clean_label = label_text
+                    try:
+                        import re
+
+                        # pattern to find the label (case-sensitive content from the strong)
+                        # allow optional spaces, colon, non-breaking space between label and value
+                        pat = re.compile(re.escape(clean_label) + r"\s*[:\u00a0]?\s*(.*)", re.DOTALL)
+                        m = pat.search(parent_text)
+                        if m:
+                            value_text = m.group(1).strip()
+                        else:
+                            # fallback to splitting on the raw strong text if present
+                            raw = strong.text or ""
+                            if raw and raw in parent_text:
+                                parts = parent_text.split(raw, 1)
+                                if len(parts) > 1:
+                                    value_text = parts[1].strip(" :\u00a0")
+                    except Exception:
+                        # keep value_text as empty on failure
+                        value_text = ""
                     
                     # Map labels to field names
+                    logger.debug(f"Processing strong element: label='{label_text}', value='{value_text}', has_value={bool(value_text)}")
                     if value_text:
                         label_lower = label_text.lower()
                         if "type of action" in label_lower:
@@ -2044,7 +2139,9 @@ class CaseScraperService:
                         elif "nature of proceeding" in label_lower:
                             data["nature_of_proceeding"] = value_text
                         elif "filing date" in label_lower:
+                            logger.debug(f"Found filing date label: '{label_text}', value: '{value_text}'")
                             data["filing_date"] = _parse_date_str(value_text)
+                            logger.debug(f"Parsed filing date: {data['filing_date']}")
                         elif "office" in label_lower and "language" not in label_lower:
                             data["office"] = value_text
                         elif "language" in label_lower:
@@ -2053,6 +2150,42 @@ class CaseScraperService:
                 except Exception as e:
                     logger.debug(f"Failed to extract from strong element: {e}")
                     continue
+                # Fallback parsing: if critical header fields are still missing, scan
+                # the modal body text for common label patterns. This handles cases
+                # where the <strong> tags are empty or labels/values are in sibling
+                # nodes (observed with maintenance overlays and some modal layouts).
+                try:
+                    import re
+
+                    modal_text = modal_body.text if modal_body is not None else ""
+
+                    # Filing date variants: accept 'Filing Date', 'Date Filed', 'Filed on', etc.
+                    if not data.get("filing_date") and modal_text:
+                        m = re.search(r"(?:Filing Date|Date Filed|Filed on|Filed)\s*[:\u00a0]?\s*([0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{2}-[A-Za-z]{3}-[0-9]{4}|[0-9]{1,2}/[0-9]{1,2}/[0-9]{4})", modal_text, re.IGNORECASE)
+                        if m:
+                            try:
+                                data["filing_date"] = _parse_date_str(m.group(1))
+                                logger.debug(f"Fallback parsed filing_date: {data['filing_date']} from '{m.group(1)}'")
+                            except Exception:
+                                pass
+
+                    # Office: look for an 'Office' label in the top part of the modal
+                    if not data.get("office") and modal_text:
+                        # only inspect the first 40 lines to avoid matching table rows
+                        for line in modal_text.splitlines()[:40]:
+                            m = re.search(r"Office\s*[:\u00a0]?\s*(.+)", line, re.IGNORECASE)
+                            if m:
+                                val = m.group(1).strip()
+                                # If language appears on the same line, remove it
+                                val = re.split(r"\bLanguage\b", val, flags=re.IGNORECASE)[0].strip()
+                                # Trim trailing punctuation
+                                val = val.rstrip(' :\u00a0')
+                                if val:
+                                    data["office"] = val
+                                    logger.debug(f"Fallback parsed office: '{data['office']}' from line: '{line}'")
+                                    break
+                except Exception as e:
+                    logger.debug(f"Fallback header parsing failed: {e}")
                     
         except Exception as e:
             logger.debug(f"Failed to extract case header from modal body: {e}")
@@ -2233,8 +2366,173 @@ class CaseScraperService:
             # non-fatal post-process failure
             pass
 
+        # Final fallback: attempt robust modal-text scan for missing headers
+        try:
+            # ensure modal_element is available in this scope
+            if 'modal_element' in locals() and modal_element is not None:
+                self._fallback_extract_headers_from_modal_text(modal_element, data)
+        except Exception:
+            # non-fatal
+            pass
+
         return data
 
+    def _fallback_extract_headers_from_modal_text(self, modal_element, data: dict) -> None:
+        """Robust fallback: scan modal text lines to extract header label:value pairs.
+
+        This runs after the primary <strong>-based extraction and other heuristics.
+        It updates `data` in-place for keys such as `filing_date`, `office`, and
+        `language` when they're missing.
+        """
+        try:
+            import re
+
+            all_text = (modal_element.text or "").strip()
+            if not all_text:
+                logger.debug("_fallback_extract_headers_from_modal_text: modal text empty")
+                return
+
+            # Log a short preview for diagnostics
+            try:
+                logger.debug("_fallback_extract_headers_from_modal_text preview: %s", all_text[:800])
+            except Exception:
+                logger.debug("_fallback_extract_headers_from_modal_text preview: <unable to render>")
+
+            # Look only at the top portion (avoid table rows)
+            lines = [l.strip() for l in all_text.splitlines() if l.strip()]
+            head_lines = lines[:80]
+
+            # Patterns
+            date_pat = re.compile(
+                r"(?:(?:Filing Date|Date Filed|Filed on|Filed)\s*[:\u00a0\-–—]?\s*)(?P<d>\d{4}-\d{2}-\d{2}|\d{1,2}[-/][A-Za-z]{3}[-/]\d{4}|\d{1,2}[-/]\d{1,2}[-/]\d{4}|[A-Za-z]+\s+\d{1,2},\s*\d{4})",
+                flags=re.IGNORECASE,
+            )
+
+            office_pat = re.compile(
+                r"(?:Office|Registry|Registry Office)\s*[:\u00a0\-–—]?\s*(?P<v>[^\|\n]{1,80})",
+                flags=re.IGNORECASE,
+            )
+
+            # Also capture lines where Office and Language are on same line
+            office_lang_pat = re.compile(r"Office\s*[:\u00a0\-–—]?\s*(?P<o>[^\n]+?)\s{2,}\s*Language\s*[:\u00a0\-–—]?\s*(?P<lang>\w+)", flags=re.IGNORECASE)
+
+            # Single-line generic label:value pattern (label then value)
+            generic_label = re.compile(r"(?P<label>[A-Za-z ]{3,30})\s*[:\u00a0\-–—]?\s*(?P<val>.+)$")
+
+            # Iterate lines and attempt to extract
+            logger.debug("_fallback_extract_headers_from_modal_text head_lines (first 10): %s", head_lines[:10])
+            for line in head_lines:
+                if not data.get("filing_date"):
+                    m = date_pat.search(line)
+                    if m:
+                        try:
+                            parsed = _parse_date_str(m.group("d"))
+                            if parsed:
+                                data["filing_date"] = parsed
+                                logger.debug(f"Fallback (text) found filing_date: {parsed} from '{m.group(0)}'")
+                        except Exception:
+                            pass
+
+                if not data.get("office") or not data.get("language"):
+                    m2 = office_lang_pat.search(line)
+                    if m2:
+                        o = m2.group("o").strip()
+                        lang = m2.group("lang").strip()
+                        # Validate the office token to avoid table headers and download text
+                        def _is_valid_office_token(s: str) -> bool:
+                            if not s:
+                                return False
+                            low = s.lower()
+                            if "download" in low or "recorded entry" in low or "id date filed" in low:
+                                return False
+                            if len(s) > 80:
+                                return False
+                            # avoid lines that contain many digits (table rows)
+                            import re as _re
+
+                            if _re.search(r"\d{2,}", s) and len(s.split()) < 5:
+                                return False
+                            return True
+
+                        if _is_valid_office_token(o):
+                            # assign explicitly (overwrite None or placeholder)
+                            data["office"] = re.sub(r"\s+", " ", o).strip()
+                        if lang:
+                            data["language"] = lang
+                        logger.debug(f"Fallback (text) found office='{data.get('office')}', language='{data.get('language')}' from line: '{line}'")
+                        # if we've found a valid office, prefer that and continue to next line
+                        if data.get("office"):
+                            continue
+
+                    m3 = office_pat.search(line)
+                    if m3:
+                        val = m3.group("v").strip()
+                        # Remove trailing tokens like 'Language' if appended
+                        val = re.split(r"\bLanguage\b", val, flags=re.IGNORECASE)[0].strip()
+                        val = re.sub(r"\s+", " ", val)
+                        # validate
+                        if val and not (re.search(r"download", val, re.IGNORECASE) or val.lower().startswith("recorded entry") or len(val) > 80):
+                            data["office"] = val
+                            logger.debug(f"Fallback (text) found office: '{data['office']}' from line: '{line}'")
+
+                # Attempt to extract 'Type of Action' and 'Type' (case type) from top lines
+                try:
+                    if not data.get("action_type"):
+                        m_action = re.search(r"(?:Type of Action|Type of action)\s*[:\u00a0\-–—]?\s*(?P<v>[^\n]+)", line, re.IGNORECASE)
+                        if m_action:
+                            v = m_action.group("v").strip()
+                            v = re.split(r"\bLanguage\b", v, flags=re.IGNORECASE)[0].strip()
+                            if v and len(v) < 120 and "download" not in v.lower():
+                                data["action_type"] = re.sub(r"\s+", " ", v)
+                                logger.debug(f"Fallback (text) found action_type: '{data['action_type']}' from line: '{line}'")
+
+                    if not data.get("case_type"):
+                        # avoid matching 'Type of Action' as 'Type'
+                        if "type of action" not in line.lower():
+                            m_type = re.search(r"(?:^|\b)Type\s*[:\u00a0\-–—]?\s*(?P<v>[^\n]+)", line, re.IGNORECASE)
+                            if m_type:
+                                v = m_type.group("v").strip()
+                                v = re.split(r"\bLanguage\b", v, flags=re.IGNORECASE)[0].strip()
+                                # reject table headers or download strings
+                                lowv = v.lower()
+                                if v and not ("download" in lowv or lowv.startswith("recorded entry") or len(v) > 120):
+                                    data["case_type"] = re.sub(r"\s+", " ", v)
+                                    logger.debug(f"Fallback (text) found case_type: '{data['case_type']}' from line: '{line}'")
+                except Exception:
+                    pass
+
+                # Generic label/value fallback for other header fields
+                try:
+                    g = generic_label.match(line)
+                    if g:
+                        lbl = g.group("label").strip().lower()
+                        val = g.group("val").strip()
+                        # Filing date
+                        if ("filing" in lbl or "date" in lbl) and not data.get("filing_date"):
+                            parsed = _parse_date_str(val)
+                            if parsed:
+                                data["filing_date"] = parsed
+                                logger.debug(f"Fallback (generic) parsed filing_date: {parsed} from '{val}'")
+                        # Office: require that the value doesn't look like a table header or 'Download' text
+                        elif re.search(r"\boffice\b", lbl) and not data.get("office"):
+                            v = re.split(r"\bLanguage\b", val, flags=re.IGNORECASE)[0].strip()
+                            low = v.lower()
+                            if not ("download" in low or low.startswith("recorded entry") or len(v) > 60):
+                                data.setdefault("office", re.sub(r"\s+", " ", v))
+                                logger.debug(f"Fallback (generic) parsed office: '{data['office']}' from '{val}'")
+                        # Language
+                        elif "language" in lbl and not data.get("language"):
+                            data.setdefault("language", val.split()[0])
+                except Exception:
+                    # ignore individual line failures
+                    pass
+
+            # Normalization: trim excessive whitespace
+            if data.get("office") and isinstance(data["office"], str):
+                data["office"] = re.sub(r"\s+", " ", data["office"]).strip()
+
+        except Exception as e:
+            logger.debug(f"_fallback_extract_headers_from_modal_text failed: {e}")
     def _parse_label_value_table(self, modal_element, label_variants):
         """Parse table rows where first cell is label and second cell is value."""
         parsed = {}
