@@ -5,6 +5,7 @@ Enhanced to support database and year-based directory structure as data sources.
 from __future__ import annotations
 
 import sys
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -23,30 +24,64 @@ from . import utils as _utils
 from . import nlp_engine as _nlp_engine
 
 
+def _extract_year_from_case_number(case_number: str) -> Optional[int]:
+    """Extract year from case number like IMM-1-21 (for 2021).
+    
+    Args:
+        case_number: Case number string (e.g., "IMM-12345-25")
+        
+    Returns:
+        Year as integer, or None if cannot extract
+    """
+    if not case_number or not isinstance(case_number, str):
+        return None
+        
+    # Pattern: IMM-XXX-YY where YY is last 2 digits of year
+    match = re.search(r'IMM-\d+-(\d{2})', case_number.upper())
+    if match:
+        year_suffix = match.group(1)
+        # Convert 2-digit year to 4-digit year (assuming 2000+ for 00-99)
+        return 2000 + int(year_suffix)
+    
+    return None
+
+
 def _compute_detailed_statistics(df: pd.DataFrame, year_filter: Optional[int] = None) -> dict:
     """Compute detailed statistics by case type and status."""
     from loguru import logger
     
     # Filter by year if specified
+    df_filtered = df.copy()
     if year_filter:
-        # Try to extract year from filing_date
-        df_filtered = df.copy()
+        # Priority: use case_number first (more reliable), fallback to filing_date
+        year_suffix = f"-{year_filter % 100:02d}"
+        filtered_by_case_number = False
         
-        if 'filing_date' in df.columns:
+        if 'case_number' in df.columns:
+            # Extract year from case number (e.g., IMM-123-22) - primary method
+            case_mask = df_filtered['case_number'].str.endswith(year_suffix, na=False)
+            df_filtered = df_filtered[case_mask]
+            filtered_by_case_number = True
+            logger.info(f"Primary filter: {len(df_filtered)} cases with case number ending in {year_suffix}")
+        
+        # Fallback: use filing_date if case_number filtering didn't work or no results
+        if (len(df_filtered) == 0 or not filtered_by_case_number) and 'filing_date' in df.columns:
             # Convert filing_date to datetime if it's not already
-            df_filtered['filing_date_parsed'] = pd.to_datetime(df_filtered['filing_date'], errors='coerce')
+            df_temp = df.copy()
+            df_temp['filing_date_parsed'] = pd.to_datetime(df_temp['filing_date'], errors='coerce')
             # Filter by year
-            df_filtered = df_filtered[df_filtered['filing_date_parsed'].dt.year == year_filter]
-            logger.info(f"Filtered to {len(df_filtered)} cases from year {year_filter}")
-        elif 'case_number' in df.columns:
-            # Try to extract year from case number (e.g., IMM-123-22)
-            year_suffix = f"-{year_filter % 100:02d}"
-            df_filtered = df_filtered[df_filtered['case_number'].str.endswith(year_suffix, na=False)]
-            logger.info(f"Filtered to {len(df_filtered)} cases with case number ending in {year_suffix}")
-        else:
-            logger.warning(f"Cannot filter by year {year_filter}: no filing_date or case_number column found")
+            filing_mask = df_temp['filing_date_parsed'].dt.year == year_filter
+            df_filtered = df_temp[filing_mask]
+            logger.info(f"Fallback filter: {len(df_filtered)} cases from filing_date year {year_filter}")
+        
+        if len(df_filtered) == 0:
+            logger.warning(f"No cases found for year {year_filter} using either case_number or filing_date")
+        
+        logger.info(f"Final filtered to {len(df_filtered)} cases for year {year_filter}")
+    
+    # If no year filter, use all data
     else:
-        df_filtered = df
+        logger.info(f"No year filter applied, using all {len(df_filtered)} cases")
     
     stats = {
         "overall": {
@@ -75,6 +110,51 @@ def _compute_detailed_statistics(df: pd.DataFrame, year_filter: Optional[int] = 
     if 'type' in df_filtered.columns and 'status' in df_filtered.columns:
         cross_tab = pd.crosstab(df_filtered['type'], df_filtered['status'])
         stats["overall"]["by_type_status"] = cross_tab.to_dict()
+    
+    # Year distribution analysis (shows reliability of year extraction methods)
+    if 'case_number' in df_filtered.columns:
+        year_distribution = {}
+        for case_num in df_filtered['case_number'].dropna():
+            extracted_year = _extract_year_from_case_number(str(case_num))
+            if extracted_year:
+                year_distribution[extracted_year] = year_distribution.get(extracted_year, 0) + 1
+        
+        if year_distribution:
+            stats["year_distribution"] = dict(sorted(year_distribution.items()))
+            logger.info(f"Year distribution from case numbers: {stats['year_distribution']}")
+    
+    # Filing date reliability check
+    if 'filing_date' in df.columns and 'case_number' in df.columns:
+        # Compare filing_date years vs case_number years
+        filing_years = []
+        case_number_years = []
+        
+        for _, row in df.iterrows():
+            # From case_number
+            cn_year = _extract_year_from_case_number(str(row.get('case_number', '')))
+            
+            # From filing_date
+            fd = row.get('filing_date')
+            fd_year = None
+            if pd.notna(fd) and fd:
+                try:
+                    fd_year = pd.to_datetime(fd).year
+                except:
+                    pass
+            
+            if cn_year and fd_year:
+                filing_years.append(fd_year)
+                case_number_years.append(cn_year)
+        
+        if filing_years and case_number_years:
+            match_count = sum(1 for f, c in zip(filing_years, case_number_years) if f == c)
+            reliability = match_count / len(filing_years) * 100 if filing_years else 0
+            stats["filing_date_reliability"] = {
+                "total_comparable": len(filing_years),
+                "matching_years": match_count,
+                "reliability_percent": round(reliability, 1)
+            }
+            logger.info(f"Filing date reliability: {reliability:.1f}% match with case_number years")
     
     # Duration statistics by type and status
     duration_cols = ['time_to_close', 'age_of_case', 'rule9_wait']
@@ -313,43 +393,48 @@ def analyze(
             return 1
 
     # Perform analysis
-        # Perform new analysis
         # Get data from configured source
-        if input_format == "file" and input_path:
-            # Traditional file-based input
-            df = _parser.parse_cases(input_path)
-        else:
-            # Database or directory-based input
-            try:
-                if input_format == "directory":
-                    # Use FileReader with year filter
-                    file_reader = _database.FileReader()
-                    cases = file_reader.read_directory(year)
-                else:
-                    cases = _database.get_data_source(input_format)
-                    
-                    # Filter by year if specified
-                    if year and input_format == "database":
-                        # Refetch with year filter
-                        db_reader = _database.DatabaseReader()
-                        cases = db_reader.fetch_cases(year=year)
-                    elif year:
-                        # Filter loaded cases by year
-                        cases = [
-                            case for case in cases 
-                            if case.get('filing_date') and str(year) in case['filing_date']
-                        ]
+    df = None  # Initialize to avoid UnboundLocalError
+    if input_format == "file" and input_path:
+        # Traditional file-based input
+        df = _parser.parse_cases(input_path)
+    else:
+        # Database or directory-based input
+        try:
+            if input_format == "directory":
+                # Use FileReader with year filter
+                file_reader = _database.FileReader()
+                cases = file_reader.read_directory(year)
+            else:
+                cases = _database.get_data_source(input_format)
                 
-                # Convert to DataFrame using parser logic
-                    df = _parser._parse_cases_list(cases)
-                    
-            except Exception as e:
-                logger.error(f"Failed to load data from {input_format}: {e}")
-                if input_path:
-                    logger.info(f"Falling back to file input: {input_path}")
-                    df = _parser.parse_cases(input_path)
-                else:
-                    raise
+                # Filter by year if specified
+                if year and input_format == "database":
+                    # Refetch with year filter
+                    db_reader = _database.DatabaseReader()
+                    cases = db_reader.fetch_cases(year=year)
+                elif year:
+                    # Filter loaded cases by year using case_number (more reliable)
+                    year_suffix = f"-{year % 100:02d}"
+                    cases = [
+                        case for case in cases 
+                        if case.get('case_number', '').endswith(year_suffix)
+                    ]
+            
+            # Convert to DataFrame using parser logic
+            df = _parser._parse_cases_list(cases)
+            
+        except Exception as e:
+            logger.error(f"Failed to load data from {input_format}: {e}")
+            if input_path:
+                logger.info(f"Falling back to file input: {input_path}")
+                df = _parser.parse_cases(input_path)
+            else:
+                raise
+    
+    # Ensure df is defined
+    if df is None:
+        raise ValueError("Failed to load any case data")
 
     # Setup resume checkpoint and audit logging
     checkpoint_path = output_dir / Config.get_analysis_checkpoint_file()

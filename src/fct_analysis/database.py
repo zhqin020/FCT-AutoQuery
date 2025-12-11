@@ -85,10 +85,12 @@ class DatabaseReader:
                     params = []
                     
                     if year:
-                        query += " AND EXTRACT(YEAR FROM filing_date) = %s"
-                        params.append(year)
+                        # Use case_number to filter by year (more reliable than filing_date)
+                        year_suffix = f"-{year % 100:02d}"
+                        query += " AND case_number LIKE %s"
+                        params.append(f"%{year_suffix}")
                     
-                    query += " ORDER BY filing_date DESC"
+                    query += " ORDER BY case_number DESC"
                     
                     if limit:
                         query += f" LIMIT {limit}"
