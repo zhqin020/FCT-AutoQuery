@@ -1657,9 +1657,9 @@ class CaseScraperService:
             if not clicked:
                 raise Exception("Failed to click 'More' control after retries")
 
-            # Add delay after clicking More to ensure modal is fully loaded
-            logger.info("[UI_ACTION] Waiting 3 seconds after clicking 'More' button for modal to fully load")
-            time.sleep(3)
+            # Add delay after clicking More to ensure modal is fully loaded (reduced from 3s)
+            logger.info("[UI_ACTION] Waiting 2 seconds after clicking 'More' button for modal to fully load")
+            time.sleep(2)
 
             # Wait for modal to appear. Accept several common modal patterns
             modal = None
@@ -1689,7 +1689,7 @@ class CaseScraperService:
             # (labels, caption, and tables) have time to render — the harness
             # pauses 5s; here a short sleep reduces missing header fields.
             try:
-                time.sleep(1)
+                time.sleep(0.5)  # Reduced from 1s to 0.5s
             except Exception:
                 pass
             logger.debug("Extracting case header from modal")
@@ -1709,8 +1709,8 @@ class CaseScraperService:
             # Extract docket entries (pass case_number so entries get case_id)
             logger.debug("Extracting docket entries from modal")
             
-            # Wait a bit longer for modal content to fully load
-            time.sleep(2)
+            # Wait a bit longer for modal content to fully load (reduced from 2s)
+            time.sleep(1)
             
             # Try to find the main modal with better selector
             main_modal = None
@@ -3115,7 +3115,7 @@ class CaseScraperService:
             for by, selector in close_selectors:
                 try:
                     logger.info(f"[UI_ACTION] Looking for close button using selector: {selector}")
-                    close_button = WebDriverWait(driver, 3).until(
+                    close_button = WebDriverWait(driver, 2).until(  # Reduced from 3s to 2s
                         EC.element_to_be_clickable((by, selector))
                     )
                     close_button_id = close_button.get_attribute('id') or '<anonymous>'
