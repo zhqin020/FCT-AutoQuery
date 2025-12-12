@@ -97,6 +97,7 @@ from psycopg2.extras import execute_values
 
 from src.lib.config import Config
 from src.lib.logging_config import get_logger
+from src.lib.year_utils import get_year_pattern
 from src.models.case import Case
 from src.models.docket_entry import DocketEntry
 
@@ -646,7 +647,7 @@ class ExportService:
                 WHERE case_number LIKE %s
                 ORDER BY case_number
             """,
-                (f"IMM-%-{year % 100:02d}",),
+                (get_year_pattern(year),),
             )
 
             columns = [desc[0] for desc in cursor.description]

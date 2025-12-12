@@ -7,6 +7,7 @@ from psycopg2.extras import RealDictCursor
 
 from src.lib.config import Config
 from src.lib.logging_config import get_logger
+from src.lib.year_utils import get_year_pattern
 
 logger = get_logger()
 
@@ -45,7 +46,7 @@ class UrlDiscoveryService:
                 ORDER BY case_number DESC
                 LIMIT 1
             """,
-                (f"IMM-%-{year % 100:02d}",),
+                (get_year_pattern(year),),
             )
 
             result = cursor.fetchone()
@@ -187,7 +188,7 @@ class UrlDiscoveryService:
                 FROM cases
                 WHERE case_number LIKE %s
             """,
-                (f"IMM-%-{year % 100:02d}",),
+                (get_year_pattern(year),),
             )
 
             result = cursor.fetchone()

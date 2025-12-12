@@ -5,6 +5,7 @@ from typing import Dict, Any
 import psycopg2
 from src.lib.config import Config
 from src.lib.logging_config import get_logger
+from src.lib.year_utils import get_year_pattern
 
 logger = get_logger()
 
@@ -29,8 +30,8 @@ class EnhancedStatisticsService:
             conn = psycopg2.connect(**self.db_config)
             cursor = conn.cursor()
             
-            year_suffix = year % 100
-            like_pattern = f"%-{year_suffix:02d}"
+            # 使用年份工具模块生成查询模式
+            like_pattern = get_year_pattern(year)
             
             # Get status breakdown for the year
             cursor.execute("""

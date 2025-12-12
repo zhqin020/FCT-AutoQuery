@@ -1800,7 +1800,57 @@ Notes:
                 #         logger.info(f"[DRY RUN] Would purge tracking data for year {year}")
                 #         print("[DRY RUN] Would purge tracking data for year {year}")
                 
-                logger.info("Purge summary written to:", result.get("audit_path"))
+                # Enhanced logging for purge results
+                audit_path = result.get("audit_path")
+                logger.info(f"Purge summary written to: {audit_path}")
+                
+                # Log detailed results
+                if dry_run:
+                    logger.info("[DRY RUN] Purge simulation completed - no data was actually deleted")
+                else:
+                    logger.info("Purge operation completed successfully")
+                
+                # Log file deletion results
+                files_removed = result.get("files_removed", {})
+                if files_removed:
+                    output_info = files_removed.get("output", {})
+                    modal_info = files_removed.get("modal_html", {})
+                    logger.info(f"Files deleted: {output_info.get('removed_files', 0)} files, "
+                               f"{output_info.get('removed_dirs', 0)} directories, "
+                               f"{modal_info.get('removed_files', 0)} modal HTML files")
+                
+                # Log database deletion results
+                db_result = result.get("db", {})
+                if isinstance(db_result, dict):
+                    if "deleted_rows" in db_result:
+                        logger.info(f"Database rows deleted: {db_result['deleted_rows']}")
+                    elif "cases_selected_count" in db_result:
+                        if dry_run:
+                            logger.info(f"[DRY RUN] Database rows that would be deleted: {db_result['cases_selected_count']}")
+                        else:
+                            logger.info(f"Database rows selected for deletion: {db_result['cases_selected_count']}")
+                    elif "error" in db_result:
+                        logger.error(f"Database purge error: {db_result['error']}")
+                
+                # Log any errors
+                notes = result.get("notes", [])
+                if notes:
+                    for note in notes:
+                        logger.info(f"Purge note: {note}")
+                
+                # Print summary to console as well
+                print(f"\n=== Purge {'DRY RUN - ' if dry_run else ''}Summary ===")
+                print(f"Audit file: {audit_path}")
+                if files_removed:
+                    output_info = files_removed.get("output", {})
+                    modal_info = files_removed.get("modal_html", {})
+                    print(f"Files deleted: {output_info.get('removed_files', 0)} files, {output_info.get('removed_dirs', 0)} dirs, {modal_info.get('removed_files', 0)} modal files")
+                if isinstance(db_result, dict) and "deleted_rows" in db_result:
+                    print(f"Database rows deleted: {db_result['deleted_rows']}")
+                elif isinstance(db_result, dict) and "cases_selected_count" in db_result:
+                    action = "would be deleted" if dry_run else "selected for deletion"
+                    print(f"Database rows {action}: {db_result['cases_selected_count']}")
+                print("=" * 40)
 
         except KeyboardInterrupt:
             logger.info("Operation cancelled by user")
