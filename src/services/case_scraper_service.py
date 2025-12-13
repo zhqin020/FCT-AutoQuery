@@ -3098,26 +3098,32 @@ class CaseScraperService:
                 except Exception:
                     logger.debug("[UI_ACTION] Could not find specific modal, will search for close buttons globally")
 
-            # Try different close methods with better selectors
+            # Optimized close selectors - prioritize × button in ModalForm first (most reliable based on logs)
             close_selectors = [
-                # Try modal-specific close buttons first
-                (By.XPATH, "//div[contains(@class, 'modal')]//button[contains(@class, 'close')]"),
-                (By.XPATH, "//div[contains(@class, 'modal')]//button[@data-dismiss='modal']"),
+                # Most reliable: × button in ModalForm (consistently works)
                 (By.XPATH, "//div[@id='ModalForm']//button[contains(@class, 'close')]"),
                 (By.XPATH, "//div[@id='ModalForm']//button[@data-dismiss='modal']"),
-                # Try text-based selectors
+                # Generic modal close buttons
+                (By.XPATH, "//div[contains(@class, 'modal')]//button[contains(@class, 'close')]"),
+                (By.XPATH, "//div[contains(@class, 'modal')]//button[@data-dismiss='modal']"),
+                # Text-based close buttons
                 (By.XPATH, "//button[contains(text(), 'Close')]"),
                 (By.XPATH, "//button[contains(text(), 'Fermer')]"),
-                # Try the × symbol
+                # × symbol specifically
                 (By.XPATH, "//span[@aria-hidden='true' and contains(text(), '×')]"),
                 (By.XPATH, "//button[contains(@class, 'close')]"),
                 # Fallback generic selectors
                 (By.CLASS_NAME, "close"),
             ]
 
-            for by, selector in close_selectors:
+            for i, (by, selector) in enumerate(close_selectors):
                 try:
-                    logger.info(f"[UI_ACTION] Looking for close button using selector: {selector}")
+                    # Only log the first attempt to reduce noise
+                    if i == 0:
+                        logger.info(f"[UI_ACTION] Looking for close button using selector: {selector}")
+                    else:
+                        logger.debug(f"[UI_ACTION] Trying fallback selector: {selector}")
+                    
                     close_button = WebDriverWait(driver, 2).until(  # Reduced from 3s to 2s
                         EC.element_to_be_clickable((by, selector))
                     )
