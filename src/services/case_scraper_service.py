@@ -73,7 +73,7 @@ def _parse_date_str(s: str):
 
 class CaseScraperService:
     BASE_URL = "https://www.fct-cf.ca/en/court-files-and-decisions/court-files"
-    def __init__(self, headless: bool = True):
+    def __init__(self, headless: bool = True, rate_limiter: Optional[EthicalRateLimiter] = None):
         # runtime options
         self.headless = headless
         # Rate/backoff config
@@ -82,11 +82,14 @@ class CaseScraperService:
         self._rate_limit_seconds = Config.get_rate_limit_seconds()
 
         # Rate limiter instance used for backoff between UI interactions
-        self.rate_limiter = EthicalRateLimiter(
-            interval_seconds=Config.get_rate_limit_seconds(),
-            backoff_factor=Config.get_backoff_factor(),
-            max_backoff_seconds=Config.get_max_backoff_seconds(),
-        )
+        if rate_limiter:
+            self.rate_limiter = rate_limiter
+        else:
+            self.rate_limiter = EthicalRateLimiter(
+                interval_seconds=Config.get_rate_limit_seconds(),
+                backoff_factor=Config.get_backoff_factor(),
+                max_backoff_seconds=Config.get_max_backoff_seconds(),
+            )
 
         # Discovered/used input id for case search
         self._case_input_id = None
@@ -648,7 +651,7 @@ class CaseScraperService:
             logger.info("[UI_ACTION] Verifying page state after initialization")
             
             # Wait a moment for any pending operations to complete
-            time.sleep(1)
+            time.sleep(0.5)
             
             # Try to find the input field to verify it's ready
             input_found = False
@@ -738,7 +741,7 @@ class CaseScraperService:
                             
                             # Progressive delay based on consecutive search failures
                             if self._consecutive_search_failures > 2:
-                                retry_delay = random.uniform(3.0, 6.0) + (self._consecutive_search_failures * 1.0)
+                                retry_delay = random.uniform(2.0, 4.0) + (self._consecutive_search_failures * 1.0)
                                 logger.info(f"Applying progressive delay {retry_delay:.1f}s due to {self._consecutive_search_failures} consecutive search failures")
                                 time.sleep(retry_delay)
                             
@@ -843,7 +846,7 @@ class CaseScraperService:
                 # Small stabilization pause to allow client-side handlers
                 # (e.g. input listeners) to process the entered value before
                 # submitting. Use random delay to avoid detection.
-                stabilization_delay = random.uniform(1.5, 3.0)
+                stabilization_delay = random.uniform(1, 3.0)
                 time.sleep(stabilization_delay)
 
                 # Try a tab-specific submit first (more reliable on this site)
@@ -920,7 +923,7 @@ class CaseScraperService:
                 # Add extra wait for DataTable initialization after search submission
                 # Use random delay to appear more human-like
                 logger.debug("Waiting for DataTable to initialize after search")
-                init_delay = random.uniform(1.5, 2.5)
+                init_delay = random.uniform(1, 2)
                 time.sleep(init_delay)  # Allow DataTable to reset and start loading
                 for i in range(max_polls):
                     polls += 1

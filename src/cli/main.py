@@ -97,7 +97,7 @@ class FederalCourtScraperCLI:
         try:
             # Lazily create scraper if not initialized
             if self.scraper is None:
-                self.scraper = CaseScraperService(headless=self._scraper_headless)
+                self.scraper = CaseScraperService(headless=self._scraper_headless, rate_limiter=self.rate_limiter)
 
             # Initialize page only if not already initialized (reuse session across batch)
             # But ensure we're on the correct search tab
@@ -593,7 +593,7 @@ class FederalCourtScraperCLI:
         try:
             # Ensure scraper is initialized
             if self.scraper is None:
-                self.scraper = CaseScraperService(headless=self._scraper_headless)
+                self.scraper = CaseScraperService(headless=self._scraper_headless, rate_limiter=self.rate_limiter)
 
             # Initialize page if needed
             try:
@@ -794,7 +794,7 @@ class FederalCourtScraperCLI:
         # Ensure scraper is initialized
         if self.scraper is None:
             logger.debug("初始化CaseScraperService...")
-            self.scraper = CaseScraperService(headless=self._scraper_headless)
+            self.scraper = CaseScraperService(headless=self._scraper_headless, rate_limiter=self.rate_limiter)
             logger.debug("CaseScraperService初始化完成")
 
         # Initialize page only if not already initialized (reuse session across batch)
@@ -836,7 +836,7 @@ class FederalCourtScraperCLI:
             backoff_factor=Config.get_backoff_factor(),
             max_backoff_seconds=Config.get_max_backoff_seconds(),
         )
-        logger.debug(f"速率限制器配置: interval={Config.get_rate_limit_seconds()}s, backoff_factor={Config.get_backoff_factor()}")
+        logger.debug(f"速率限制器配置: interval={rl.interval_seconds}s, backoff_factor={rl.backoff_factor} max_backoff_seconds={rl.max_backoff_seconds}")
 
         # Create tracking integration instance for this batch
         integration = TrackingIntegration(self.tracker, batch_run_id)
@@ -885,7 +885,7 @@ class FederalCourtScraperCLI:
 
                 # If not in DB or forcing, do web search
                 if self.scraper is None:
-                    self.scraper = CaseScraperService(headless=self._scraper_headless)
+                    self.scraper = CaseScraperService(headless=self._scraper_headless, rate_limiter=self.rate_limiter)
                 result = self.scraper.search_case(case_number)
                 if result:
                     # Record successful probe via integration helper
