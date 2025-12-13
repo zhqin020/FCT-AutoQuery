@@ -108,7 +108,7 @@ python -m src.cli.main batch 2025
 python -m src.cli.main batch 2025 --start 100 --max-cases 100
 
 # 调整采集参数（更快的采集速度）
-python -m src.cli.main batch 2025 --max-cases 50 --rate-interval 0.5 --backoff-factor 1.5
+python -m src.cli.main batch 2025 --max-cases 50 --rate-interval 0.5 --backoff-factor 1.5 --start 1000
 
 # 自定义指数探测参数
 python -m src.cli.main batch 2025 --max-exponent 15 --max-cases 200
