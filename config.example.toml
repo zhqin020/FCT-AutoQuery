@@ -19,3 +19,26 @@ export_write_retries = 2
 export_write_backoff_seconds = 1
 # Maximum number of soft WebDriver restarts during a batch run (default: 1)
 max_driver_restarts = 1
+
+[analysis]
+# Data source: "database", "directory", or "file"
+input_format = "database"
+# Analysis mode: "rule" or "llm"
+mode = "rule"
+# Output directory for analysis results
+output_subdir = "analysis"
+
+# LLM configuration (for LLM mode)
+ollama_url = "http://localhost:11434"
+# Uncomment to specify a model, otherwise will use the currently running model
+# ollama_model = "qwen2.5-7b-instruct"
+ollama_timeout = 120
+
+# Skip already analyzed cases (smart mode) 
+skip_analyzed = true
+# How to handle analyzed cases: "smart", "force", or "skip"
+update_mode = "smart"
+
+# Logging configuration for analysis
+log_level = "INFO"
+log_file = "logs/fct-analyze.log"

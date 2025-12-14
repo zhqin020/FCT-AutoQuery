@@ -1,0 +1,17 @@
+# Example LLM-specific configuration
+# Copy this to config.toml or config.private.toml
+
+[analysis]
+# Use LLM mode with specific model
+mode = "llm"
+input_format = "database"
+
+# LLM Configuration
+ollama_url = "http://localhost:11434"
+# Specify your preferred model here (qwen3:4b for better performance)
+ollama_model = "gemma2:2b"
+ollama_timeout = 60  # Increased timeout for CPU-only environment
+
+# Processing options
+skip_analyzed = true
+update_mode = "smart"

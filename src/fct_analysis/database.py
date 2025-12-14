@@ -80,7 +80,7 @@ class DatabaseReader:
                                 WHERE d.case_number = c.case_number
                             ) as docket_entries
                         FROM cases c
-                        WHERE 1=1
+                        WHERE status = 'success'
                     """
                     params = []
                     
