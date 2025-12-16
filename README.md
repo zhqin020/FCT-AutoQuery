@@ -44,70 +44,61 @@
 
 ```
 src/
-├── models/
-│   └── case.py              # 案件数据模型
-├── services/
-│   ├── case_scraper_service.py    # 案件抓取服务
-│   ├── export_service.py          # 数据导出服务
-│   └── url_discovery_service.py   # URL发现服务
-└── lib/
-    └── url_validator.py           # URL验证工具
+├── cli/                           # 数据抓取CLI
+│   ├── main.py                   # 批量/单个案件抓取
+│   └── purge.py                  # 数据清理
+├── fct_analysis/                 # 案件分析模块 (主程序)
+│   ├── cli.py                   # 分析CLI (主入口)
+│   ├── nlp_engine.py            # NLP处理引擎
+│   ├── rules.py                 # 规则分析引擎
+│   ├── llm.py                   # LLM接口
+│   ├── database.py              # 数据库接口
+│   ├── metrics.py               # 统计分析
+│   ├── export.py                # 结果导出
+│   └── parser.py                # 数据解析
+├── services/                     # 业务服务
+│   ├── case_scraper_service.py  # 案件抓取服务
+│   ├── export_service.py        # 数据导出服务
+│   └── url_discovery_service.py # URL发现服务
+├── models/                       # 数据模型
+│   ├── case.py                  # 案件数据模型
+│   └── docket_entry.py          # 案卷条目模型
+└── lib/                          # 工具库
+    ├── config.py                # 配置管理
+    ├── logging_config.py       # 日志配置
+    ├── rate_limiter.py          # 速率限制
+    └── url_validator.py         # URL验证工具
 
-tests/
-├── contract/                 # 合同测试
-├── integration/             # 集成测试
-└── unit/                    # 单元测试
+tests/                            # 测试套件
+├── contract/                     # 合同测试
+├── integration/                   # 集成测试
+└── unit/                        # 单元测试
 
-specs/                       # 项目规格和任务管理
+specs/                            # 项目规格和任务管理
 ├── 0001-federal-court-scraper/
-│   ├── spec.md             # 功能规格说明
-│   ├── plan.md            # 技术实现计划
-│   ├── tasks.md           # 任务跟踪
-│   └── contracts/         # API合同定义
+│   ├── spec.md                  # 功能规格说明
+│   ├── plan.md                 # 技术实现计划
+│   ├── tasks.md                # 任务跟踪
+│   └── contracts/              # API合同定义
+└── 0005-llm-data-analysis/      # LLM分析功能规格
 ```
 
 ## 🚀 快速开始
 
 ### 环境要求
 - Python 3.11+
-- Chrome浏览器（用于Selenium自动化）
+- PostgreSQL (推荐用于数据存储)
+- Chrome浏览器（用于Selenium自动化，仅数据抓取需要）
+
+### 安装步骤
+
+1. **克隆项目**
    ```bash
    git clone https://github.com/zhqin020/FCT-AutoQuery.git
    cd FCT-AutoQuery
    ```
 
 2. **创建虚拟环境**
-
-### Pre-commit & Formatting
-
-- **Starter config**: This repository includes a starter `.pre-commit-config.yaml` enabling `isort`, `black` and `flake8` hooks used for local formatting and linting.
-- **Install hooks and tools**:
-   ```bash
-   pip install --upgrade pre-commit black isort flake8
-   pre-commit install --install-hooks
-   ```
-- **Run hooks manually**:
-   ```bash
-   # Run all configured hooks on the repository
-   pre-commit run --all-files
-   ```
-- **Bypass hooks (single commit)**: use `git commit --no-verify` (use sparingly).
-
-Note: The project temporarily configures flake8 to ignore a small set of checks (long lines and a few legacy warnings). If you prefer stricter checks, remove the ignored codes from `.pre-commit-config.yaml` and re-run `pre-commit install --install-hooks`.
-
-### Branch naming
-
-- The repository enforces a branch naming convention for pull requests and automated checks. Prefer `feat/`, `fix/`, or `test/` prefixes, for example:
-   - `feat/add-user-auth`
-   - `fix/login-bug`
-   - `test/user-validation`
-
-- To rename a local branch to conform:
-   ```bash
-   # on the branch you want to rename
-   git branch -m feat/your-new-name
-   git push origin -u feat/your-new-name
-   ```
    ```bash
    python -m venv venv
    source venv/bin/activate  # Linux/Mac
@@ -120,32 +111,77 @@ Note: The project temporarily configures flake8 to ignore a small set of checks 
    pip install -r requirements.txt
    ```
 
-4. **运行测试验证安装**
+4. **配置文件设置**
+   ```bash
+   # 复制配置模板
+   cp config.example.toml config.toml
+   cp config.example.analysis.toml config.analysis.toml
+   
+   # 如需LLM功能，复制LLM配置
+   cp config.llm.toml config.llm.toml
+   ```
+
+5. **数据库初始化** (可选，但推荐)
+   ```bash
+   # 创建本地数据库
+   chmod +x scripts/create_local_db.sh
+   ./scripts/create_local_db.sh
+   
+   # 创建私有配置文件 config.private.toml
+   # 填入数据库连接信息
+   
+   # 运行数据库迁移 (分析功能必需)
+   python -m src.fct_analysis.cli --migrate-db
+   ```
+
+6. **运行测试验证安装**
    ```bash
    python -m pytest tests/ -v
    ```
 
-   ### 快速调试脚本示例
+### 快速体验
 
-   项目还包含用于本地快速调试和手工检查的脚本 `scripts/auto_click_more.py`。下面是几个常见示例：
+**数据抓取** (抓取单个案件):
+```bash
+python -m src.cli.main single IMM-12345-25
+```
 
-   - 跳过交互式确认并运行（适合手动快速检查）：
-   ```bash
-   python scripts/auto_click_more.py --yes
-   ```
+**智能分析** (分析已抓取的数据):
+```bash
+# 规则模式 - 快速分析
+python -m src.fct_analysis.cli --mode rule --year 2025
 
-   - 在 CI/测试中注入一个替代的 Service 类（不会启动浏览器）：
-   ```bash
-   # 这里使用文件路径导入语法：<path/to/file.py>:ClassName
-   python scripts/auto_click_more.py --yes --service-class tests/integration/fake_service.py:FakeService
-   ```
+# LLM模式 - 智能分析 (需要Ollama)
+python -m src.fct_analysis.cli --mode llm --year 2025
+```
 
-   注意：脚本默认会把结构化 JSON 输出到 `output/`。CLI 标志 `--yes` 优先于 `AUTO_CONFIRM` 环境变量（历史兼容）。
+### Pre-commit & Formatting
+
+- **Starter config**: This repository includes a starter `.pre-commit-config.yaml` enabling `isort`, `black` and `flake8` hooks used for local formatting and linting.
+- **Install hooks and tools**:
+  ```bash
+  pip install --upgrade pre-commit black isort flake8
+  pre-commit install --install-hooks
+  ```
+- **Run hooks manually**:
+  ```bash
+  # Run all configured hooks on the repository
+  pre-commit run --all-files
+  ```
+
+### Branch naming
+
+- The repository enforces a branch naming convention for pull requests and automated checks. Prefer `feat/`, `fix/`, or `test/` prefixes, for example:
+   - `feat/add-user-auth`
+   - `fix/login-bug`
+   - `test/user-validation`
 
 
 ## 📖 使用指南
 
-### 命令行使用
+FCT-AutoQuery包含两个主要功能模块：**数据抓取**和**智能分析**。
+
+### 🔍 数据抓取 (src/cli/main.py)
 
 #### 单个案件抓取
 ```bash
@@ -159,70 +195,171 @@ python -m src.cli.main batch 2025
 
 # 限制抓取数量
 python -m src.cli.main batch 2025 --max-cases 50
+
+# 强制重新抓取（覆盖已有数据）
+python -m src.cli.main batch 2025 --force
 ```
 
-#### 查看统计信息
+#### 数据管理
 ```bash
 # 查看所有年份的总案件数
 python -m src.cli.main stats
 
 # 查看特定年份的统计
 python -m src.cli.main stats --year 2025
+
+# 清理特定年份的数据（干运行）
+python -m src.cli.main purge 2025 --dry-run
+
+# 确认清理
+python -m src.cli.main purge 2025
 ```
 
-### Python API使用
+### 🤖 智能分析 (src/fct_analysis/cli.py) - 主程序
 
-```python
-from src.cli.main import FederalCourtScraperCLI
+#### 基础分析命令
 
-# 初始化CLI
-cli = FederalCourtScraperCLI()
-
-# 抓取单个案件
-case = cli.scrape_single_case("IMM-12345-25")
-
-# 批量抓取
-cases = cli.scrape_batch_cases(2025, max_cases=10)
-
-# 导出数据
-export_result = cli.export_cases(cases, "federal_court_cases")
-```
-
-### 批量处理示例
-
-运行批量抓取2025年的案件：
+**规则模式** (快速、准确):
 ```bash
-python -m src.cli.main batch 2025
+# 分析数据库中2025年的成功状态案件
+python -m src.fct_analysis.cli --mode rule --year 2025
+
+# 分析特定目录的数据
+python -m src.fct_analysis.cli --mode rule --input-format directory --year 2024
+
+# 分析单个文件
+python -m src.fct_analysis.cli --mode rule --input cases.json
 ```
 
-这将：
-1. 从上次中断处继续（如果有的话）
-2. 使用搜索表单查找案件
-3. 提取案件详情和法庭记录
-4. 保存到PostgreSQL数据库
-5. 导出为JSON和CSV文件
+**LLM模式** (智能分析、实体提取):
 ```bash
-# 批量抓取（示例：抓取 2025 年，最多 50 个案件）
-python -m src.cli.main batch 2025 --max-cases 50
+# LLM智能分析2025年案件
+python -m src.fct_analysis.cli --mode llm --year 2025
 
-# 抓取单个案件并自动导出（JSON/CSV 输出到 `output/`）
-python -m src.cli.main single IMM-12345-22
+# 带检查点恢复的LLM分析
+python -m src.fct_analysis.cli --mode llm --year 2025 --resume
+
+# LLM样本审计
+python -m src.fct_analysis.cli --mode llm --sample-audit 10
 ```
 
-### 运行演示脚本
+#### 高级功能
 
-项目包含一个演示脚本，可以快速了解程序功能：
+**智能跳过已分析案件**:
+```bash
+# 智能模式：跳过已分析，仅处理新案件
+python -m src.fct_analysis.cli --mode llm --skip-analyzed --update-mode smart
+
+# 强制模式：重新分析所有案件
+python -m src.fct_analysis.cli --mode llm --skip-analyzed --update-mode force
+
+# 仅跳过模式：只处理未分析案件
+python -m src.fct_analysis.cli --mode llm --skip-analyzed --update-mode skip
+```
+
+**自定义配置**:
+```bash
+# 指定输出目录
+python -m src.fct_analysis.cli --mode llm --year 2025 --output-dir ./custom_output
+
+# 自定义Ollama URL
+python -m src.fct_analysis.cli --mode llm --ollama-url http://192.168.1.100:11434
+
+# 数据库迁移
+python -m src.fct_analysis.cli --migrate-db
+```
+
+### 📊 数据源支持
+
+系统支持三种数据源，按优先级自动选择：
+
+1. **数据库模式** (推荐)
+   ```bash
+   python -m src.fct_analysis.cli --input-format database --year 2025
+   ```
+   - 自动过滤`status = 'success'`的案件
+   - 支持年份过滤：`case_number LIKE '%-25'`
+   - 支持断点续处理和智能去重
+
+2. **目录模式**
+   ```bash
+   python -m src.fct_analysis.cli --input-format directory --year 2025
+   ```
+   - 按年份组织的JSON文件：`output/2025/`
+   - 自动读取目录下所有JSON文件
+
+3. **文件模式**
+   ```bash
+   python -m src.fct_analysis.cli --input cases.json
+   ```
+   - 传统单文件处理
+   - 支持JSON和CSV格式
+
+### 📈 输出文件说明
+
+分析完成后，会生成以下文件：
+
+```
+analysis_output_2025/
+├── federal_cases_0005_details.csv      # 详细案件数据
+├── federal_cases_0005_summary.json     # 摘要报告
+├── federal_cases_0005_statistics.json  # 详细统计
+├── 0005_checkpoint.ndjson              # LLM检查点文件
+└── logs/                               # 分析日志
+```
+
+**关键字段说明**:
+- `case_id`/`case_number`: 案件编号 (系统关键字段，用于唯一标识和年份过滤)
+- `title`: 案件标题/案由
+- `court`: 审理法院/办公室
+- `type`: 案件类型 (通过规则/LLM分析，如 Mandamus、Other 等)
+- `status`: 案件状态 (成功/驳回/中止/进行中等)
+- `visa_office`: 签证办公室 (LLM提取，如 Ottawa Immigration、Vancouver Office 等)
+- `judge`: 法官姓名 (LLM提取)
+- `time_to_close`: 案件处理时长 (天)
+- `age_of_case`: 案件年龄 (从立案到现在的天数)
+- `rule9_wait`: Rule 9等待时间 (天)
+- `filing_date`: 立案日期
+
+### ⚙️ 配置文件
+
+**主配置** (`config.toml`):
+```toml
+[app]
+output_dir = "output"
+headless = true
+max_retries = 3
+
+[database]
+host = "localhost"
+port = 5432
+name = "fct_db"
+user = "fct_user"
+```
+
+**分析配置** (`config.analysis.toml`):
+```toml
+[analysis]
+input_format = "database"    # database/directory/file
+mode = "llm"                # rule/llm
+skip_analyzed = true
+update_mode = "smart"       # smart/force/skip
+
+[analysis.llm]
+ollama_url = "http://localhost:11434"
+ollama_model = "qwen2.5-7b-instruct"
+timeout = 120
+```
+
+### 🐳 Docker部署 (可选)
 
 ```bash
-# 运行演示脚本（无需真实URL）
-python demo.py
-```
+# 构建镜像
+docker build -t fct-autoquery .
 
-演示脚本会：
-- 验证URL格式
-- 创建模拟案例数据
-- 演示JSON/CSV导出功能
-- 生成示例输出文件
+# 运行容器
+docker run -v $(pwd)/output:/app/output fct-autoquery
+```
 
 ## 🧪 测试
 
@@ -455,7 +592,72 @@ python -m src.cli.main single IMM-12345-25
 - 项目主页: https://github.com/zhqin020/FCT-AutoQuery
 - 问题反馈: [Issues](https://github.com/zhqin020/FCT-AutoQuery/issues)
 
+## 🔧 故障排除
+
+### 常见问题
+
+**Q: 分析报告显示 case_number 为 NULL**
+```bash
+# 检查数据库中的 NULL 值
+python check_null_status.py
+
+# 修复 case_number 字段
+python fix_case_number.py
+```
+
+**Q: LLM分析失败或连接超时**
+```bash
+# 检查 Ollama 服务状态
+curl http://localhost:11434/api/tags
+
+# 如使用远程 Ollama，更新配置
+python -m src.fct_analysis.cli --mode llm --ollama-url http://your-server:11434
+```
+
+**Q: 数据库连接错误**
+```bash
+# 测试数据库连接
+python -c "from fct_analysis.db_schema import AnalysisDBManager; print(AnalysisDBManager().test_connection())"
+
+# 运行数据库迁移
+python -m src.fct_analysis.cli --migrate-db
+```
+
+**Q: 大量已分析案件跳过处理**
+```bash
+# 强制重新分析所有案件
+python -m src.fct_analysis.cli --mode llm --skip-analyzed --update-mode force
+
+# 或只处理新案件
+python -m src.fct_analysis.cli --mode llm --skip-analyzed --update-mode skip
+```
+
 ---
 
-**最后更新**: 2025年11月21日
-**版本**: v1.0.0 (功能完整实现)
+**最后更新**: 2025年12月15日
+**版本**: v2.0.1 (关键字段修复和文档更新)
+
+## 🎯 核心改进说明
+
+### v2.0.0 重大更新
+- **新增智能分析模块** (`src/fct_analysis/cli.py` 作为主程序入口)
+- **支持LLM驱动的案件分析**，包括案件类型识别、状态分析和实体提取
+- **多数据源支持**：数据库、目录、文件三种输入模式
+- **智能过滤系统**：基于案件编号的年份过滤和状态筛选
+- **检查点机制**：支持大批量处理断点续处理
+- **详细统计分析**：多维度案件统计和时长分析
+- **混合分析模式**：规则优先、LLM增强的智能策略
+
+### 技术栈升级
+- **数据库**：PostgreSQL集成，支持复杂查询和统计分析
+- **NLP引擎**：规则引擎 + Ollama LLM混合架构
+- **配置管理**：模块化配置系统，支持环境变量覆盖
+- **日志系统**：基于Loguru的结构化日志和进度跟踪
+- **导出系统**：CSV、JSON多格式导出和统计报告生成
+
+### 企业级特性
+- **断点续抓**：数据抓取中断后可从上次位置继续
+- **智能去重**：避免重复抓取和分析相同案件
+- **质量监控**：LLM分析质量评估和错误追踪
+- **审计日志**：完整的操作记录和合规性支持
+- **扩展性设计**：模块化架构支持功能扩展和定制

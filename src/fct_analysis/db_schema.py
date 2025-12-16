@@ -365,7 +365,12 @@ class AnalysisResultStorage:
                         'time_to_close': ('time_to_close', None),
                         'age_of_case': ('age_of_case', None),
                         'rule9_wait': ('rule9_wait', None),
-                        'outcome_date': ('outcome_date', None)
+                        'outcome_date': ('outcome_date', None),
+                        'memo_response_time': ('memo_response_time', None),
+                        'memo_to_outcome_time': ('memo_to_outcome_time', None),
+                        'title': ('title', None),
+                        'court': ('court', 100),
+                        'filing_date': ('filing_date', None)
                     }
                     
                     # Build INSERT and UPDATE clauses
@@ -389,7 +394,7 @@ class AnalysisResultStorage:
                     
                     # Store additional analysis data as JSON
                     analysis_data = {k: v for k, v in analysis_result.items() 
-                                   if k not in field_mapping and k not in ['title', 'court', 'filing_date']}
+                                   if k not in field_mapping}
                     if analysis_data:
                         insert_fields.append('analysis_data')
                         insert_values.append(json.dumps(analysis_data))

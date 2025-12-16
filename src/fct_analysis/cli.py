@@ -4,6 +4,7 @@ Enhanced to support database and year-based directory structure as data sources.
 """
 from __future__ import annotations
 
+import os
 import sys
 import re
 from pathlib import Path
@@ -322,6 +323,154 @@ def _log_final_results(output_dir: Path, details_path: Path, summary_path: Path,
     logger.info("=" * 60)
 
 
+def _compute_case_durations(raw_case: dict | pd.Series, case_id: str = None, db_engine = None) -> dict:
+    """Compute duration metrics for a single case.
+    
+    Args:
+        raw_case: Raw case data dictionary
+        case_id: Case number for database lookup
+        db_engine: Database engine for querying docket_entries
+        
+    Returns:
+        Dictionary with duration metrics
+    """
+    from datetime import datetime, timezone
+    
+    # Use timezone-aware UTC date for 'today'
+    today_date = datetime.now(timezone.utc).date()
+    
+    # Helper to convert to date
+    def _to_date(d):
+        if d is None:
+            return None
+        try:
+            return pd.to_datetime(d)
+        except Exception:
+            return None
+    
+    filing_date = _to_date(raw_case.get('filing_date'))
+    
+    # Age of case
+    age_of_case = None
+    if filing_date:
+        try:
+            age_of_case = int((today_date - filing_date.date()).days)
+        except Exception:
+            pass
+    
+    # Time to close
+    time_to_close = None
+    outcome_date = raw_case.get('outcome_date') or raw_case.get('decision_date')
+    
+    # If no outcome_date in raw_case, try to find it from docket_entries
+    if not outcome_date and case_id and db_engine:
+        try:
+            from sqlalchemy import text
+            with db_engine.connect() as conn:
+                # Look for judgment, order, or discontinuance entries that indicate case closure
+                docket_query = """
+                SELECT date_filed, recorded_entry_summary
+                FROM docket_entries 
+                WHERE case_number = :case_id
+                AND (
+                    LOWER(recorded_entry_summary) LIKE '%judgment dated%'
+                    OR LOWER(recorded_entry_summary) LIKE '%order dated%'
+                    OR LOWER(recorded_entry_summary) LIKE '%discontinuance%'
+                    OR LOWER(recorded_entry_summary) LIKE '%final decision%'
+                )
+                ORDER BY date_filed DESC
+                LIMIT 1
+                """
+                result = conn.execute(text(docket_query), {"case_id": case_id}).fetchone()
+                if result and result.date_filed:
+                    outcome_date = result.date_filed
+        except Exception:
+            pass  # If database lookup fails, continue without outcome_date
+    
+    # Memo response time
+    memo_response_time = None
+    memo_to_outcome_time = None
+    first_memo_date = None
+    
+    if case_id and db_engine:
+        try:
+            from sqlalchemy import text
+            with db_engine.connect() as conn:
+                # Look for first DOJ/IRCC response memo (expanded keywords)
+                memo_query = """
+                SELECT de.date_filed, de.recorded_entry_summary
+                FROM docket_entries de
+                WHERE de.case_number = :case_id
+                AND (
+                    (LOWER(de.recorded_entry_summary) LIKE '%memorandum%' AND LOWER(de.recorded_entry_summary) LIKE '%respondent%')
+                    OR (LOWER(de.recorded_entry_summary) LIKE '%letter from%' AND (
+                        LOWER(de.recorded_entry_summary) LIKE '%respondent%' OR 
+                        LOWER(de.recorded_entry_summary) LIKE '%ircc%' OR
+                        LOWER(de.recorded_entry_summary) LIKE '%government%' OR
+                        LOWER(de.recorded_entry_summary) LIKE '%attorney general%' OR
+                        LOWER(de.recorded_entry_summary) LIKE '%crown%'
+                    ))
+                    OR (LOWER(de.recorded_entry_summary) LIKE '%affidavit%' AND LOWER(de.recorded_entry_summary) LIKE '%respondent%')
+                    OR (LOWER(de.recorded_entry_summary) LIKE '%notice of appearance%' AND LOWER(de.recorded_entry_summary) LIKE '%respondent%')
+                    OR (LOWER(de.recorded_entry_summary) LIKE '%solicitor%certificate%service%' AND LOWER(de.recorded_entry_summary) LIKE '%respondent%')
+                )
+                ORDER BY de.date_filed ASC
+                LIMIT 1
+                """
+                memo_result = conn.execute(text(memo_query), {"case_id": case_id}).fetchone()
+                if memo_result and memo_result.date_filed:
+                    first_memo_date = _to_date(memo_result.date_filed)
+                    if filing_date and first_memo_date:
+                        try:
+                            memo_response_time = int((first_memo_date - filing_date).days)
+                        except Exception:
+                            pass
+                            
+                    # Calculate memo to outcome time if we have both dates
+                    if outcome_date and first_memo_date:
+                        outcome_dt = _to_date(outcome_date)
+                        if outcome_dt:
+                            try:
+                                memo_to_outcome_time = int((outcome_dt - first_memo_date).days)
+                            except Exception:
+                                pass
+        except Exception:
+            pass  # If database lookup fails, continue without memo_response_time
+    
+    if filing_date and outcome_date:
+        outcome_dt = _to_date(outcome_date)
+        if outcome_dt:
+            try:
+                time_to_close = int((outcome_dt - filing_date).days)
+            except Exception:
+                pass
+    
+    # Rule 9 wait
+    rule9_wait = None
+    if filing_date:
+        import re
+        RULE9_RE = re.compile(r"rule\s*9", re.I)
+        for de in raw_case.get("docket_entries") or []:
+            summary = de.get("summary") or ""
+            if RULE9_RE.search(summary):
+                entry_date = _to_date(de.get("entry_date"))
+                if entry_date:
+                    try:
+                        rule9_wait = int((entry_date - filing_date).days)
+                        break
+                    except Exception:
+                        pass
+    
+    return {
+        'age_of_case': age_of_case,
+        'time_to_close': time_to_close,
+        'rule9_wait': rule9_wait,
+        'outcome_date': outcome_date,
+        'memo_response_time': memo_response_time,
+        'memo_to_outcome_time': memo_to_outcome_time
+    }
+
+
 def analyze(
     input_path: Optional[str] = None,
     mode: Optional[str] = None,
@@ -331,8 +480,7 @@ def analyze(
     ollama_url: Optional[str] = None,
     input_format: Optional[str] = None,
     year: Optional[int] = None,
-    skip_analyzed: Optional[bool] = None,
-    update_mode: Optional[str] = None,
+    force: Optional[bool] = None,
 ) -> int:
     """Analyze FCT cases with flexible data source support.
     
@@ -345,16 +493,14 @@ def analyze(
         ollama_url: Custom Ollama URL
         input_format: Data source format ('database', 'directory', 'file')
         year: Filter by year (for database or directory input)
-        skip_analyzed: Skip already analyzed cases
-        update_mode: How to handle analyzed cases ('smart', 'force', 'skip')
+        force: Force analysis of all cases (ignore existing analysis)
     """
     # Use config defaults if not provided
     mode = mode or Config.get_analysis_mode()
     sample_audit = sample_audit if sample_audit is not None else Config.get_analysis_sample_audit()
     ollama_url = ollama_url or Config.get_ollama_url()
     input_format = input_format or Config.get_analysis_input_format()
-    skip_analyzed = skip_analyzed if skip_analyzed is not None else Config.get_analysis_skip_analyzed()
-    update_mode = update_mode or Config.get_analysis_update_mode()
+    force = force if force is not None else False  # Default to not force
     
     # Setup output directory
     if output_dir is None:
@@ -383,9 +529,21 @@ def analyze(
     # Initialize database managers if using database
     db_storage = None
     db_manager = None
+    db_engine = None
     if input_format == "database":
         db_storage = _db_schema.AnalysisResultStorage()
         db_manager = _db_schema.AnalysisDBManager()
+        
+        # Create SQLAlchemy engine for docket_entries queries
+        db_cfg = Config.get_db_config() or {}
+        env_dsn = os.getenv('DB_CONNECTION_STR')
+        if env_dsn:
+            db_dsn = env_dsn
+        else:
+            db_dsn = f"postgresql://{db_cfg.get('user')}:{db_cfg.get('password')}@{db_cfg.get('host')}:{db_cfg.get('port')}/{db_cfg.get('database')}"
+        
+        from sqlalchemy import create_engine
+        db_engine = create_engine(db_dsn)
         
         # Ensure database schema is up to date
         if not db_manager.migrate_database():
@@ -496,9 +654,9 @@ def analyze(
                 
                 # Check if already analyzed in analysis table
                 existing_analysis = None
-                if skip_analyzed and db_storage and case_id:
+                if not force and db_storage and case_id:
                     existing_analysis = db_storage.is_analyzed(case_id, mode)
-                    if existing_analysis and update_mode == "skip":
+                    if existing_analysis:
                         # Use existing analysis results
                         types.append(existing_analysis.get('case_type'))
                         statuses.append(existing_analysis.get('case_status'))
@@ -507,8 +665,6 @@ def analyze(
                         logger.debug(f"Skipping analysis for {case_id} (already analyzed)")
                         pbar.update(1)
                         continue
-                    elif existing_analysis and update_mode == "smart":
-                        logger.info(f"Case {case_id} already analyzed, updating if needed")
                 
                 # Use enhanced NLP engine (rule-based + LLM fallback)
                 if mode == "llm":
@@ -560,15 +716,21 @@ def analyze(
                         confidence = "low"
                         
                 else:
-                    # Rule-based mode only - no entity extraction
+                    # Rule-based mode with basic entity extraction
                     logger.debug(f"🔍 Processing case {case_id} with rule-based analysis")
                     res = _rules.classify_case_rule(raw_case)
                     case_type = res.get("type")
                     case_status = res.get("status")
-                    visa_office = None
-                    judge = None
+                    
+                    # Extract basic entities using rule-based patterns
+                    entities = _rules.extract_entities_rule(raw_case)
+                    visa_office = entities.get("visa_office")
+                    judge = entities.get("judge")
+                    
                     method = "rule_based"
                     logger.debug(f"📊 Case {case_id}: {case_type} | {case_status} | Method: rule_based")
+                    if visa_office or judge:
+                        logger.debug(f"📍 Case {case_id} entities - Visa: {visa_office}, Judge: {judge}")
                 
                 # Checkpoint results for resumability (only in LLM mode)
                 if mode == "llm" and checkpoint_path and case_id:
@@ -590,14 +752,23 @@ def analyze(
                 
                 # Save analysis to dedicated analysis table
                 if db_storage and case_id:
+                    # Compute duration metrics for this case
+                    durations = _compute_case_durations(raw_case, case_id, db_engine)
+                    
                     analysis_result = {
                         'type': case_type,
                         'status': case_status,
                         'visa_office': visa_office,
                         'judge': judge,
-                        'title': raw_case.get('title'),
-                        'court': raw_case.get('court'),
-                        'filing_date': raw_case.get('filing_date')
+                        'title': raw_case.get('style_of_cause') or raw_case.get('title'),
+                        'court': raw_case.get('office') or raw_case.get('court'),
+                        'filing_date': raw_case.get('filing_date'),
+                        'age_of_case': durations.get('age_of_case'),
+                        'time_to_close': durations.get('time_to_close'),
+                        'rule9_wait': durations.get('rule9_wait'),
+                        'outcome_date': durations.get('outcome_date'),
+                        'memo_response_time': durations.get('memo_response_time'),
+                        'memo_to_outcome_time': durations.get('memo_to_outcome_time')
                     }
                     success = db_storage.save_analysis_result(case_id, analysis_result, mode)
                     if not success:
@@ -711,10 +882,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     # Analysis options
     p.add_argument("--mode", choices=("rule", "llm"), help="Analysis mode")
     p.add_argument("--year", type=int, help="Filter by year (for database/directory input)")
-    p.add_argument("--skip-analyzed", action=argparse.BooleanOptionalAction, default=None,
-                   help="Skip already analyzed cases")
-    p.add_argument("--update-mode", choices=("smart", "force", "skip"), 
-                   help="How to handle analyzed cases (smart/skip/force)")
+    p.add_argument("--force", action="store_true", 
+                   help="Force analysis of all cases (ignore existing analysis)")
     
     # Output options
     p.add_argument("--output-dir", "-o", help="Output directory")
@@ -749,8 +918,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         ollama_url=ns.ollama_url,
         input_format=ns.input_format,
         year=ns.year,
-        skip_analyzed=ns.skip_analyzed,
-        update_mode=ns.update_mode,
+        force=ns.force,
     )
 
 
