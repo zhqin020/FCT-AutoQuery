@@ -20,3 +20,18 @@
 			- `python scripts/fix_docket_id_order.py --backup-dir output/backups --apply`
 
 注意：脚本会先创建 CSV 备份作为恢复点。强烈建议在生产 DB 上执行任何写操作前，先执行完整的数据库备份（pg_dump 或其他备份方案）。
+
+执行情况与结果
+----------------
+- 已完成日期: 2025-12-17
+- 已创建数据库二进制备份: `output/backups/fct_db_backup_20251217_153231.dump`
+- 已创建多份 `docket_entries` CSV 备份: `output/backups/docket_entries_backup_20251217_233308.csv`, `output/backups/docket_entries_backup_20251217_233344.csv`, `output/backups/docket_entries_backup_20251217_233624.csv`
+- 已应用迁移脚本并更新 `id_from_table` (共更新 411,161 行)
+- 运行验证查询，生成报告: `output/backups/docket_id_check_report_20251217_154527.csv` (共 37,977 cases 检查，违反条目 0)
+
+状态: CLOSED
+
+后续建议
+--------
+- 建议在下一次批量采集中监控 `docket_entries` 统计（如 `max(id_from_table)` 与 `date_filed` 的一致性），以确保页面结构变化不会再造成反转。
+- 可将 `scripts/fix_docket_id_order.py` 作为日常维护脚本保留并在需要时运行（脚本会先备份再执行修改）。
