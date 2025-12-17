@@ -2942,6 +2942,9 @@ class CaseScraperService:
                 "document description",
             ]
 
+            # id column tokens (common variants)
+            id_keys = ["id", "#", "no.", "no", "number", "ref"]
+
             # helper to find header index matching tokens
             def find_index_by_keys(keys):
                 for i, h in enumerate(headers):
@@ -2953,6 +2956,7 @@ class CaseScraperService:
             date_idx_header = find_index_by_keys(date_keys)
             office_idx_header = find_index_by_keys(office_keys)
             summary_idx_header = find_index_by_keys(summary_keys)
+            id_idx_header = find_index_by_keys(id_keys)
 
             rows = table.find_elements(By.TAG_NAME, "tr")
             logger.debug(f"Found {len(rows)} rows in selected table")
@@ -2995,12 +2999,24 @@ class CaseScraperService:
                     entry_date = None
                     office = None
                     summary = None
+                    inferred_doc_id = None
 
                     # If header mapping available, use it to pick cells
                     if date_idx_header is not None and date_idx_header < len(
                         cell_texts
                     ):
                         entry_date = try_parse_date(cell_texts[date_idx_header])
+                    # If id header present, try to parse numeric id from that column
+                    if id_idx_header is not None and id_idx_header < len(cell_texts):
+                        try:
+                            raw = cell_texts[id_idx_header].strip()
+                            import re
+
+                            digits = re.sub(r"[^0-9]", "", raw)
+                            if digits:
+                                inferred_doc_id = int(digits)
+                        except Exception:
+                            inferred_doc_id = None
                     if office_idx_header is not None and office_idx_header < len(
                         cell_texts
                     ):
@@ -3053,9 +3069,25 @@ class CaseScraperService:
                     
                     # Only create entry if we have at least some meaningful data
                     if summary or entry_date:
+                        # Determine final doc_id: prefer explicit id from table, then first-column numeric, then row index
+                        final_doc_id = r_idx
+                        if inferred_doc_id:
+                            final_doc_id = inferred_doc_id
+                        else:
+                            # If first cell looks numeric and wasn't the detected date cell, use it
+                            try:
+                                if cell_texts and len(cell_texts) > 0:
+                                    first_raw = (cell_texts[0] or "").strip()
+                                    if first_raw.isdigit():
+                                        # Ensure we didn't mistakenly pick a date that was in column 0
+                                        if not ("date_idx" in locals() and date_idx == 0):
+                                            final_doc_id = int(first_raw)
+                            except Exception:
+                                pass
+
                         entry = DocketEntry(
                             case_id=case_id or "",
-                            doc_id=r_idx,
+                            doc_id=final_doc_id,
                             entry_date=entry_date,
                             entry_office=office,
                             summary=summary,
