@@ -236,8 +236,14 @@ python -m src.fct_analysis.cli --mode rule --input cases.json
 # LLM智能分析2025年案件
 python -m src.fct_analysis.cli --mode llm --year 2025
 
-# 带检查点恢复的LLM分析
+# 检查点恢复 - 自动跳过已处理案件
 python -m src.fct_analysis.cli --mode llm --year 2025 --resume
+
+# 强制重新分析所有案件
+python -m src.fct_analysis.cli --mode llm --year 2025 --force
+
+# 中断后恢复并保持强制模式（推荐）
+python -m src.fct_analysis.cli --mode llm --year 2025 --force --resume
 
 # LLM样本审计
 python -m src.fct_analysis.cli --mode llm --sample-audit 10
@@ -247,15 +253,25 @@ python -m src.fct_analysis.cli --mode llm --sample-audit 10
 
 **智能跳过已分析案件**:
 ```bash
-# 智能模式：跳过已分析，仅处理新案件
-python -m src.fct_analysis.cli --mode llm --skip-analyzed --update-mode smart
+# 默认行为：跳过已分析案件，只处理新案件
+python -m src.fct_analysis.cli --mode llm
 
-# 强制模式：重新分析所有案件
-python -m src.fct_analysis.cli --mode llm --skip-analyzed --update-mode force
+# 强制模式：重新分析所有案件（忽略已有分析）
+python -m src.fct_analysis.cli --mode llm --force
 
-# 仅跳过模式：只处理未分析案件
-python -m src.fct_analysis.cli --mode llm --skip-analyzed --update-mode skip
+# 关键功能：--force 与 --resume 的协同工作
+# 第一次运行（强制模式）
+python -m src.fct_analysis.cli --mode llm --year 2025 --force
+
+# 中断后恢复（自动应用强制模式，确保一致性）
+python -m src.fct_analysis.cli --mode llm --year 2025 --resume
 ```
+
+**强制模式与检查点机制**:
+- `--force` 参数会在检查点文件中记录状态，确保恢复时行为一致
+- 使用 `--resume` 时会自动检测并应用原始运行时的 `--force` 状态
+- 这避免了混合模式导致的数据不一致问题
+- 系统会记录并显示强制模式状态的恢复情况
 
 **自定义配置**:
 ```bash
@@ -342,8 +358,7 @@ user = "fct_user"
 [analysis]
 input_format = "database"    # database/directory/file
 mode = "llm"                # rule/llm
-skip_analyzed = true
-update_mode = "smart"       # smart/force/skip
+# 注意：force 参数只能通过命令行指定，不支持配置文件设置
 
 [analysis.llm]
 ollama_url = "http://localhost:11434"
@@ -626,18 +641,40 @@ python -m src.fct_analysis.cli --migrate-db
 **Q: 大量已分析案件跳过处理**
 ```bash
 # 强制重新分析所有案件
-python -m src.fct_analysis.cli --mode llm --skip-analyzed --update-mode force
+python -m src.fct_analysis.cli --mode llm --force
 
-# 或只处理新案件
-python -m src.fct_analysis.cli --mode llm --skip-analyzed --update-mode skip
+# 默认行为只处理新案件（跳过已分析案件）
+python -m src.fct_analysis.cli --mode llm
+
+# 中断后恢复并保持强制模式（确保数据一致性）
+python -m src.fct_analysis.cli --mode llm --resume  # 自动检测并应用原强制状态
+```
+
+**Q: 使用 --force 后中断，如何正确恢复？**
+```bash
+# 如果第一次运行使用了 --force，中断后直接使用 --resume 即可
+# 系统会自动检测并恢复强制模式状态
+
+# 第一次运行
+python -m src.fct_analysis.cli --mode llm --year 2025 --force
+
+# 中断后恢复（无需再次指定 --force）
+python -m src.fct_analysis.cli --mode llm --year 2025 --resume
+# 系统日志会显示：🔄 Resumed from force mode session - applying force mode
 ```
 
 ---
 
-**最后更新**: 2025年12月15日
-**版本**: v2.0.1 (关键字段修复和文档更新)
+**最后更新**: 2025年12月16日
+**版本**: v2.0.3 (--force 与 --resume 协同功能优化)
 
 ## 🎯 核心改进说明
+
+### v2.0.3 最新更新
+- **--force 与 --resume 协同功能**：确保强制模式在恢复时正确应用
+- **智能状态管理**：检查点文件自动记录和恢复 force 参数状态
+- **一致性保证**：避免混合模式导致的数据不一致问题
+- **详细日志反馈**：明确显示强制模式状态的恢复情况
 
 ### v2.0.0 重大更新
 - **新增智能分析模块** (`src/fct_analysis/cli.py` 作为主程序入口)

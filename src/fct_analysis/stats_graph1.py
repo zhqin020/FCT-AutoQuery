@@ -117,7 +117,9 @@ def get_mandamus_data_for_analysis():
         visa_office,
         time_to_close,
         outcome_date,
-        memo_response_time
+        memo_response_time,
+        reply_memo_date,
+        reply_to_outcome_time
     FROM case_analysis 
     WHERE case_type = 'Mandamus' 
     AND EXTRACT(YEAR FROM filing_date) = 2025
@@ -263,6 +265,150 @@ def plot_memo_response_trends(df_monthly):
     plt.show()
 
 
+def plot_memo_reply_to_outcome_trends(df):
+    """按月统计：从 memo 回复到结案的时间（天），按结案类型分系列绘图。
+
+    计算方法:
+    - 优先使用 reply_memo_date（实际的 DOJ Memo 回复日期）
+    - 如果 reply_memo_date 为空，则使用 filing_date + memo_response_time 作为备选
+    - reply_to_outcome_days = (outcome_date or 当前日期) - reply_memo_date 的天数
+    按 outcome_date 的月末频率分组，并对每个 case_status 计算最大、最小、平均、中位数。
+    同时显示 IMM-11243-25 案例从 memo 回复到当前的时间作为参考线。
+    """
+    df = df.copy()
+    # 必要字段 - 包含 reply_memo_date
+    required_fields = {'filing_date', 'outcome_date', 'case_status', 'case_number', 'reply_memo_date'}
+    optional_fields = {'memo_response_time'}  # 备用字段
+    
+    if not required_fields.issubset(df.columns):
+        print(f"缺少必要字段，跳过 reply_memo->outcome 统计。需要：{required_fields - set(df.columns)}")
+        return
+
+    # 提取特定案例 IMM-11243-25 的信息作为参考
+    reference_days = None
+    reference_start_date = None
+    
+    target_case = df[df['case_number'] == 'IMM-11243-25']
+    if not target_case.empty:
+        case_row = target_case.iloc[0]
+        
+        # 优先使用 reply_memo_date，如果没有则使用您指定的日期
+        if pd.notna(case_row['reply_memo_date']):
+            reference_start_date = pd.to_datetime(case_row['reply_memo_date'])
+        else:
+            # 使用您指定的日期 2025-07-30
+            reference_start_date = pd.to_datetime('2025-07-30')
+        
+        if reference_start_date is not None:
+            # 对于未结案案例，使用当前日期；对于已结案案例，使用outcome_date
+            if pd.notna(case_row['outcome_date']):
+                end_date = pd.to_datetime(case_row['outcome_date'])
+                period_desc = f"至结案日期 {end_date.date()}"
+            else:
+                end_date = pd.Timestamp.now()
+                period_desc = f"至今天 {end_date.date()}"
+            
+            reference_days = (end_date - reference_start_date).days
+            print(f"参考案例 IMM-11243-25: memo回复日期={reference_start_date.date()}, {period_desc}, 天数={reference_days:.0f}天")
+
+    # 处理所有案例的 reply_memo_date
+    # 转换日期字段
+    df['filing_date'] = pd.to_datetime(df['filing_date'], errors='coerce')
+    df['outcome_date'] = pd.to_datetime(df['outcome_date'], errors='coerce')
+    df['reply_memo_date'] = pd.to_datetime(df['reply_memo_date'], errors='coerce')
+    
+    # 计算 reply_memo_date：优先使用实际值，其次使用估算值
+    df['calculated_reply_date'] = df['reply_memo_date']  # 优先使用实际 reply_memo_date
+    
+    # 对于没有 reply_memo_date 但有 memo_response_time 的案例，使用备选计算
+    mask_need_calc = df['calculated_reply_date'].isna() & df['memo_response_time'].notna() & df['filing_date'].notna()
+    if mask_need_calc.any():
+        df.loc[mask_need_calc, 'calculated_reply_date'] = df.loc[mask_need_calc, 'filing_date'] + pd.to_timedelta(df.loc[mask_need_calc, 'memo_response_time'], unit='D')
+        print(f"为 {mask_need_calc.sum()} 个案例使用估算的 memo 回复日期")
+
+    # 计算 reply_to_outcome_days
+    df['reply_to_outcome_days'] = None
+    
+    # 对于已结案案例
+    resolved_mask = df['case_status'].isin(['Discontinued', 'Granted', 'Dismissed'])
+    resolved_with_dates = resolved_mask & df['outcome_date'].notna() & df['calculated_reply_date'].notna()
+    
+    if resolved_with_dates.any():
+        df.loc[resolved_with_dates, 'reply_to_outcome_days'] = (
+            df.loc[resolved_with_dates, 'outcome_date'] - df.loc[resolved_with_dates, 'calculated_reply_date']
+        ).dt.days
+
+    # 对于未结案案例（有 reply_memo_date 但没有 outcome_date），计算到当前的时间
+    unresolved_mask = ~resolved_mask & df['calculated_reply_date'].notna()
+    if unresolved_mask.any():
+        current_date = pd.Timestamp.now()
+        df.loc[unresolved_mask, 'reply_to_outcome_days'] = (
+            current_date - df.loc[unresolved_mask, 'calculated_reply_date']
+        ).dt.days
+
+    # 只统计有效的数据
+    df_valid = df[df['reply_to_outcome_days'].notna() & (df['reply_to_outcome_days'] >= 0)].copy()
+    
+    if df_valid.empty:
+        print("没有有效的 reply_memo 到 outcome 时间数据，跳过绘图。")
+        return
+
+    # 对于月度趋势，我们只看已结案案例（因为 outcome_date 是分组依据）
+    df_resolved = df_valid[resolved_mask].copy()
+    if df_resolved.empty:
+        print("没有已结案的有效数据用于月度趋势，跳过绘图。")
+        return
+
+    # 按 outcome_date 月末 和 case_status 分组，计算多个统计指标
+    grouped = df_resolved.groupby([pd.Grouper(key='outcome_date', freq='ME'), 'case_status'])['reply_to_outcome_days'].agg(['max', 'min', 'mean', 'median'])
+    if grouped.empty:
+        print("分组后无数据，跳过绘图。")
+        return
+
+    # 创建 4 个子图，分别显示最大、最小、平均、中位数
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
+    
+    metrics = [('max', '最大值'), ('min', '最小值'), ('mean', '平均值'), ('median', '中位数')]
+    axes = [ax1, ax2, ax3, ax4]
+    
+    for (metric, metric_name), ax in zip(metrics, axes):
+        # 重置索引以便于绘图
+        pivot_data = grouped[metric].unstack(level=-1)
+        
+        # 为每个结案类型绘制线条
+        for col in pivot_data.columns:
+            ax.plot(pivot_data.index, pivot_data[col], marker='o', linestyle='-', label=str(col))
+        
+        # 添加参考案例的水平线
+        if reference_days is not None:
+            ax.axhline(y=reference_days, color='red', linestyle='--', linewidth=2, 
+                      label=f'IMM-11243-25 ({reference_days:.0f}天)')
+            # 重新绘制图例以包含参考线
+            if _cjk_prop:
+                leg = ax.legend(prop=_cjk_prop)
+            else:
+                ax.legend()
+        
+        # 设置标题和标签
+        if _cjk_prop:
+            ax.set_title(f'Memo回复到结案时间 - {metric_name}（天）', fontproperties=_cjk_prop)
+            ax.set_xlabel('结案月份', fontproperties=_cjk_prop)
+            ax.set_ylabel('天数', fontproperties=_cjk_prop)
+            if not _cjk_prop:
+                for lbl in ax.get_xticklabels():
+                    lbl.set_fontproperties(_cjk_prop)
+        else:
+            ax.set_title(f'Memo Reply to Outcome Time - {metric_name} (days)')
+            ax.set_xlabel('Outcome Month')
+            ax.set_ylabel('Days')
+        
+        ax.tick_params(axis='x', rotation=45)
+
+    fig.suptitle('按结案类型统计：Memo回复到结案时间分析（含IMM-11243-25参考线）', fontsize=16, fontproperties=_cjk_prop if _cjk_prop else None)
+    fig.tight_layout()
+    plt.show()
+
+
 def run_monthly_analysis(df):
     """
     实现按月统计的逻辑，健壮处理没有日期或全部为 NaT 的情况。
@@ -328,6 +474,11 @@ def run_monthly_analysis(df):
     plot_outcome_trends(df_monthly)
     plot_timeline_trends(df_monthly)
     plot_memo_response_trends(df_monthly)
+    # 新增：按月统计 memo 回复 到 结案 的时间，按结案类型分系列
+    try:
+        plot_memo_reply_to_outcome_trends(df)
+    except Exception as e:
+        print('绘制 memo->outcome 趋势失败：', e)
 
     # 打印文字报告
     print("\n" + "="*50)

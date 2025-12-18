@@ -73,34 +73,46 @@ def check_service_availability():
 # -----------------------------------------------------------
 def run_with_timeout(func, timeout):
     """Execute function with timeout, return (result, error) tuple."""
-    result = [None]
-    error = [None]
-
-    def wrapper():
+    import signal
+    import os
+    
+    result = [None]  # type: list[object]
+    error = [None]  # type: list[Exception | None]
+    
+    # Use signal-based timeout for better resource handling
+    def timeout_handler(signum, frame):
+        raise TimeoutError(f"Operation timed out after {timeout} seconds")
+    
+    # Set timeout handler
+    old_handler = signal.signal(signal.SIGALRM, timeout_handler)
+    
+    try:
+        # Set alarm
+        signal.alarm(timeout)
         try:
             result[0] = func()
         except Exception as e:
             error[0] = e
-
-    thread = threading.Thread(target=wrapper)
-    thread.start()
-    thread.join(timeout)
-
-    if thread.is_alive():
-        return None, TimeoutError("Request timed out")
-
+        finally:
+            # Cancel alarm
+            signal.alarm(0)
+    finally:
+        # Restore original handler
+        signal.signal(signal.SIGALRM, old_handler)
+    
     return result[0], error[0]
 
 
 # -----------------------------------------------------------
 # Safe Ollama request for classification
 # -----------------------------------------------------------
-def safe_ollama_request(summary_text: str, model: str = None) -> dict[str, Any]:
+def safe_ollama_request(summary_text: str, model: str | None = None, wait_for_idle: bool = True, max_idle_wait: int = 120) -> dict[str, Any]:
     """
     Safe Ollama call with timeout and retry:
     - Single-threaded (with lock)
     - Automatic timeout termination
     - Exponential backoff retry
+    - Optional wait for idle state
     - Returns error to fallback to NLP analysis
     """
     from loguru import logger
@@ -108,6 +120,12 @@ def safe_ollama_request(summary_text: str, model: str = None) -> dict[str, Any]:
     model_to_use = model or OLLAMA_MODEL
     
     with ollama_lock:
+        # Optional: Wait for Ollama to become idle
+        if wait_for_idle:
+            logger.info("⏳ Checking if Ollama is idle before starting new request...")
+            if not wait_for_ollama_idle(max_wait_time=max_idle_wait, check_interval=5):
+                logger.warning(f"⚠️ Ollama did not become idle within {max_idle_wait}s, proceeding anyway")
+        
         attempt = 0
 
         while attempt < OLLAMA_MAX_RETRY:
@@ -149,7 +167,7 @@ def safe_ollama_request(summary_text: str, model: str = None) -> dict[str, Any]:
                     # Success - try to parse JSON
                     try:
                         # Handle markdown-wrapped JSON
-                        cleaned_content = content.strip()
+                        cleaned_content = str(content).strip()
                         if cleaned_content.startswith('```json'):
                             cleaned_content = cleaned_content[7:]  # Remove ```json
                         if cleaned_content.endswith('```'):
@@ -189,9 +207,9 @@ def safe_ollama_request(summary_text: str, model: str = None) -> dict[str, Any]:
 # -----------------------------------------------------------
 # External callable function
 # -----------------------------------------------------------
-def safe_llm_classify(summary_text: str, model: str = None) -> dict[str, Any]:
+def safe_llm_classify(summary_text: str, model: str | None = None, wait_for_idle: bool = True, max_idle_wait: int = 120) -> dict[str, Any]:
     """Safe LLM classification for Federal Court cases."""
-    return safe_ollama_request(summary_text, model)
+    return safe_ollama_request(summary_text, model, wait_for_idle=wait_for_idle, max_idle_wait=max_idle_wait)
 
 
 def extract_entities_with_ollama(
@@ -201,6 +219,8 @@ def extract_entities_with_ollama(
     timeout: int = 60,
     max_retries: int = 3,
     retry_delay: float = 1.0,
+    wait_for_idle: bool = True,
+    max_idle_wait: int = 120,
 ) -> dict[str, Any] | None:
     """Call local Ollama to extract visa office and judge from case text.
 
@@ -228,6 +248,12 @@ def extract_entities_with_ollama(
 
     base_url = ollama_url or DEFAULT_OLLAMA_URL
     prompt = _build_extraction_prompt(text)
+
+    # Optional: Wait for Ollama to become idle
+    if wait_for_idle:
+        logger.info("⏳ Checking if Ollama is idle before entity extraction...")
+        if not wait_for_ollama_idle(max_wait_time=max_idle_wait, check_interval=5, ollama_url=base_url):
+            logger.warning(f"⚠️ Ollama did not become idle within {max_idle_wait}s, proceeding anyway")
 
     payload = {
         "model": model,
@@ -398,6 +424,405 @@ def get_running_model(ollama_url: str | None = None, timeout: int = 5) -> str | 
     return None
 
 
+def get_running_session_count(ollama_url: str | None = None, timeout: int = 5) -> int:
+    """Get the number of currently active Ollama processing sessions.
+    
+    **NEW METHOD**: Uses non-intrusive detection to avoid self-interference:
+    1. Check network connections for real external requests (avoids self-interference)
+    2. Check /api/ps for loaded models status information
+    3. Use lightweight health checks as fallback
+    
+    This approach avoids the problem where detection requests themselves make Ollama appear busy.
+    
+    Args:
+        ollama_url: Base URL for Ollama, defaults to localhost:11434
+        timeout: Request timeout in seconds
+        
+    Returns:
+        Number of actively processing sessions (0 if idle)
+    """
+    from loguru import logger
+    
+    if requests is None:
+        logger.warning("requests library not available for session detection")
+        return 0
+        
+    base_url = ollama_url or DEFAULT_OLLAMA_URL
+    port = 11434  # Default Ollama port
+    
+    try:
+        # Step 1: Check network connections (non-intrusive method)
+        connection_count = _count_ollama_connections(port)
+        logger.debug(f"🔍 Network connections to port {port}: {connection_count}")
+        
+        # Subtract 1 for our own monitoring connection if we just made a request
+        # This handles the case where our own detection creates a connection
+        adjusted_connections = max(0, connection_count - 1)
+        logger.debug(f"🔍 Adjusted connections (excluding our own): {adjusted_connections}")
+        
+        if adjusted_connections > 0:
+            logger.info(f"📈 Detected {adjusted_connections} external connections to Ollama")
+            return adjusted_connections
+        
+        # Step 2: If no external connections, check if models are loaded
+        loaded_models = []
+        logger.debug(f"🔍 Checking loaded models at {base_url}/api/ps")
+        try:
+            response = requests.get(f"{base_url}/api/ps", timeout=timeout)
+            response.raise_for_status()
+            ps_data = response.json()
+            
+            if isinstance(ps_data, dict) and "models" in ps_data:
+                import datetime
+                current_time = datetime.datetime.now(datetime.timezone.utc)
+                
+                for model_info in ps_data["models"]:
+                    model_name = model_info.get("name", "unknown")
+                    expires_at_str = model_info.get("expires_at")
+                    
+                    # Check if model is still loaded (not expired)
+                    if expires_at_str:
+                        try:
+                            expires_at = datetime.datetime.fromisoformat(expires_at_str.replace('Z', '+00:00'))
+                            if expires_at > current_time:
+                                loaded_models.append(model_name)
+                                remaining_time = expires_at - current_time
+                                logger.debug(f"   📦 Model loaded: {model_name} (expires in {remaining_time.total_seconds():.0f}s)")
+                            else:
+                                logger.debug(f"   💤 Expired model: {model_name}")
+                        except (ValueError, TypeError) as e:
+                            logger.debug(f"   ❓ Invalid expiry for {model_name}: {e}")
+                    else:
+                        # No expiry means permanently loaded
+                        loaded_models.append(model_name)
+                        logger.debug(f"   📦 Permanently loaded: {model_name}")
+                        
+        except requests.exceptions.RequestException as e:
+            logger.debug(f"ℹ️ /api/ps not available: {e}")
+        
+        # Step 3: Only test models if we have loaded models AND want to be very sure
+        if loaded_models and adjusted_connections == 0:
+            logger.debug(f"🔍 No external connections, testing if {len(loaded_models)} loaded models are actually processing")
+            for model_name in loaded_models:
+                if _is_model_actively_processing_non_intrusive(base_url, model_name, timeout=2):
+                    logger.info(f"📈 Model {model_name} appears to be processing internal work")
+                    return 1
+                else:
+                    logger.debug(f"   💤 Model {model_name} is idle")
+        
+        # If we get here, Ollama is truly idle
+        logger.info(f"📈 No active processing sessions detected")
+        return 0
+        
+    except Exception as e:
+        logger.error(f"💥 Error detecting session count: {e}")
+        logger.exception("Full exception details:")
+        return 0
+
+
+def _count_ollama_connections(port: int = 11434) -> int:
+    """Count established connections to Ollama port using netstat.
+    
+    This is a non-intrusive method that doesn't create its own connections
+    to Ollama, avoiding the self-interference problem.
+    
+    Args:
+        port: Ollama port number
+        
+    Returns:
+        Number of established connections to the port
+    """
+    from loguru import logger
+    import subprocess
+    
+    try:
+        # Use netstat to count ESTABLISHED connections to Ollama port
+        result = subprocess.run(
+            ["netstat", "-an"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        
+        if result.returncode == 0:
+            lines = result.stdout.split('\n')
+            connections = 0
+            
+            for line in lines:
+                # Look for ESTABLISHED connections to our port
+                if (f":{port}" in line and 
+                    "ESTABLISHED" in line and
+                    "127.0.0.1" in line):  # Local connections only
+                    
+                    connections += 1
+                    logger.debug(f"   🔗 Found connection: {line.strip()}")
+            
+            return connections
+        else:
+            logger.debug(f"netstat command failed: {result.stderr}")
+            return 0
+            
+    except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError) as e:
+        logger.debug(f"Cannot use netstat for connection counting: {e}")
+        # Fallback: try ss (modern alternative to netstat)
+        return _count_ollama_connections_ss(port)
+    
+    except Exception as e:
+        logger.debug(f"Error counting connections: {e}")
+        return 0
+
+
+def _count_ollama_connections_ss(port: int = 11434) -> int:
+    """Count connections using ss command (fallback for netstat)."""
+    from loguru import logger
+    import subprocess
+    
+    try:
+        result = subprocess.run(
+            ["ss", "-an"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        
+        if result.returncode == 0:
+            lines = result.stdout.split('\n')
+            connections = 0
+            
+            for line in lines:
+                if (f":{port}" in line and 
+                    "ESTAB" in line and
+                    "127.0.0.1" in line):
+                    
+                    connections += 1
+                    logger.debug(f"   🔗 Found ss connection: {line.strip()}")
+            
+            return connections
+        else:
+            logger.debug(f"ss command failed: {result.stderr}")
+            return 0
+            
+    except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError) as e:
+        logger.debug(f"Cannot use ss for connection counting: {e}")
+        return 0
+
+
+def _is_model_actively_processing(base_url: str, model_name: str, timeout: int = 3) -> bool:
+    """DEPRECATED: Test if a model is actively processing (may cause self-interference).
+    
+    This function is kept for compatibility but should not be used in session detection
+    as it can cause self-interference problems.
+    
+    Args:
+        base_url: Ollama server URL
+        model_name: Name of the model to test
+        timeout: Test timeout in seconds
+        
+    Returns:
+        True if model appears to be actively processing other requests
+    """
+    from loguru import logger
+    import datetime
+    
+    if requests is None:
+        logger.warning("requests library not available for activity testing")
+        return True  # Conservative: assume busy if we can't test
+    
+    try:
+        # Send minimal test request
+        test_payload = {
+            "model": model_name,
+            "prompt": "Hi",  # Smallest possible test prompt
+            "stream": False,
+            "options": {
+                "temperature": 0,
+                "max_tokens": 1  # Request only 1 token to minimize processing
+            }
+        }
+        
+        start_time = datetime.datetime.now()
+        _ = requests.post(  # Use _ to indicate we ignore the response value
+            f"{base_url}/api/generate", 
+            json=test_payload, 
+            timeout=timeout
+        )
+        response_time = (datetime.datetime.now() - start_time).total_seconds()
+        
+        # Response time threshold: if > 0.8 seconds, model is likely busy
+        # This threshold may need adjustment based on your hardware
+        if response_time > 0.8:
+            logger.debug(f"   ⏱️ {model_name} response: {response_time:.2f}s (BUSY)")
+            return True
+        else:
+            logger.debug(f"   ⏱️ {model_name} response: {response_time:.2f}s (idle)")
+            return False
+            
+    except requests.exceptions.Timeout:
+        # Timeout strongly suggests model is busy processing other requests
+        logger.debug(f"   ⏱️ {model_name} test timeout (BUSY)")
+        return True
+    except requests.exceptions.RequestException as e:
+        # Other errors might indicate the model is busy or unavailable
+        logger.debug(f"   ❓ {model_name} test failed: {e}")
+        return True  # Conservative: assume busy if we can't tell
+
+
+def _is_model_actively_processing_non_intrusive(base_url: str, model_name: str, timeout: int = 2) -> bool:
+    """Non-intrusive test for model activity using lightweight health check.
+    
+    This function uses a very minimal approach to avoid interfering with
+    actual processing and tries to detect internal Ollama work.
+    
+    Args:
+        base_url: Ollama server URL
+        model_name: Name of the model to test
+        timeout: Very short timeout for quick check
+        
+    Returns:
+        True if model appears to be actively processing
+    """
+    from loguru import logger
+    import datetime
+    
+    if requests is None:
+        logger.warning("requests library not available for activity testing")
+        return True  # Conservative: assume busy if we can't test
+    
+    try:
+        # Use a very lightweight health check on /api/ps instead of /api/generate
+        # This should not interfere with actual model processing
+        start_time = datetime.datetime.now()
+        response = requests.get(f"{base_url}/api/ps", timeout=timeout)
+        response.raise_for_status()
+        
+        # Check response time - even /api/ps might be slow if Ollama is busy
+        response_time = (datetime.datetime.now() - start_time).total_seconds()
+        
+        # Very short threshold since /api/ps should be fast
+        if response_time > 0.3:
+            logger.debug(f"   ⏱️ API response: {response_time:.2f}s (Ollama busy)")
+            return True
+        else:
+            logger.debug(f"   ⏱️ API response: {response_time:.2f}s (Ollama idle)")
+            return False
+            
+    except requests.exceptions.Timeout:
+        # Even /api/ps timeout suggests Ollama is very busy
+        logger.debug(f"   ⏱️ API timeout (Ollama very busy)")
+        return True
+    except requests.exceptions.RequestException as e:
+        # Other errors indicate potential issues
+        logger.debug(f"   ❓ API check failed: {e}")
+        return False  # Don't assume busy for network errors
+
+
+def _is_ollama_service_busy(base_url: str, timeout: int = 3) -> bool:
+    """Check if Ollama service is busy using response time heuristics.
+    
+    This is a fallback method when no specific models are detected.
+    
+    Args:
+        base_url: Ollama server URL
+        timeout: Test timeout in seconds
+        
+    Returns:
+        True if service appears to be busy
+    """
+    from loguru import logger
+    import datetime
+    
+    if requests is None:
+        logger.warning("requests library not available for service testing")
+        return True  # Conservative: assume busy if we can't test
+    
+    try:
+        # Test with a simple tags request
+        start_time = datetime.datetime.now()
+        _ = requests.get(f"{base_url}/api/tags", timeout=timeout)  # Use _ to ignore response
+        response_time = (datetime.datetime.now() - start_time).total_seconds()
+        
+        # If tags API takes > 1.5 seconds, service is likely busy
+        if response_time > 1.5:
+            logger.debug(f"   ⏱️ Service response time: {response_time:.2f}s (BUSY)")
+            return True
+        else:
+            logger.debug(f"   ⏱️ Service response time: {response_time:.2f}s (idle)")
+            return False
+            
+    except requests.exceptions.Timeout:
+        logger.debug(f"   ⏱️ Service timeout (BUSY)")
+        return True
+    except requests.exceptions.RequestException as e:
+        logger.debug(f"   ❓ Service test failed: {e}")
+        return True  # Conservative: assume busy if we can't tell
+
+
+def is_ollama_idle(ollama_url: str | None = None, timeout: int = 5) -> bool:
+    """Check if Ollama is idle (no active inference sessions).
+    
+    Args:
+        ollama_url: Base URL for Ollama, defaults to localhost:11434
+        timeout: Request timeout in seconds
+        
+    Returns:
+        True if Ollama is idle, False if busy
+    """
+    from loguru import logger
+    
+    session_count = get_running_session_count(ollama_url, timeout)
+    is_idle = session_count == 0
+    
+    if is_idle:
+        logger.debug("✅ Ollama is idle - safe to proceed")
+    else:
+        logger.debug(f"⏳ Ollama is busy with {session_count} active sessions")
+        
+    return is_idle
+
+
+def wait_for_ollama_idle(
+    max_wait_time: int = 300, 
+    check_interval: int = 10,
+    ollama_url: str | None = None,
+    timeout: int = 5
+) -> bool:
+    """Wait for Ollama to become idle before proceeding.
+    
+    Args:
+        max_wait_time: Maximum time to wait in seconds (default: 5 minutes)
+        check_interval: Time between checks in seconds (default: 10 seconds)
+        ollama_url: Base URL for Ollama, defaults to localhost:11434
+        timeout: Timeout for individual API calls
+        
+    Returns:
+        True if Ollama became idle within time limit, False if timeout reached
+    """
+    from loguru import logger
+    
+    start_time = time.time()
+    elapsed = 0
+    
+    logger.info(f"⏳ Waiting for Ollama to become idle (max wait: {max_wait_time}s)")
+    
+    while elapsed < max_wait_time:
+        if is_ollama_idle(ollama_url, timeout):
+            wait_time = time.time() - start_time
+            logger.info(f"✅ Ollama became idle after {wait_time:.1f}s")
+            return True
+            
+        elapsed = time.time() - start_time
+        remaining = max_wait_time - elapsed
+        
+        if remaining <= 0:
+            break
+            
+        logger.info(f"⏱️  Ollama busy, checking again in {check_interval}s ({remaining:.0f}s remaining)")
+        time.sleep(min(check_interval, remaining))
+    
+    logger.warning(f"⚠️  Ollama did not become idle within {max_wait_time}s")
+    return False
+
+
 def extract_entities_batch(
     texts: list[str],
     model: str = "qwen2.5-7b-instruct",
@@ -415,6 +840,6 @@ def extract_entities_batch(
     results = []
     for t in texts:
         results.append(
-            extract_entities_with_ollama(t, model=model, ollama_url=ollama_url, max_retries=retries, retry_delay=backoff, timeout=timeout)
+            extract_entities_with_ollama(t, model=model, ollama_url=ollama_url, max_retries=retries, retry_delay=backoff, timeout=int(timeout))
         )
     return results

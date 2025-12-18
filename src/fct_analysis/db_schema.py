@@ -54,6 +54,14 @@ class AnalysisDBManager:
             age_of_case INTEGER,
             rule9_wait INTEGER,
             outcome_date DATE,
+            memo_response_time INTEGER,
+            memo_to_outcome_time INTEGER,
+            reply_memo_time INTEGER,
+            reply_to_outcome_time INTEGER,
+            -- DOJ and applicant memo dates
+            doj_memo_date DATE,
+            reply_memo_date DATE,
+            has_hearing BOOLEAN,
             
             -- Analysis metadata
             analysis_mode VARCHAR(20) NOT NULL DEFAULT 'rule',
@@ -79,7 +87,10 @@ class AnalysisDBManager:
             "CREATE INDEX IF NOT EXISTS idx_case_analysis_status ON case_analysis(case_status)",
             "CREATE INDEX IF NOT EXISTS idx_case_analysis_visa_office ON case_analysis(visa_office)",
             "CREATE INDEX IF NOT EXISTS idx_case_analysis_analyzed_at ON case_analysis(analyzed_at)",
-            "CREATE INDEX IF NOT EXISTS idx_case_analysis_filing_date ON case_analysis(filing_date)"
+            "CREATE INDEX IF NOT EXISTS idx_case_analysis_filing_date ON case_analysis(filing_date)",
+            "CREATE INDEX IF NOT EXISTS idx_case_analysis_reply_memo_time ON case_analysis(reply_memo_time)",
+            "CREATE INDEX IF NOT EXISTS idx_case_analysis_dojo_memo_date ON case_analysis(doj_memo_date)",
+            "CREATE INDEX IF NOT EXISTS idx_case_analysis_reply_memo_date ON case_analysis(reply_memo_date)"
         ]
         
         try:
@@ -200,7 +211,10 @@ class AnalysisDBManager:
         required_columns = [
             'id', 'case_id', 'case_type', 'case_status', 'visa_office', 'judge',
             'analysis_mode', 'analyzed_at', 'analysis_version',
-            'time_to_close', 'age_of_case', 'rule9_wait', 'outcome_date'
+            'time_to_close', 'age_of_case', 'rule9_wait', 'outcome_date',
+            'memo_response_time', 'memo_to_outcome_time', 'reply_memo_time', 
+            'reply_to_outcome_time', 'doj_memo_date', 'reply_memo_date'
+            'reply_to_outcome_time', 'doj_memo_date', 'reply_memo_date'
         ]
         
         try:
@@ -284,6 +298,14 @@ class AnalysisDBManager:
                     updates = [
                         "ALTER TABLE case_analysis ALTER COLUMN visa_office TYPE VARCHAR(200)",
                         "ALTER TABLE case_analysis ALTER COLUMN judge TYPE VARCHAR(200)",
+                        # Add new duration fields if they don't exist
+                        "ALTER TABLE case_analysis ADD COLUMN IF NOT EXISTS memo_response_time INTEGER",
+                        "ALTER TABLE case_analysis ADD COLUMN IF NOT EXISTS memo_to_outcome_time INTEGER", 
+                        "ALTER TABLE case_analysis ADD COLUMN IF NOT EXISTS reply_memo_time INTEGER",
+                        "ALTER TABLE case_analysis ADD COLUMN IF NOT EXISTS reply_to_outcome_time INTEGER",
+                        "ALTER TABLE case_analysis ADD COLUMN IF NOT EXISTS doj_memo_date DATE",
+                        "ALTER TABLE case_analysis ADD COLUMN IF NOT EXISTS reply_memo_date DATE",
+                        "ALTER TABLE case_analysis ADD COLUMN IF NOT EXISTS has_hearing BOOLEAN",
                     ]
                     
                     for sql in updates:
@@ -328,6 +350,8 @@ class AnalysisResultStorage:
                         SELECT case_type, case_status, visa_office, judge,
                                analysis_mode, analyzed_at, analysis_version,
                                time_to_close, age_of_case, rule9_wait, outcome_date,
+                               memo_response_time, memo_to_outcome_time, reply_memo_time,
+                               reply_to_outcome_time, doj_memo_date, reply_memo_date,
                                analysis_data, title, court, filing_date
                         FROM case_analysis 
                         WHERE case_id = %s AND analysis_mode = %s
@@ -368,9 +392,14 @@ class AnalysisResultStorage:
                         'outcome_date': ('outcome_date', None),
                         'memo_response_time': ('memo_response_time', None),
                         'memo_to_outcome_time': ('memo_to_outcome_time', None),
+                        'reply_memo_time': ('reply_memo_time', None),
+                        'reply_to_outcome_time': ('reply_to_outcome_time', None),
+                        'doj_memo_date': ('doj_memo_date', None),
+                        'reply_memo_date': ('reply_memo_date', None),
                         'title': ('title', None),
                         'court': ('court', 100),
-                        'filing_date': ('filing_date', None)
+                        'filing_date': ('filing_date', None),
+                        'has_hearing': ('has_hearing', None)
                     }
                     
                     # Build INSERT and UPDATE clauses
