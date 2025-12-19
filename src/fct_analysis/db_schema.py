@@ -205,6 +205,35 @@ class AnalysisDBManager:
         except (OperationalError, DatabaseError) as e:
             logger.error(f"Failed to copy cases to analysis table: {e}")
             return False
+            
+    def clear_analysis_by_year(self, year: int) -> bool:
+        """Clear analysis results for a specific year from the analysis table.
+        
+        Args:
+            year: Year to clear (extracted from case_number suffix)
+            
+        Returns:
+            True if clear was successful
+        """
+        try:
+            with connect(**self.db_config) as conn:
+                with conn.cursor() as cursor:
+                    # Clear cases for specific year using case_id suffix (format: -YY)
+                    # Note: case_id in case_analysis usually matches case_number (e.g., IMM-1234-25)
+                    year_suffix = f"-{year % 100:02d}"
+                    delete_sql = """
+                    DELETE FROM case_analysis 
+                    WHERE case_id LIKE %s OR case_number LIKE %s
+                    """
+                    pattern = f"%{year_suffix}"
+                    cursor.execute(delete_sql, (pattern, pattern))
+                    deleted_count = cursor.rowcount
+                    conn.commit()
+                    logger.info(f"Successfully cleared {deleted_count} analysis records for year {year} (suffix {year_suffix})")
+                    return True
+        except (OperationalError, DatabaseError) as e:
+            logger.error(f"Failed to clear analysis results for year {year}: {e}")
+            return False
     
     def check_analysis_table(self) -> Dict[str, bool]:
         """Check if analysis table and required columns exist."""

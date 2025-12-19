@@ -1,11 +1,24 @@
 import pandas as pd
 import numpy as np
-from sqlalchemy import create_engine
+
+# Suppress future warning for downcasting
+pd.set_option('future.no_silent_downcasting', True)
+from sqlalchemy import create_engine, text
 import re
+import sys
+import json
+import argparse
 from datetime import datetime
+import os
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend for headless environments
+
+# 配置输出目录
+OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'output')
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
 import matplotlib.pyplot as plt
 import seaborn as sns
-import os
 from sqlalchemy.exc import OperationalError as SAOperationalError
 from lib.config import Config
 import matplotlib.font_manager as fm
@@ -104,14 +117,15 @@ MY_CASE_MEMO_DATE = '2025-07-30' # 示例日期，请替换为实际日期
 
 # --- 数据库交互部分 ---
 
-def get_mandamus_data_for_analysis():
-    """从数据库拉取 2025 年的 Mandamus 案件数据"""
+def get_mandamus_data_for_analysis(year=2025):
+    """从数据库拉取指定年份的 Mandamus 案件数据"""
     engine = create_engine(DB_CONNECTION_STR)
     
-    # 拉取 case_analysis 的核心数据，仅限2025年，并确保日期格式正确
-    query = """
+    # 拉取 case_analysis 的核心数据，仅限指定年份，并确保日期格式正确
+    year_suffix = f"-{year % 100:02d}"
+    query = f"""
     SELECT 
-        case_number,
+        case_id AS case_number,
         filing_date,
         case_status,
         visa_office,
@@ -122,13 +136,14 @@ def get_mandamus_data_for_analysis():
         reply_to_outcome_time
     FROM case_analysis 
     WHERE case_type = 'Mandamus' 
-    AND EXTRACT(YEAR FROM filing_date) = 2025
+    AND (case_id LIKE '%{year_suffix}' OR case_number LIKE '%{year_suffix}')
     ORDER BY filing_date ASC;
     """
     
-    print("正在提取 2025 年 Mandamus 案件核心数据...")
+    print(f"正在提取 {year} 年 Mandamus 案件核心数据...")
     try:
-        df = pd.read_sql(query, engine)
+        with engine.connect() as connect:
+            df = pd.read_sql(text(query), connect)
     except SAOperationalError as e:
         print("数据库连接失败：", str(e))
         print("请检查配置或环境变量 DB_CONNECTION_STR，或确保数据库凭据在 Config 中正确设置（get_db_config）。")
@@ -140,8 +155,95 @@ def get_mandamus_data_for_analysis():
     df['filing_date'] = pd.to_datetime(df['filing_date'], errors='coerce')
     df['outcome_date'] = pd.to_datetime(df['outcome_date'], errors='coerce')
     
-    print(f"提取完成: {len(df)} 条 2025 年记录")
+    print(f"提取完成: {len(df)} 条 {year} 年记录")
     return df
+
+
+def export_cases_to_json(year=2025):
+    """提取 Granted 和 Dismissed 案件的原始信息和分析结果，并保存为 JSON。"""
+    engine = create_engine(DB_CONNECTION_STR)
+    
+    for status in ['Granted', 'Dismissed']:
+        filename_base = f"{status.lower()}_cases_{year}.json"
+        filename = os.path.join(OUTPUT_DIR, filename_base)
+        print(f"\n正在导出 {status} 案件到 {filename}...")
+        
+        # 1. 从 case_analysis 获取该状态的 Mandamus 案件
+        year_suffix = f"-{year % 100:02d}"
+        analysis_query = f"""
+        SELECT * FROM case_analysis 
+        WHERE case_type = 'Mandamus' 
+        AND case_status = '{status}'
+        AND (case_id LIKE '%{year_suffix}' OR case_number LIKE '%{year_suffix}')
+        """
+        with engine.connect() as connect:
+            analysis_df = pd.read_sql(text(analysis_query), connect)
+        
+        if analysis_df.empty:
+            print(f"   (未发现 {year} 年 {status} 状态 of Mandamus 案件数据)")
+            continue
+            
+        case_ids = analysis_df['case_id'].tolist()
+        
+        # 2. 获取 cases 表的原始基本信息
+        cases_info_list = []
+        batch_size = 500
+        for i in range(0, len(case_ids), batch_size):
+            batch = case_ids[i:i + batch_size]
+            batch_str = ",".join([f"'{c}'" for c in batch])
+            c_query = f"SELECT * FROM cases WHERE case_number IN ({batch_str})"
+            with engine.connect() as connect:
+                batch_df = pd.read_sql(text(c_query), connect)
+            cases_info_list.append(batch_df)
+        
+        cases_df = pd.concat(cases_info_list) if cases_info_list else pd.DataFrame()
+        
+        # 3. 获取所有相关的 docket_entries
+        docket_list = []
+        for i in range(0, len(case_ids), batch_size):
+            batch = case_ids[i:i + batch_size]
+            batch_str = ",".join([f"'{c}'" for c in batch])
+            d_query = f"SELECT * FROM docket_entries WHERE case_number IN ({batch_str}) ORDER BY date_filed ASC"
+            with engine.connect() as connect:
+                batch_df = pd.read_sql(text(d_query), connect)
+            docket_list.append(batch_df)
+            
+        docket_df = pd.concat(docket_list) if docket_list else pd.DataFrame()
+        
+        # 4. 组装数据构建 JSON 格式
+        json_results = []
+        
+        # 辅助日期处理函数
+        def date_handler(obj):
+            if hasattr(obj, 'isoformat'):
+                return obj.isoformat()
+            return obj
+
+        for _, analysis_row in analysis_df.iterrows():
+            c_num = analysis_row['case_id']
+            
+            # 获取基本信息字典
+            c_info = cases_df[cases_df['case_number'] == c_num].to_dict('records')
+            c_info_dict = c_info[0] if c_info else {}
+            
+            # 获取该案的所有 docket entries
+            entries = docket_df[docket_df['case_number'] == c_num].to_dict('records')
+            
+            # 合并为一个对象
+            json_results.append({
+                "case_number": c_num,
+                "analysis_result": {k: date_handler(v) for k, v in analysis_row.to_dict().items()},
+                "raw_case_info": {k: date_handler(v) for k, v in c_info_dict.items()},
+                "docket_entries": [{k: date_handler(v) for k, v in e.items()} for e in entries]
+            })
+            
+        # 写入文件
+        try:
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(json_results, f, ensure_ascii=False, indent=2)
+            print(f"✅ 已成功生成 {filename} (含 {len(json_results)} 个案件)")
+        except Exception as e:
+            print(f"❌ 写入 {filename} 失败: {e}")
 
 # --- 分析和可视化部分 ---
 
@@ -180,8 +282,10 @@ def plot_workload_trends(df_monthly):
     if _cjk_prop:
         for lbl in ax1.get_xticklabels():
             lbl.set_fontproperties(_cjk_prop)
-    fig.tight_layout()
-    plt.show()
+    save_path = os.path.join(OUTPUT_DIR, 'mandamus_workload_trends.png')
+    plt.savefig(save_path)
+    print(f"📈 已保存负载趋势图至: {save_path}")
+    plt.close()
 
 
 def plot_outcome_trends(df_monthly):
@@ -214,7 +318,10 @@ def plot_outcome_trends(df_monthly):
         ax.set_ylabel('结案数量')
         plt.legend(title='结案方式')
     fig.autofmt_xdate(rotation=45)
-    plt.show()
+    save_path = os.path.join(OUTPUT_DIR, 'mandamus_outcome_trends.png')
+    plt.savefig(save_path)
+    print(f"📈 已保存结案方式趋势图至: {save_path}")
+    plt.close()
 
 
 def plot_timeline_trends(df_monthly):
@@ -236,7 +343,10 @@ def plot_timeline_trends(df_monthly):
 
     fig.autofmt_xdate(rotation=45)
     plt.legend()
-    plt.show()
+    save_path = os.path.join(OUTPUT_DIR, 'mandamus_timeline_trends.png')
+    plt.savefig(save_path)
+    print(f"📈 已保存结案耗时趋势图至: {save_path}")
+    plt.close()
 
 
 def plot_memo_response_trends(df_monthly):
@@ -262,7 +372,10 @@ def plot_memo_response_trends(df_monthly):
 
     fig.autofmt_xdate(rotation=45)
     plt.legend()
-    plt.show()
+    save_path = os.path.join(OUTPUT_DIR, 'mandamus_memo_response_trends.png')
+    plt.savefig(save_path)
+    print(f"📈 已保存 Memo 响应趋势图至: {save_path}")
+    plt.close()
 
 
 def plot_memo_reply_to_outcome_trends(df):
@@ -354,22 +467,22 @@ def plot_memo_reply_to_outcome_trends(df):
         return
 
     # 对于月度趋势，我们只看已结案案例（因为 outcome_date 是分组依据）
-    df_resolved = df_valid[resolved_mask].copy()
+    df_resolved = df_valid[df_valid['case_status'].isin(['Discontinued', 'Granted', 'Dismissed'])].copy()
     if df_resolved.empty:
         print("没有已结案的有效数据用于月度趋势，跳过绘图。")
         return
 
     # 按 outcome_date 月末 和 case_status 分组，计算多个统计指标
-    grouped = df_resolved.groupby([pd.Grouper(key='outcome_date', freq='ME'), 'case_status'])['reply_to_outcome_days'].agg(['max', 'min', 'mean', 'median'])
+    grouped = df_resolved.groupby([pd.Grouper(key='outcome_date', freq='ME'), 'case_status'])['reply_to_outcome_days'].agg(['mean', 'median'])
     if grouped.empty:
         print("分组后无数据，跳过绘图。")
         return
 
-    # 创建 4 个子图，分别显示最大、最小、平均、中位数
-    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
+    # 创建 2 个子图，分别显示平均值、中位数
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
     
-    metrics = [('max', '最大值'), ('min', '最小值'), ('mean', '平均值'), ('median', '中位数')]
-    axes = [ax1, ax2, ax3, ax4]
+    metrics = [('mean', '平均值'), ('median', '中位数')]
+    axes = [ax1, ax2]
     
     for (metric, metric_name), ax in zip(metrics, axes):
         # 重置索引以便于绘图
@@ -406,7 +519,144 @@ def plot_memo_reply_to_outcome_trends(df):
 
     fig.suptitle('按结案类型统计：Memo回复到结案时间分析（含IMM-11243-25参考线）', fontsize=16, fontproperties=_cjk_prop if _cjk_prop else None)
     fig.tight_layout()
-    plt.show()
+    save_path = os.path.join(OUTPUT_DIR, 'mandamus_memo_to_outcome_trends.png')
+    plt.savefig(save_path)
+    print(f"📈 已保存 Memo 到结案时间统计图至: {save_path}")
+    plt.close()
+
+    # === 打印摘要统计内容 ===
+    print("\n" + "="*60)
+    print("【Memo回复到结案时间分析摘要 (最近 6 个月)】")
+    print("="*60)
+    
+    # 1. 每月总体结案统计 (DataFrame 风格)
+    summary_overall = df_resolved.groupby(pd.Grouper(key='outcome_date', freq='ME'))['reply_to_outcome_days'].agg(['count', 'mean']).rename(columns={'count': 'resolved_count', 'mean': 'avg_days'})
+    print("\n--- 每月总体结案统计 (最近 6 个月) ---")
+    if not summary_overall.empty:
+        # 格式化索引为 YYYY-MM 字符串以获得更好的打印效果
+        summary_overall.index = summary_overall.index.strftime('%Y-%m')
+        # 强制将数值列转换为 float 并四舍五入到1位小数，确保打印效果
+        summary_overall['avg_days'] = summary_overall['avg_days'].astype(float).round(1)
+        print(summary_overall.tail(6))
+    else:
+        print("   (无数据)")
+
+    # 2. 每月分类结案统计 (DataFrame 风格)
+    monthly_status_agg = df_resolved.groupby([pd.Grouper(key='outcome_date', freq='ME'), 'case_status'])['reply_to_outcome_days'].agg(['count', 'mean'])
+    
+    # 构建宽表供打印
+    status_summary = pd.DataFrame(index=pd.date_range(start=summary_overall.index[0] if not summary_overall.empty else '2025-01-01', 
+                                                     periods=len(summary_overall), freq='ME'))
+    status_summary.index = status_summary.index.strftime('%Y-%m')
+    
+    found_any = False
+    for status in ['Granted', 'Dismissed']:
+        if status in monthly_status_agg.index.get_level_values('case_status'):
+            s_data = monthly_status_agg.xs(status, level='case_status')
+            # 转换 s_data 索引为字符串匹配
+            s_data.index = s_data.index.strftime('%Y-%m')
+            
+            status_summary[f'{status}_cnt'] = s_data['count']
+            status_summary[f'{status}_avg(days)'] = s_data['mean']
+            found_any = True
+    
+    print("\n--- 每月分类结案统计 (Granted/Dismissed) (最近 6 个月) ---")
+    if found_any:
+        # 只保留有数据的列
+        cols = [c for c in status_summary.columns if status_summary[c].notna().any()]
+        if cols:
+            # 确保数值格式一致，四舍五入到1位小数
+            for col in cols:
+                if '_cnt' in col:
+                    status_summary[col] = status_summary[col].fillna(0).astype(int)
+                else:
+                    status_summary[col] = status_summary[col].fillna(0).astype(float).round(1)
+            print(status_summary[cols].tail(6))
+        else:
+            print("   (无数据)")
+    else:
+        print("   (未发现 Granted 或 Dismissed 案例数据)")
+
+    # 3. 总计
+    total_count = len(df_resolved)
+    avg_duration = df_resolved['reply_to_outcome_days'].mean()
+    print(f"\n【总体汇总】 结案总数: {total_count} | 总体平均耗时: {avg_duration:.1f} 天")
+    print("=" * 60)
+
+
+def plot_case_duration_distribution(df):
+    """绘制结案耗时分布直方图"""
+    # 仅统计已结案且有耗时数据的 Mandamus 案件
+    df_resolved = df[df['case_status'].isin(['Discontinued', 'Granted', 'Dismissed'])].copy()
+    if df_resolved.empty or 'time_to_close' not in df_resolved.columns or df_resolved['time_to_close'].isna().all():
+        return
+
+    durations = df_resolved['time_to_close'].dropna()
+    
+    plt.figure(figsize=(12, 6))
+    
+    # 自动确定 bin 数量
+    sns.histplot(durations, bins=min(30, len(durations.unique())), kde=True, color='teal', alpha=0.6)
+    
+    # 添加中位数线
+    median_val = durations.median()
+    plt.axvline(median_val, color='red', linestyle='--', linewidth=2, label=f'中位数: {median_val:.1f}天')
+    
+    title = 'Mandamus 案件结案时长分布 (Filing to Outcome)'
+    xlabel = '结案耗时 (天)'
+    ylabel = '案件数量'
+    
+    if _cjk_prop:
+        plt.title(title, fontproperties=_cjk_prop, fontsize=16)
+        plt.xlabel(xlabel, fontproperties=_cjk_prop)
+        plt.ylabel(ylabel, fontproperties=_cjk_prop)
+        plt.legend(prop=_cjk_prop)
+    else:
+        plt.title(title, fontsize=16)
+        plt.xlabel(xlabel)
+        plt.ylabel(ylabel)
+        plt.legend()
+        
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    save_path = os.path.join(OUTPUT_DIR, 'mandamus_duration_distribution.png')
+    plt.savefig(save_path)
+    print(f"📈 已保存结案耗时分布图至: {save_path}")
+    plt.close()
+
+
+def analyze_resolution_time_distribution(df):
+    """统计不同结案时长 (age_of_case at resolution) 的案件分布"""
+    # 筛选已结案的案件
+    df_resolved = df[df['case_status'].isin(['Discontinued', 'Granted', 'Dismissed'])].copy()
+    
+    if df_resolved.empty or 'time_to_close' not in df_resolved.columns or df_resolved['time_to_close'].isna().all():
+        print("\n--- 结案耗时分布统计 ---")
+        print("   (没有有效的结案耗时数据)")
+        return
+
+    # time_to_close 即为结案时的 age_of_case
+    durations = df_resolved['time_to_close'].dropna()
+    
+    print("\n--- 结案耗时分布统计 (Mandamus) ---")
+    
+    # 定义区间 (0, 30, 60, ..., 240, 365, +inf)
+    bins = [0, 30, 60, 90, 120, 150, 180, 210, 240, 365, float('inf')]
+    labels = ['0-30天', '31-60天', '61-90天', '91-120天', '121-150天', '151-180天', '181-210天', '211-240天', '241-365天', '365天以上']
+    
+    # 统计
+    dist = pd.cut(durations, bins=bins, labels=labels, right=True).value_counts().sort_index()
+    total = len(durations)
+    
+    for label, count in dist.items():
+        percentage = (count / total) * 100 if total > 0 else 0
+        print(f"   {label:12}: {count:>4} 案 ({percentage:>4.1f}%)")
+    
+    # 找出多数案件所在范围
+    if total > 0:
+        most_common_range = dist.idxmax()
+        print(f"\n📊 结论: 多数 Mandamus 案件在 {most_common_range} 范围内结案。")
+    print("-" * 50)
 
 
 def run_monthly_analysis(df):
@@ -480,6 +730,12 @@ def run_monthly_analysis(df):
     except Exception as e:
         print('绘制 memo->outcome 趋势失败：', e)
 
+    # 新增：结案耗时分布分析
+    try:
+        plot_case_duration_distribution(df)
+    except Exception as e:
+        print('绘制结案时长分布图失败：', e)
+
     # 打印文字报告
     print("\n" + "="*50)
     print("【2025 年按月统计趋势分析报告】")
@@ -487,13 +743,19 @@ def run_monthly_analysis(df):
     print("\n--- 案件负荷与积压变化 (最近 6 个月) ---")
     print(df_monthly[['filing_count', 'resolution_count', 'net_change']].tail(6).round(0).astype(int))
 
+    # 新增文字版分布统计
+    analyze_resolution_time_distribution(df)
+
     print("\n--- 结案方式百分比 (最近 6 个月) ---")
     df_recent_outcome = df_monthly.tail(6).copy()
     df_recent_outcome['resolution_total'] = df_recent_outcome[['settled_count', 'granted_count', 'dismissed_count']].sum(axis=1)
     # avoid division by zero
     df_recent_outcome['Settled Rate'] = df_recent_outcome.apply(lambda r: (f"{round(r['settled_count']/r['resolution_total']*100, 1)}%") if r['resolution_total']>0 else '0.0%', axis=1)
     df_recent_outcome['Granted Rate'] = df_recent_outcome.apply(lambda r: (f"{round(r['granted_count']/r['resolution_total']*100, 1)}%") if r['resolution_total']>0 else '0.0%', axis=1)
-    print(df_recent_outcome[['Settled Rate', 'Granted Rate', 'median_time_to_close']])
+    df_recent_outcome['Dismiss Rate'] = df_recent_outcome.apply(lambda r: (f"{round(r['dismissed_count']/r['resolution_total']*100, 1)}%") if r['resolution_total']>0 else '0.0%', axis=1)
+    # 对中位数耗时进行四舍五入
+    df_recent_outcome['median_time_to_close'] = df_recent_outcome['median_time_to_close'].round(1)
+    print(df_recent_outcome[['resolution_total', 'Settled Rate', 'Granted Rate', 'Dismiss Rate', 'median_time_to_close']])
     
     # Memo 响应时间统计
     df_with_memo = df[df['memo_response_time'].notna()]
@@ -535,17 +797,26 @@ def run_monthly_analysis(df):
 
 # --- 主执行区 ---
 def main():
+    parser = argparse.ArgumentParser(description='FCT Mandamus 案件分析与数据导出')
+    parser.add_argument('--year', type=int, default=2025, help='要分析和导出的年份 (默认: 2025)')
+    args = parser.parse_args()
+    
+    target_year = args.year
     
     # 1. 提取核心数据
-    df_core = get_mandamus_data_for_analysis()
+    df_core = get_mandamus_data_for_analysis(target_year)
     
     # 2. 运行按月分析并绘制图表
     if not df_core.empty:
         run_monthly_analysis(df_core)
+        
+        # 3. 额外功能：导出详细信息为 JSON
+        export_cases_to_json(target_year)
     else:
-        print("未找到 Mandamus 案件数据进行分析。")
+        print(f"未找到 {target_year} 年 Mandamus 案件数据进行分析。")
 
     # 注意：微观分析 (Memo to Outcome) 需要 docket_entries 表，请在实际运行中整合 V3 和 V4 脚本。
 
 ####################################################33
-main()    
+if __name__ == "__main__":
+    main()

@@ -736,6 +736,13 @@ def analyze(
         max_index=Config.get_analysis_log_max_index()
     )
     from loguru import logger
+
+    # Validate force mode requirements
+    if force and year is None:
+        logger.error("❌ The --force parameter MUST be used with the --year parameter to prevent accidental cross-year data loss.")
+        logger.info("💡 Usage: python -m fct_analysis.cli --mode llm --force --year 2025")
+        return 1
+
     logger.info(f"Starting FCT analysis with mode: {mode}")
     logger.info(f"Input format: {input_format}")
     logger.info(f"Log file: {log_file}")
@@ -747,6 +754,14 @@ def analyze(
     if input_format == "database":
         db_storage = _db_schema.AnalysisResultStorage()
         db_manager = _db_schema.AnalysisDBManager()
+        
+        # If force and year are specified, clear existing analysis for that year
+        if force and year:
+            logger.warning(f"🔄 Force mode enabled: Clearing existing analysis results for year {year} in database...")
+            if not db_manager.clear_analysis_by_year(year):
+                logger.error(f"❌ Failed to clear analysis results for year {year}")
+                return 1
+            logger.info(f"✅ Existing analysis for year {year} cleared successfully.")
         
         # Create SQLAlchemy engine for docket_entries queries
         db_cfg = Config.get_db_config() or {}

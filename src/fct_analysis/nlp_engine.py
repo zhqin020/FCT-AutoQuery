@@ -49,17 +49,17 @@ class PatternLibrary:
     # Outcome Patterns (with priority)
     DISCONTINUED_PATTERNS = [
         r'notice of discontinuance',
+        r'application.*discontinued',
+        r'applicant.*withdrawn',
         r'\bdiscontinued\b',
         r'\bwithdrawn\b',
         r'\bwithdraw\b',
-        r'application.*discontinued',
-        r'applicant.*withdrawn',
     ]
     
     GRANTED_PATTERNS = [
-        r'\bgranted\b.*(application|appeal|petition|leave|judicial review)',
-        r'(application|appeal|petition|leave|judicial review).*\bgranted\b',
-        r'\ballowed\b.*(application|appeal|petition|leave|judicial review)',
+        r'\bgrant(ed|ing)?\b.*(application|appeal|petition|judicial review|judgment|order)',
+        r'(application|appeal|petition|judicial review|judgment|order).*\bgrant(ed|ing)?\b',
+        r'\ballow(ed|ing)?\b.*(application|appeal|petition|judicial review|judgment|order)',
         r'\bapproved\b',
         r'\bsuccessful\b',
         r'\bfavorable\b',
@@ -67,11 +67,14 @@ class PatternLibrary:
     ]
     
     DISMISSED_PATTERNS = [
-        r'\bdismiss(ed|ing)?\b.*(application|appeal|petition|leave|judicial review)',
-        r'(application|appeal|petition|leave|judicial review).*\bdismiss(ed|ing)?\b',
+        r'\bdismiss(ed|ing)?\b.*(application|appeal|petition|leave|judicial review|judgment|order)',
+        r'(application|appeal|petition|leave|judicial review|judgment|order).*\bdismiss(ed|ing)?\b',
         r'\bdenied?\b',
-        r'\breject(ed|ing)?\b.*(application|appeal|petition|leave|judicial review)',
-        r'\brefused?\b.*(application|appeal|petition|leave|judicial review)',
+        r'\breject(ed|ing)?\b.*(application|appeal|petition|leave|judicial review|judgment|order)',
+        r'\brefused?\b.*(application|appeal|petition|leave|judicial review|judgment|order)',
+        r'\bstruck\b',
+        r'\bclosed\b',
+        r'removed? from the (court )?file',
         r'\bunsuccessful\b',
     ]
     
@@ -671,34 +674,58 @@ Return ONLY valid JSON:
             result['type'] = 'Other'
             logger.debug(f"🏷️ Case {case_id}: Classified as Other")
         
-        # Enhanced Status Classification with better contextual awareness
-        # We create a status-specific text that excludes [HEADER] and [START] for Dismissed/Granted checks
-        # to avoid matching keywords that describe the original decision being reviewed
         lines = text.split('\n')
-        voters = []
+        
+        # Phase 1: Clean text of generic noise (lawyers, solicitors) that causes false positives
+        clean_lines = []
         for line in lines:
+            line_lower = line.lower()
+            if 'lawyer' in line_lower or 'solicitor' in line_lower:
+                if '(Final decision)' not in line:
+                    continue
+            clean_lines.append(line)
+        text_clean = '\n'.join(clean_lines)
+
+        # Phase 2: Create status-specific text that excludes [HEADER] and [START] 
+        # for Dismissed/Granted checks to avoid matching the original decision
+        voters = []
+        for line in clean_lines:
             if line.startswith('[HEADER]') or line.startswith('[START]'):
+                continue
+            
+            # CRITICAL: Always include Final decision lines
+            if '(Final decision)' in line:
+                voters.append(line)
                 continue
             
             line_lower = line.lower()
             # Skip interlocutory decisions and specific motion results to avoid false positive status
-            if 'interlocutory decision' in line_lower or 'motion in writing' in line_lower:
+            if any(kw in line_lower for kw in [
+                'interlocutory decision', 'motion in writing', 'leave to amend', 
+                'leave to file', 'leave to serve', 'extension of time', 
+                'time to file', 'adjourn', 'dispensed from', 
+                'associate judge', 'prothonotary', 'interim order'
+            ]):
                 continue
             
-            # Skip conditional statements and noise
-            if 'if leave granted' in line_lower or 'unless otherwise ordered' in line_lower:
-                continue
-            if 'if the court grants leave' in line_lower or 'if leave is granted' in line_lower:
+            # Skip conditional statements, correspondence, and noise
+            skip_phrases = [
+                'if leave granted', 'unless otherwise ordered', 
+                'if the court grants leave', 'if leave is granted',
+                'should leave be granted', 'does not oppose', 
+                'not opposing', 'no opposition', 'reserves the right'
+            ]
+            if any(phrase in line_lower for phrase in skip_phrases):
                 continue
                 
             voters.append(line)
         status_text = '\n'.join(voters)
         
-        # Priority 1: Discontinued / Moot (These are high confidence even if early)
-        if self._match_patterns(text, self.compiled_patterns['DISCONTINUED_PATTERNS']):
+        # Priority 1: Discontinued / Moot (Use text_clean to avoid lawyer noise)
+        if self._match_patterns(text_clean, self.compiled_patterns['DISCONTINUED_PATTERNS']):
             result['status'] = 'Discontinued'
             logger.debug(f"📊 Case {case_id}: Status = Discontinued")
-        elif self._match_patterns(text, self.compiled_patterns['MOOT_PATTERNS']):
+        elif self._match_patterns(text_clean, self.compiled_patterns['MOOT_PATTERNS']):
             result['status'] = 'Moot'
             logger.debug(f"📊 Case {case_id}: Status = Moot")
         
@@ -730,9 +757,14 @@ Return ONLY valid JSON:
         visa_office = self._extract_visa_office(text)
         judge = self._extract_judge(text)
         
-        # Post-processing: If case is discontinued, it wasn't decided by the judge who issued interlocutory orders
-        if result.get('status') == 'Discontinued':
+        # Post-processing: If case is discontinued or ongoing, the judge detected is usually procedural
+        if result.get('status') in ['Discontinued', 'Ongoing']:
             judge = None
+        
+        # Priority check for Associate Judges (usually procedural)
+        if judge and ('A.J.' in judge or 'Associate Judge' in text):
+             # Deep check if only Associate Judge is mentioned in the context of the name
+             pass # Already handled by status check mostly, but could be refined
         has_hearing = (
             self._match_patterns(text, self.compiled_patterns['HEARING_PATTERNS']) and
             not self._match_patterns(text, self.compiled_patterns['NO_HEARING_PATTERNS'])
