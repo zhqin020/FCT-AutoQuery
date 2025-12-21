@@ -129,7 +129,7 @@ def get_mandamus_data_for_analysis(year=2025):
     # 策略：拉取在统计期间内有 Filing 或 Outcome 的所有 Mandamus 案件
     query = f"""
     SELECT 
-        case_id AS case_number,
+        case_number,
         filing_date,
         case_status,
         visa_office,
@@ -199,7 +199,7 @@ def export_cases_to_json(year=2025):
             print(f"   (未发现 {year}-{year+1} 期间 {status} 状态 of Mandamus 案件数据)")
             continue
             
-        case_ids = analysis_df['case_id'].tolist()
+        case_ids = analysis_df['case_number'].tolist()
         
         # 2. 获取 cases 表的原始基本信息
         cases_info_list = []
@@ -236,7 +236,7 @@ def export_cases_to_json(year=2025):
             return obj
 
         for _, analysis_row in analysis_df.iterrows():
-            c_num = analysis_row['case_id']
+            c_num = analysis_row['case_number']
             
             # 获取基本信息字典
             c_info = cases_df[cases_df['case_number'] == c_num].to_dict('records')
@@ -663,15 +663,17 @@ def run_monthly_analysis(df, year=2025):
         return
 
     # 按 filing_date (注册日期) 统计每月注册量
+    # 使用每月内不同 case_number 的去重计数，避免 case_analysis 表中存在多行同一 case 的情况导致重复计数
     if df['filing_date'].notna().any():
-        df_filed_monthly = df.groupby(pd.Grouper(key='filing_date', freq='ME'))['case_number'].count().rename('filing_count')
+        df_filed_monthly = df.groupby(pd.Grouper(key='filing_date', freq='ME'))['case_number'].nunique().rename('filing_count')
     else:
         df_filed_monthly = pd.Series(dtype='int64', name='filing_count')
 
     # 按 outcome_date (结案日期) 统计每月结案量
     df_resolved = df[df['case_status'].isin(['Discontinued', 'Granted', 'Dismissed', 'Struck', 'Moot'])]
     if (not df_resolved.empty) and df_resolved['outcome_date'].notna().any():
-        df_resolved_monthly = df_resolved.groupby(pd.Grouper(key='outcome_date', freq='ME'))['case_number'].count().rename('resolution_count')
+        # 同样对结案计数按去重 case_number 统计，以避免重复计数
+        df_resolved_monthly = df_resolved.groupby(pd.Grouper(key='outcome_date', freq='ME'))['case_number'].nunique().rename('resolution_count')
     else:
         df_resolved_monthly = pd.Series(dtype='int64', name='resolution_count')
 
@@ -683,7 +685,8 @@ def run_monthly_analysis(df, year=2025):
     def _safe_group(res_df, status, col='outcome_date'):
         if res_df.empty or res_df[col].notna().sum() == 0:
             return pd.Series(dtype='int64')
-        return res_df[res_df['case_status'] == status].groupby(pd.Grouper(key=col, freq='ME'))['case_number'].count().rename(f"{status.lower()}_count")
+        # 按月去重 case_number 进行计数
+        return res_df[res_df['case_status'] == status].groupby(pd.Grouper(key=col, freq='ME'))['case_number'].nunique().rename(f"{status.lower()}_count")
 
     df_monthly['settled_count'] = _safe_group(df_resolved, 'Discontinued')
     df_monthly['granted_count'] = _safe_group(df_resolved, 'Granted')

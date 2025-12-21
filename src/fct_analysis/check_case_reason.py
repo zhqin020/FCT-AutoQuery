@@ -11,7 +11,7 @@ case_id = 'IMM-6260-25'
 
 with engine.connect() as conn:
     # Get analysis result
-    analysis_df = pd.read_sql(text(f"SELECT * FROM case_analysis WHERE case_id = '{case_id}'"), conn)
+    analysis_df = pd.read_sql(text(f"SELECT * FROM case_analysis WHERE case_number = '{case_id}'"), conn)
     # Get docket entries
     docket_df = pd.read_sql(text(f"SELECT * FROM docket_entries WHERE case_number = '{case_id}' ORDER BY date_filed ASC"), conn)
 

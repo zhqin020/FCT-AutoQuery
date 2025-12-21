@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import Dict, Any, List, Optional
+from datetime import datetime
 from psycopg2 import connect, DatabaseError, OperationalError
 from psycopg2.extras import RealDictCursor
 
@@ -37,8 +38,7 @@ class AnalysisDBManager:
         create_table_sql = """
         CREATE TABLE IF NOT EXISTS case_analysis (
             id SERIAL PRIMARY KEY,
-            case_id VARCHAR(50) NOT NULL,
-            case_number VARCHAR(50),
+            case_number VARCHAR(50) NOT NULL,
             title TEXT,
             court VARCHAR(100),
             filing_date DATE,
@@ -78,14 +78,14 @@ class AnalysisDBManager:
             original_case_id VARCHAR(50),
             
             -- Constraints and indexes
-            CONSTRAINT case_analysis_unique UNIQUE (case_id, analysis_mode),
+            CONSTRAINT case_analysis_unique UNIQUE (case_number),
             CONSTRAINT case_analysis_check 
                 CHECK (analysis_mode IN ('rule', 'llm', 'smart'))
         )
         """
         
         index_sql = [
-            "CREATE INDEX IF NOT EXISTS idx_case_analysis_case_id ON case_analysis(case_id)",
+            "CREATE INDEX IF NOT EXISTS idx_case_analysis_case_number ON case_analysis(case_number)",
             "CREATE INDEX IF NOT EXISTS idx_case_analysis_mode ON case_analysis(analysis_mode)",
             "CREATE INDEX IF NOT EXISTS idx_case_analysis_type ON case_analysis(case_type)",
             "CREATE INDEX IF NOT EXISTS idx_case_analysis_status ON case_analysis(case_status)",
@@ -117,7 +117,7 @@ class AnalysisDBManager:
             logger.error(f"Failed to create analysis table: {e}")
             return False
     
-    def copy_cases_to_analysis_table(self, batch_size: int = 1000) -> bool:
+    def copy_cases_to_analysis_table(self, batch_size: int = 1000, year: Optional[int] = None) -> bool:
         """Copy cases from original table to analysis table for preparation.
         
         Args:
@@ -138,11 +138,19 @@ class AnalysisDBManager:
                         return True
                     
                     # Get total cases to copy (cases with docket entries)
-                    cursor.execute("""
-                        SELECT COUNT(DISTINCT c.case_number) 
-                        FROM cases c
-                        INNER JOIN docket_entries d ON c.case_number = d.case_number
-                    """)
+                    if year is not None:
+                        cursor.execute("""
+                            SELECT COUNT(DISTINCT c.case_number) 
+                            FROM cases c
+                            INNER JOIN docket_entries d ON c.case_number = d.case_number
+                            WHERE c.year = %s
+                        """, (year,))
+                    else:
+                        cursor.execute("""
+                            SELECT COUNT(DISTINCT c.case_number) 
+                            FROM cases c
+                            INNER JOIN docket_entries d ON c.case_number = d.case_number
+                        """)
                     total_cases = cursor.fetchone()[0]
                     
                     if total_cases == 0:
@@ -158,10 +166,10 @@ class AnalysisDBManager:
                     while copied < total_cases:
                         copy_sql = """
                         INSERT INTO case_analysis 
-                        (case_id, case_number, title, court, filing_date, year,
+                        (case_number, title, court, filing_date, year,
                          original_case_id, analysis_data, analysis_mode)
                         SELECT DISTINCT
-                            c.case_number, c.case_number, c.style_of_cause, c.office, c.filing_date, c.year,
+                            c.case_number, c.style_of_cause, c.office, c.filing_date, c.year,
                             c.case_number, jsonb_build_object(
                                 'case_type', c.case_type,
                                 'type_of_action', c.type_of_action,
@@ -188,14 +196,18 @@ class AnalysisDBManager:
                         FROM cases c
                         INNER JOIN docket_entries d ON c.case_number = d.case_number
                         WHERE c.case_number NOT IN (
-                            SELECT DISTINCT case_id FROM case_analysis
+                            SELECT DISTINCT case_number FROM case_analysis
                         )
-                        ORDER BY c.case_number
-                        LIMIT %s
-                        ON CONFLICT (case_id, analysis_mode) DO NOTHING
                         """
+                        # Add year filter if requested
+                        if year is not None:
+                            copy_sql += " AND c.year = %s"
+                        copy_sql += "\n                        ORDER BY c.case_number\n                        LIMIT %s\n                        ON CONFLICT (case_number) DO NOTHING\n                        "
                         
-                        cursor.execute(copy_sql, (batch_size,))
+                        if year is not None:
+                            cursor.execute(copy_sql, (year, batch_size))
+                        else:
+                            cursor.execute(copy_sql, (batch_size,))
                         batch_copied = cursor.rowcount
                         copied += batch_copied
                         
@@ -229,10 +241,10 @@ class AnalysisDBManager:
                     year_suffix = f"-{year % 100:02d}"
                     delete_sql = """
                     DELETE FROM case_analysis 
-                    WHERE case_id LIKE %s OR case_number LIKE %s
+                    WHERE case_number LIKE %s
                     """
                     pattern = f"%{year_suffix}"
-                    cursor.execute(delete_sql, (pattern, pattern))
+                    cursor.execute(delete_sql, (pattern,))
                     deleted_count = cursor.rowcount
                     conn.commit()
                     logger.info(f"Successfully cleared {deleted_count} analysis records for year {year} (suffix {year_suffix})")
@@ -244,11 +256,10 @@ class AnalysisDBManager:
     def check_analysis_table(self) -> Dict[str, bool]:
         """Check if analysis table and required columns exist."""
         required_columns = [
-            'id', 'case_id', 'case_type', 'case_status', 'visa_office', 'judge',
+            'id', 'case_number', 'case_type', 'case_status', 'visa_office', 'judge',
             'analysis_mode', 'analyzed_at', 'analysis_version',
             'time_to_close', 'age_of_case', 'rule9_wait', 'outcome_date',
             'memo_response_time', 'memo_to_outcome_time', 'reply_memo_time', 
-            'reply_to_outcome_time', 'doj_memo_date', 'reply_memo_date'
             'reply_to_outcome_time', 'doj_memo_date', 'reply_memo_date'
         ]
         
@@ -290,7 +301,7 @@ class AnalysisDBManager:
             result['table_exists'] = False
             return result
     
-    def migrate_database(self, copy_cases: bool = True) -> bool:
+    def migrate_database(self, copy_cases: bool = True, year: Optional[int] = None) -> bool:
         """Perform database migration to support analysis results.
         
         Args:
@@ -320,10 +331,10 @@ class AnalysisDBManager:
             logger.info("Updating existing analysis table schema...")
             self._update_table_schema()
         
-        # Copy existing cases if requested
+        # Copy existing cases if requested. If year provided, only copy that year's cases.
         if copy_cases:
             logger.info("Copying existing cases to analysis table...")
-            if not self.copy_cases_to_analysis_table():
+            if not self.copy_cases_to_analysis_table(year=year):
                 return False
         
         logger.info("Database migration completed successfully")
@@ -400,6 +411,36 @@ class AnalysisDBManager:
             logger.error(f"Failed to add year field to cases table: {e}")
             return False
 
+    def is_analyzed_any(self, case_id: str) -> Optional[Dict[str, Any]]:
+        """Check if case has been analyzed in any mode. Returns most recent analysis record.
+
+        Args:
+            case_id: Case identifier
+
+        Returns:
+            Analysis result dict if analyzed in any mode, None otherwise
+        """
+        try:
+            with connect(**self.db_config) as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                    cursor.execute("""
+                        SELECT case_type, case_status, visa_office, judge,
+                               analysis_mode, analyzed_at, analysis_version,
+                               time_to_close, age_of_case, rule9_wait, outcome_date,
+                               memo_response_time, memo_to_outcome_time, reply_memo_time,
+                               reply_to_outcome_time, doj_memo_date, reply_memo_date,
+                               analysis_data, title, court, filing_date, outcome_entry
+                        FROM case_analysis
+                        WHERE case_number = %s
+                        ORDER BY analyzed_at DESC
+                        LIMIT 1
+                    """, (case_id,))
+                    result = cursor.fetchone()
+                    return dict(result) if result else None
+        except (OperationalError, DatabaseError) as e:
+            logger.error(f"Failed to check analysis status for {case_id} (any mode): {e}")
+            return None
+
 
 class AnalysisResultStorage:
     """Stores and retrieves analysis results from the dedicated analysis table."""
@@ -428,7 +469,7 @@ class AnalysisResultStorage:
                                reply_to_outcome_time, doj_memo_date, reply_memo_date,
                                analysis_data, title, court, filing_date, outcome_entry
                         FROM case_analysis 
-                        WHERE case_id = %s AND analysis_mode = %s
+                        WHERE case_number = %s AND analysis_mode = %s
                     """, (case_id, mode))
                     
                     result = cursor.fetchone()
@@ -478,10 +519,52 @@ class AnalysisResultStorage:
                     }
                     
                     # Build INSERT and UPDATE clauses
-                    insert_fields = ['case_id', 'analysis_mode', 'analysis_version']
+                    insert_fields = ['case_number', 'analysis_mode', 'analysis_version']
                     insert_values = [case_id, mode, version]
                     update_fields = ['analysis_version = EXCLUDED.analysis_version', 
                                     'analyzed_at = CURRENT_TIMESTAMP']
+
+                    # Compute year to store in analysis table if possible.
+                    # Prefer extracting from case_number suffix (IMM-123-25 -> 2025),
+                    # otherwise fall back to filing_date if provided.
+                    year_val = None
+                    try:
+                        if case_id and isinstance(case_id, str):
+                            parts = case_id.split('-')
+                            if len(parts) >= 3:
+                                suffix = parts[-1]
+                                if len(suffix) == 2 and suffix.isdigit():
+                                    year_val = 2000 + int(suffix)
+                                elif len(suffix) == 4 and suffix.isdigit():
+                                    year_val = int(suffix)
+                    except Exception:
+                        year_val = None
+
+                    if year_val is None and analysis_result.get('filing_date'):
+                        try:
+                            fd = analysis_result.get('filing_date')
+                            if isinstance(fd, str):
+                                # ISO-like date expected (YYYY-MM-DD)
+                                year_val = int(fd.split('-')[0])
+                            elif isinstance(fd, (datetime,)):
+                                year_val = fd.year
+                        except Exception:
+                            year_val = None
+
+                    # If still unknown, try to read from cases table (cases.year)
+                    if year_val is None:
+                        try:
+                            cursor.execute("SELECT year FROM cases WHERE case_number = %s LIMIT 1", (case_id,))
+                            r = cursor.fetchone()
+                            if r and r[0] is not None:
+                                year_val = int(r[0])
+                        except Exception:
+                            year_val = None
+
+                    if year_val is not None:
+                        insert_fields.append('year')
+                        insert_values.append(year_val)
+                        update_fields.append('year = EXCLUDED.year')
                     
                     for field_name, (db_field, max_length) in field_mapping.items():
                         if field_name in analysis_result and analysis_result[field_name] is not None:
@@ -513,7 +596,7 @@ class AnalysisResultStorage:
                     sql = f"""
                         INSERT INTO case_analysis ({', '.join(insert_fields)})
                         VALUES ({placeholders})
-                        ON CONFLICT (case_id, analysis_mode) 
+                        ON CONFLICT (case_number)
                         DO UPDATE SET {', '.join(update_fields)}
                     """
                     
@@ -526,6 +609,36 @@ class AnalysisResultStorage:
         except (OperationalError, DatabaseError) as e:
             logger.error(f"Failed to save analysis result for {case_id}: {e}")
             return False
+
+    def is_analyzed_any(self, case_id: str) -> Optional[Dict[str, Any]]:
+        """Check if case has been analyzed in any mode. Returns most recent analysis record.
+
+        Args:
+            case_id: Case identifier
+
+        Returns:
+            Analysis result dict if analyzed in any mode, None otherwise
+        """
+        try:
+            with connect(**self.db_config) as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                    cursor.execute("""
+                        SELECT case_type, case_status, visa_office, judge,
+                               analysis_mode, analyzed_at, analysis_version,
+                               time_to_close, age_of_case, rule9_wait, outcome_date,
+                               memo_response_time, memo_to_outcome_time, reply_memo_time,
+                               reply_to_outcome_time, doj_memo_date, reply_memo_date,
+                               analysis_data, title, court, filing_date, outcome_entry
+                        FROM case_analysis
+                        WHERE case_number = %s
+                        ORDER BY analyzed_at DESC
+                        LIMIT 1
+                    """, (case_id,))
+                    result = cursor.fetchone()
+                    return dict(result) if result else None
+        except (OperationalError, DatabaseError) as e:
+            logger.error(f"Failed to check analysis status for {case_id} (any mode): {e}")
+            return None
     
     def get_analyzed_cases(self, mode: Optional[str] = None, 
                           limit: Optional[int] = None) -> List[Dict[str, Any]]:
@@ -542,7 +655,7 @@ class AnalysisResultStorage:
             with connect(**self.db_config) as conn:
                 with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                     sql = """
-                        SELECT case_id, case_number, title, court, filing_date,
+                        SELECT case_number, case_number AS case_id, title, court, filing_date,
                                case_type, case_status, visa_office, judge,
                                analysis_mode, analyzed_at, analysis_version,
                                time_to_close, age_of_case, rule9_wait, outcome_date,
@@ -677,19 +790,18 @@ class AnalysisResultStorage:
                 with conn.cursor() as cursor:
                     sql = """
                         INSERT INTO case_analysis 
-                        (case_id, case_number, title, court, filing_date, 
-                         original_case_id, analysis_data)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (case_id, analysis_mode) DO NOTHING
+                        (case_number, title, court, filing_date, 
+                         original_case_id, analysis_data, analysis_mode)
+                        VALUES (%s, %s, %s, %s, %s, %s, 'rule')
+                        ON CONFLICT (case_number) DO NOTHING
                     """
                     
                     values = [
-                        original_case.get('case_id'),
-                        original_case.get('case_number'),
+                        original_case.get('case_number') or original_case.get('case_id'),
                         original_case.get('title'),
                         original_case.get('court'),
                         original_case.get('filing_date'),
-                        original_case.get('case_id'),
+                        original_case.get('case_number') or original_case.get('case_id'),
                         json.dumps({k: v for k, v in original_case.items() 
                                   if k not in ['case_id', 'case_number', 'title', 'court', 'filing_date']})
                     ]

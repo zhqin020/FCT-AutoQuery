@@ -897,6 +897,34 @@ Return ONLY valid JSON:
                 result['outcome_entry'] = outcome_entry
                 logger.debug(f"📋 Case {case_id}: Found outcome entry for status {case_status}")
 
+            # Ensure we have an outcome_date for closed cases. If the outcome entry
+            # has no date, fall back to the last docket entry's date.
+            if not result.get('outcome_entry') or not result['outcome_entry'].get('date_filed'):
+                # Try to use date_filed from outcome_entry first
+                date_from_outcome = None
+                if result.get('outcome_entry'):
+                    date_from_outcome = result['outcome_entry'].get('date_filed')
+
+                if date_from_outcome:
+                    result['outcome_date'] = date_from_outcome
+                else:
+                    # Fallback: use the last docket entry date
+                    last_date = self._get_last_docket_date(case_obj)
+                    if last_date:
+                        result['outcome_date'] = last_date
+                        logger.debug(f"📅 Case {case_id}: Using last docket entry date as outcome_date: {last_date}")
+
+        else:
+            # Ensure that for ongoing cases we do NOT attach outcome information.
+            # This covers cases where upstream data or LLM returned outcome fields
+            # but rule/logic determined the case to be ongoing.
+            if 'outcome_entry' in result:
+                result.pop('outcome_entry', None)
+                logger.debug(f"📋 Case {case_id}: Removed outcome_entry for ongoing case")
+            if 'outcome_date' in result:
+                result.pop('outcome_date', None)
+                logger.debug(f"📅 Case {case_id}: Cleared outcome_date for ongoing case")
+
         return result
     
     def _find_outcome_entry(self, case_obj: Any, status: str) -> Optional[Dict[str, Any]]:
@@ -1000,6 +1028,39 @@ Return ONLY valid JSON:
                 'recorded_entry_summary': docket.get('recorded_entry_summary')
             }
         
+        return None
+
+    def _get_last_docket_date(self, case_obj: Any) -> Optional[str]:
+        """
+        Return the date_filed (or similar) from the last docket entry, if available.
+        This is used as a fallback outcome_date when a closed case has no explicit
+        outcome date recorded.
+        """
+        docket_entries = []
+        if isinstance(case_obj, dict):
+            docket_entries = case_obj.get('docket_entries') or []
+            if not docket_entries and 'analysis_data' in case_obj and case_obj['analysis_data']:
+                try:
+                    import json
+                    analysis_data = case_obj['analysis_data']
+                    if isinstance(analysis_data, str):
+                        analysis_data = json.loads(analysis_data)
+                    docket_entries = analysis_data.get('docket_entries', [])
+                except Exception:
+                    docket_entries = docket_entries
+        else:
+            docket_entries = getattr(case_obj, 'docket_entries', []) or []
+
+        if not docket_entries:
+            return None
+
+        # Look for any sensible date field on the last entries (prefer last non-null)
+        for de in reversed(docket_entries):
+            for key in ('date_filed', 'date', 'filed_date', 'entry_date'):
+                val = de.get(key) if isinstance(de, dict) else getattr(de, key, None)
+                if val:
+                    return val
+
         return None
     
     def get_statistics(self) -> Dict:

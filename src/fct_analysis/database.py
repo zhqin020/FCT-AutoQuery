@@ -35,7 +35,7 @@ class DatabaseReader:
             logger.warning(f"Database connection failed: {e}")
             return False
     
-    def fetch_cases(self, year: Optional[int] = None, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    def fetch_cases(self, year: Optional[int] = None, limit: Optional[int] = None, offset: Optional[int] = None) -> List[Dict[str, Any]]:
         """Fetch cases from database.
         
         Args:
@@ -94,6 +94,8 @@ class DatabaseReader:
                     
                     if limit:
                         query += f" LIMIT {limit}"
+                    if offset:
+                        query += f" OFFSET {offset}"
                     
                     cursor.execute(query, params)
                     results = cursor.fetchall()

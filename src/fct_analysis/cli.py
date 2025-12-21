@@ -716,13 +716,14 @@ def analyze(
     output_dir: Optional[str | Path] = None,
     sample_audit: Optional[int] = None,
     ollama_url: Optional[str] = None,
-    input_format: Optional[str] = None,
     year: Optional[int] = None,
     force: Optional[bool] = None,
     wait_for_ollama: bool = True,
     ollama_wait_time: int = 120,
     single_case: Optional[str] = None,
     max_cases: Optional[int] = None,
+    copy_cases: bool = False,
+    batch_size: int = 100,
 ) -> int:
     """Analyze FCT cases with flexible data source support.
     
@@ -732,17 +733,18 @@ def analyze(
         output_dir: Output directory
         sample_audit: Number of LLM samples to audit
         ollama_url: Custom Ollama URL
-        input_format: Data source format ('database', 'directory', 'file')
         year: Filter by year (for database or directory input)
         force: Force analysis of all cases (ignore existing analysis)
         single_case: Analyze a specific case and output detailed results
         max_cases: Maximum number of cases to analyze (only with --year)
+        copy_cases: When True, perform initial copy of cases into `case_analysis` during migration
     """
     # Use config defaults if not provided
     mode = mode or Config.get_analysis_mode()
     sample_audit = sample_audit if sample_audit is not None else Config.get_analysis_sample_audit()
     ollama_url = ollama_url or Config.get_ollama_url()
-    input_format = input_format or Config.get_analysis_input_format()
+    # Only database input is supported
+    input_format = "database"
     force = force if force is not None else False  # Default to not force
     
     # Setup output directory
@@ -804,7 +806,19 @@ def analyze(
         db_engine = create_engine(db_dsn)
         
         # Ensure database schema is up to date
-        if not db_manager.migrate_database():
+        # copy_cases param controls whether initial copy runs (default: False)
+        # SKIP_COPY_CASES env var can still be used to force skipping
+        env_skip = os.getenv('SKIP_COPY_CASES', '0') in ('1', 'true', 'True')
+        final_copy = bool(copy_cases) and not env_skip
+        if env_skip and copy_cases:
+            logger.warning("SKIP_COPY_CASES set: overriding --copy-cases to skip initial copy")
+
+        if final_copy:
+            logger.info("Initial migration will COPY cases into case_analysis (year=%s)", str(year))
+        else:
+            logger.info("Initial migration will NOT copy cases into case_analysis")
+
+        if not db_manager.migrate_database(copy_cases=final_copy, year=year):
             logger.error("Failed to migrate database schema")
             return 1
 
@@ -820,56 +834,8 @@ def analyze(
 
     # Perform analysis
         # Get data from configured source
-    df = None  # Initialize to avoid UnboundLocalError
-    if input_format == "file" and input_path:
-        # Traditional file-based input
-        df = _parser.parse_cases(input_path)
-    else:
-        # Database or directory-based input
-        try:
-            if input_format == "directory":
-                # Use FileReader with year filter
-                file_reader = _database.FileReader()
-                cases = file_reader.read_directory(year)
-                # Apply limit if year exists
-                if year and max_cases:
-                    cases = cases[:max_cases]
-            else:
-                # For database or other sources
-                if year and input_format == "database":
-                    # Fetch with year filter and optional limit
-                    db_reader = _database.DatabaseReader()
-                    cases = db_reader.fetch_cases(year=year, limit=max_cases)
-                else:
-                    cases = _database.get_data_source(input_format)
-                    
-                    # Manual filter by year if specified for non-db sources
-                    if year:
-                        # Filter loaded cases by year using case_number (more reliable)
-                        year_suffix = f"-{year % 100:02d}"
-                        cases = [
-                            case for case in cases 
-                            if case.get('case_number', '').endswith(year_suffix)
-                        ]
-                        
-                        # Apply limit if specified
-                        if max_cases:
-                            cases = cases[:max_cases]
-            
-            # Convert to DataFrame using parser logic
-            df = _parser._parse_cases_list(cases)
-            
-        except Exception as e:
-            logger.error(f"Failed to load data from {input_format}: {e}")
-            if input_path:
-                logger.info(f"Falling back to file input: {input_path}")
-                df = _parser.parse_cases(input_path)
-            else:
-                raise
-    
-    # Ensure df is defined
-    if df is None:
-        raise ValueError("Failed to load any case data")
+    # Do not prefetch cases here — database reads are performed in batches later
+    df = None
 
     samples_written = 0
     audit_failures = Path(Config.get_analysis_audit_failures_file())
@@ -912,33 +878,55 @@ def analyze(
                         total_result = cursor.fetchone()
                         total_db_cases = total_result['total_count'] if total_result else 0
                         
-                        # Count analyzed cases for the year using year field
+                        # Count analyzed cases for the year by mode and overall (any mode)
+                        # Some older analysis rows may not have the `year` column populated.
+                        # Extract the two-digit year suffix from `case_number` to match the
+                        # requested year (e.g., IMM-123-25 -> '25'). This ensures counts
+                        # include legacy rows that lack the `year` field.
+                        year_suffix = f"{int(year) % 100:02d}"
                         cursor.execute("""
-                            SELECT COUNT(*) as analyzed_count
+                            SELECT COUNT(*) as analyzed_count_mode
                             FROM case_analysis 
-                            WHERE analysis_mode = %s AND year = %s
-                        """, (mode, year))
+                            WHERE analysis_mode = %s AND RIGHT(case_number, 2) = %s
+                        """, (mode, year_suffix))
                         analyzed_result = cursor.fetchone()
-                        analyzed_db_cases = analyzed_result['analyzed_count'] if analyzed_result else 0
+                        analyzed_db_cases_mode = analyzed_result['analyzed_count_mode'] if analyzed_result else 0
+
+                        cursor.execute("""
+                            SELECT COUNT(DISTINCT case_number) as analyzed_count_any
+                            FROM case_analysis
+                            WHERE RIGHT(case_number, 2) = %s
+                        """, (year_suffix,))
+                        analyzed_any_result = cursor.fetchone()
+                        analyzed_db_cases_any = analyzed_any_result['analyzed_count_any'] if analyzed_any_result else 0
                     else:
                         # Count all cases
                         cursor.execute("SELECT COUNT(*) as total_count FROM cases")
                         total_result = cursor.fetchone()
                         total_db_cases = total_result['total_count'] if total_result else 0
                         
-                        # Count all analyzed cases
+                        # Count analyzed cases by mode
                         cursor.execute("""
-                            SELECT COUNT(*) as analyzed_count
+                            SELECT COUNT(*) as analyzed_count_mode
                             FROM case_analysis 
                             WHERE analysis_mode = %s
                         """, (mode,))
                         analyzed_result = cursor.fetchone()
-                        analyzed_db_cases = analyzed_result['analyzed_count'] if analyzed_result else 0
-                    
-                    unanalyzed_db_cases = total_db_cases - analyzed_db_cases
-                    
+                        analyzed_db_cases_mode = analyzed_result['analyzed_count_mode'] if analyzed_result else 0
+
+                        # Count analyzed cases overall (any mode)
+                        cursor.execute("""
+                            SELECT COUNT(DISTINCT case_number) as analyzed_count_any
+                            FROM case_analysis
+                        """)
+                        analyzed_any_result = cursor.fetchone()
+                        analyzed_db_cases_any = analyzed_any_result['analyzed_count_any'] if analyzed_any_result else 0
+
+                    unanalyzed_db_cases = total_db_cases - analyzed_db_cases_any
+
                     logger.info(f"📈 Total cases in database: {total_db_cases:,}")
-                    logger.info(f"✅ Already analyzed ({mode}): {analyzed_db_cases:,}")
+                    logger.info(f"✅ Already analyzed (any mode): {analyzed_db_cases_any:,}")
+                    logger.info(f"✅ Already analyzed ({mode}): {analyzed_db_cases_mode:,}")
                     logger.info(f"⏳ To be analyzed: {unanalyzed_db_cases:,}")
                     
                     if year:
@@ -950,10 +938,8 @@ def analyze(
         logger.info("=" * 60)
     
     # Add progress tracking
-    total_cases = len(df)
     logger.info("=" * 60)
     logger.info(f"🚀 STARTING ANALYSIS - Mode: {mode.upper()}")
-    logger.info(f"📊 Total cases to analyze: {total_cases}")
     logger.info(f"📁 Output directory: {output_dir}")
     if year:
         logger.info(f"📅 Year filter: {year}")
@@ -964,9 +950,246 @@ def analyze(
         else:
             logger.info(f"🔍 Will auto-detect running model")
     logger.info("=" * 60)
-    
-    # Process each case with database storage support and progress bar
-    with tqdm(total=total_cases, desc="Analyzing cases", unit="case") as pbar:
+
+    # Batch processing for database input to avoid frequent single-row reads
+    collected_cases = []
+    if input_format == "database":
+        # Determine total cases if available from earlier DB status block
+        try:
+            total_cases = int(total_db_cases) if 'total_db_cases' in locals() else None
+        except Exception:
+            total_cases = None
+
+        # Respect max_cases if provided
+        if max_cases and total_cases:
+            total_to_process = min(total_cases, max_cases)
+        elif max_cases and not total_cases:
+            total_to_process = max_cases
+        else:
+            total_to_process = total_cases
+
+        # Default batch size (tunable)
+            # Allow override from analyze() parameter
+            batch_size = int(batch_size or 100)
+        offset = 0
+        remaining = total_to_process
+
+        # If we don't know total beforehand, leave tqdm total None
+        with tqdm(total=total_to_process, desc="Analyzing cases", unit="case") as pbar:
+            while True:
+                if remaining is None:
+                    limit = batch_size
+                else:
+                    if remaining <= 0:
+                        break
+                    limit = min(batch_size, remaining)
+
+                db_reader = _database.DatabaseReader()
+                cases = db_reader.fetch_cases(year=year, limit=limit, offset=offset)
+                if not cases:
+                    break
+
+                df_batch = _parser._parse_cases_list(cases)
+                for idx, row in df_batch.iterrows():
+                    dict_row = row.to_dict() if hasattr(row, 'to_dict') else dict(row)
+                    collected_cases.append(dict_row)
+                    case_id = row.get("case_number") or row.get("caseNumber") or row.get("case_id")
+                    raw_case = row.get("raw") or row.to_dict() if hasattr(row, 'to_dict') else row
+
+                    # Check if already analyzed in analysis table (mode-specific first, then any mode)
+                    existing_analysis = None
+                    if not force and db_storage and case_id:
+                        existing_analysis = db_storage.is_analyzed(case_id, mode)
+                        if not existing_analysis:
+                            existing_analysis = db_storage.is_analyzed_any(case_id)
+
+                        if existing_analysis:
+                            types.append(existing_analysis.get('case_type'))
+                            statuses.append(existing_analysis.get('case_status'))
+                            visa_offices.append(existing_analysis.get('visa_office'))
+                            judges.append(existing_analysis.get('judge'))
+                            logger.debug(f"Skipping analysis for {case_id} (already analyzed in mode={existing_analysis.get('analysis_mode')})")
+                            pbar.update(1)
+                            continue
+
+                    # Use enhanced NLP engine (rule-based + LLM fallback)
+                    if mode == "llm":
+                        logger.debug(f"🔍 Processing case {case_id} with LLM-enhanced analysis")
+                        llm_stats['total_processed'] += 1
+
+                        case_type = None
+                        case_status = None
+                        visa_office = None
+                        judge = None
+                        method = None
+                        confidence = None
+
+                        try:
+                            res = _nlp_engine.classify_case_enhanced(raw_case, use_llm_fallback=True, 
+                                                                wait_for_ollama=wait_for_ollama, 
+                                                                ollama_wait_time=ollama_wait_time)
+                            case_type = res.get("type")
+                            case_status = res.get("status")
+                            visa_office = res.get("visa_office")
+                            judge = res.get("judge")
+                            method = res.get("method", "hybrid")
+                            confidence = res.get("confidence", "medium")
+
+                            if method == "hybrid":
+                                llm_stats['llm_calls'] += 1
+                                llm_stats['hybrid_method'] += 1
+                            else:
+                                llm_stats['rule_based_only'] += 1
+
+                            if visa_office or judge:
+                                llm_stats['entities_extracted'] += 1
+
+                            logger.info(f"📊 Case {case_id}: {case_type} | {case_status} | Method: {method} | Confidence: {confidence}")
+                            if visa_office or judge:
+                                logger.debug(f"📍 Case {case_id} entities - Visa: {visa_office}, Judge: {judge}")
+
+                        except Exception as e:
+                            llm_stats['errors'] += 1
+                            logger.error(f"💥 Error processing case {case_id}: {e}")
+                            res = _rules.classify_case_rule(raw_case)
+                            case_type = res.get("type")
+                            case_status = res.get("status")
+                            visa_office = res.get("visa_office")
+                            judge = res.get("judge")
+                            method = "rule_fallback"
+                            confidence = "low"
+                            res["method"] = method
+                            res["confidence"] = confidence
+                    else:
+                        logger.debug(f"🔍 Processing case {case_id} with rule-based analysis")
+                        res = _rules.classify_case_rule(raw_case)
+                        case_type = res.get("type")
+                        case_status = res.get("status")
+                        visa_office = res.get("visa_office")
+                        judge = res.get("judge")
+                        method = "rule_based"
+                        res["method"] = method
+                        res["confidence"] = res.get("confidence", "high")
+                        logger.debug(f"📊 Case {case_id}: {case_type} | {case_status} | Method: rule_based")
+
+                    types.append(case_type)
+                    statuses.append(case_status)
+                    visa_offices.append(visa_office)
+                    judges.append(judge)
+
+                    durations = _compute_case_durations(raw_case, case_id, db_engine)
+                    try:
+                        resolved_statuses = {'granted', 'dismissed', 'discontinued'}
+                        cs = (res.get('status') or case_status or '').lower() if isinstance(res, dict) else (case_status or '')
+                        od = durations.get('outcome_date')
+                        if (not od) and cs and cs.lower() in resolved_statuses:
+                            possible = None
+                            if isinstance(res, dict):
+                                possible = res.get('outcome_date') or res.get('docket_date') or res.get('decision_date')
+                            if possible:
+                                try:
+                                    durations['outcome_date'] = pd.to_datetime(possible, errors='coerce')
+                                except Exception:
+                                    durations['outcome_date'] = possible
+                            if not durations.get('outcome_date') and raw_case and raw_case.get('docket_entries'):
+                                try:
+                                    latest = None
+                                    for de in raw_case.get('docket_entries'):
+                                        if not de:
+                                            continue
+                                        dstr = de.get('entry_date') or de.get('date_filed')
+                                        if not dstr:
+                                            continue
+                                        try:
+                                            ddt = pd.to_datetime(dstr, errors='coerce')
+                                        except Exception:
+                                            ddt = None
+                                        if ddt is not None and (latest is None or ddt > latest):
+                                            latest = ddt
+                                    if latest is not None:
+                                        durations['outcome_date'] = latest
+                                except Exception:
+                                    pass
+                            if (not durations.get('outcome_date')) and db_engine and case_id:
+                                try:
+                                    from sqlalchemy import text
+                                    with db_engine.connect() as conn:
+                                        q = "SELECT MAX(date_filed) as last_date FROM docket_entries WHERE case_number = :case_id"
+                                        r = conn.execute(text(q), {"case_id": case_id}).fetchone()
+                                        if r and r.last_date:
+                                            durations['outcome_date'] = pd.to_datetime(r.last_date)
+                                except Exception:
+                                    pass
+
+                        if durations.get('outcome_date') and durations.get('filing_date') is None:
+                            durations['filing_date'] = raw_case.get('filing_date')
+                        try:
+                            if durations.get('outcome_date') and durations.get('filing_date'):
+                                fd = pd.to_datetime(durations.get('filing_date'), errors='coerce')
+                                odt = pd.to_datetime(durations.get('outcome_date'), errors='coerce')
+                                if fd is not None and odt is not None and pd.notna(fd) and pd.notna(odt):
+                                    durations['time_to_close'] = int((odt - fd).days)
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+
+                    logger.info(_format_case_analysis_log(case_id, raw_case, res, durations))
+
+                    if db_storage and case_id:
+                        analysis_result = {
+                            'type': case_type,
+                            'status': case_status,
+                            'visa_office': visa_office,
+                            'judge': judge,
+                            'has_hearing': res.get('has_hearing'),
+                            'time_to_close': durations.get('time_to_close'),
+                            'age_of_case': durations.get('age_of_case'),
+                            'rule9_wait': durations.get('rule9_wait'),
+                            'outcome_date': durations.get('outcome_date'),
+                            'memo_response_time': durations.get('memo_response_time'),
+                            'memo_to_outcome_time': durations.get('memo_to_outcome_time'),
+                            'reply_memo_time': durations.get('reply_memo_time'),
+                            'reply_to_outcome_time': durations.get('reply_to_outcome_time'),
+                            'doj_memo_date': durations.get('doj_memo_date'),
+                            'reply_memo_date': durations.get('reply_memo_date'),
+                            'title': raw_case.get('style_of_cause') or raw_case.get('title'),
+                            'court': raw_case.get('office') or raw_case.get('court'),
+                            'filing_date': raw_case.get('filing_date')
+                        }
+                        if res.get('outcome_entry'):
+                            analysis_result['outcome_entry'] = res['outcome_entry']
+                        success = db_storage.save_analysis_result(case_id, analysis_result, mode)
+                        if not success:
+                            logger.warning(f"Failed to save analysis result for {case_id}")
+
+                    pbar.update(1)
+                    current_count = len(types)
+                    if current_count % 50 == 0:
+                        progress_pct = (current_count / (total_to_process if total_to_process is not None else max(1, current_count))) * 100
+                        logger.info(f"📈 Progress: {current_count}/{total_to_process or '??'} ({progress_pct:.1f}%) cases processed")
+                        if mode == "llm" and current_count % 100 == 0:
+                            llm_call_rate = (llm_stats['llm_calls'] / llm_stats['total_processed']) * 100 if llm_stats['total_processed'] > 0 else 0
+                            entity_rate = (llm_stats['entities_extracted'] / llm_stats['total_processed']) * 100 if llm_stats['total_processed'] > 0 else 0
+                            logger.info(f"🤖 LLM Stats: {llm_stats['llm_calls']}/{llm_stats['total_processed']} calls ({llm_call_rate:.1f}%), "
+                                      f"{llm_stats['entities_extracted']} entities extracted ({entity_rate:.1f}%), {llm_stats['errors']} errors")
+
+                offset += len(cases)
+                if remaining is not None:
+                    remaining -= len(cases)
+                if max_cases and offset >= max_cases:
+                    break
+            # end while batches
+
+        # end with tqdm
+
+        # After batch processing, construct final DataFrame from collected cases
+        df = _parser._parse_cases_list(collected_cases)
+
+    else:
+        # Non-database sources (existing behavior)
+        total_cases = len(df)
+        with tqdm(total=total_cases, desc="Analyzing cases", unit="case") as pbar:
             for idx, row in df.iterrows():
                 case_id = row.get("case_number") or row.get("caseNumber") or row.get("case_id")
                 raw_case = row.get("raw") or row.to_dict() if hasattr(row, 'to_dict') else row
@@ -1392,8 +1615,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     p = argparse.ArgumentParser(prog="fct_analysis")
     
     # Input options
-    input_group = p.add_mutually_exclusive_group()
-    input_group.add_argument("--input", "-i", help="Input file path (for file mode)")
+    # Database is the only supported input source now; remove file/directory options
     
     # Analysis options
     p.add_argument("--mode", choices=("rule", "llm"), help="Analysis mode")
@@ -1415,6 +1637,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     # Database management
     p.add_argument("--migrate-db", action="store_true", 
                    help="Migrate database schema and exit")
+    p.add_argument("--copy-cases", action="store_true",
+                   help="When set, copy cases into case_analysis during migration (default: false)")
+    p.add_argument("--batch-size", type=int, default=100,
+                   help="Batch size for database reads when processing cases (default: 100)")
     p.add_argument("--check-ollama", action="store_true",
                    help="Check Ollama service status and exit")
     
@@ -1423,7 +1649,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     # Handle database migration
     if ns.migrate_db:
         db_manager = _db_schema.AnalysisDBManager()
-        if db_manager.migrate_database():
+        if db_manager.migrate_database(copy_cases=ns.copy_cases, year=ns.year):
             print("Database migration completed successfully")
             return 0
         else:
@@ -1435,18 +1661,19 @@ def main(argv: Optional[list[str]] = None) -> int:
         return check_ollama_status(ns.ollama_url)
     
     return analyze(
-        input_path=ns.input,
+        input_path=None,
         mode=ns.mode,
         output_dir=ns.output_dir,
         sample_audit=ns.sample_audit,
         ollama_url=ns.ollama_url,
-        input_format='database',
         year=ns.year,
         force=ns.force,
         wait_for_ollama=ns.wait_for_ollama,
         ollama_wait_time=ns.ollama_wait_time,
         single_case=ns.single_case,
         max_cases=ns.max_cases,
+        copy_cases=ns.copy_cases,
+        batch_size=ns.batch_size,
     )
 
 

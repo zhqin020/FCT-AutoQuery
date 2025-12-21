@@ -79,7 +79,7 @@ def export_final_decisions(year: int):
         # Get analysis results
         analysis_query = text("""
             SELECT * FROM case_analysis 
-            WHERE case_id IN :case_ids
+            WHERE case_number IN :case_ids
         """)
         
         # Get raw case info
@@ -101,8 +101,8 @@ def export_final_decisions(year: int):
             docket_rows = [dict(row._mapping) for row in conn.execute(docket_query, {"case_ids": tuple(batch)})]
             
         # Organize data
-        for case_num in batch:
-            analysis = next((r for r in analysis_rows if r['case_id'] == case_num), {})
+            for case_num in batch:
+            analysis = next((r for r in analysis_rows if r.get('case_number') == case_num), {})
             case_info = next((r for r in case_rows if r['case_number'] == case_num), {})
             dockets = [r for r in docket_rows if r['case_number'] == case_num]
             

@@ -83,7 +83,7 @@ def main(batch_size: Optional[int] = None, dry_run: bool = False):
                     SELECT COUNT(DISTINCT c.case_number) 
                     FROM cases c
                     INNER JOIN docket_entries d ON c.case_number = d.case_number
-                    WHERE c.case_number NOT IN (SELECT DISTINCT case_id FROM case_analysis)
+                    WHERE c.case_number NOT IN (SELECT DISTINCT case_number FROM case_analysis)
                 """)
                 uncopied_cases = cursor.fetchone()[0]
                 
@@ -108,10 +108,10 @@ def main(batch_size: Optional[int] = None, dry_run: bool = False):
                 while copied < uncopied_cases:
                     cursor.execute("""
                         INSERT INTO case_analysis 
-                        (case_id, case_number, title, court, filing_date, 
+                        (case_number, title, court, filing_date, 
                          original_case_id, analysis_data, analysis_mode)
                         SELECT DISTINCT
-                            c.case_number, c.case_number, c.style_of_cause, c.office, c.filing_date,
+                            c.case_number, c.style_of_cause, c.office, c.filing_date,
                             c.case_number, jsonb_build_object(
                                 'case_type', c.case_type,
                                 'type_of_action', c.type_of_action,
@@ -138,11 +138,11 @@ def main(batch_size: Optional[int] = None, dry_run: bool = False):
                         FROM cases c
                         INNER JOIN docket_entries d ON c.case_number = d.case_number
                         WHERE c.case_number NOT IN (
-                            SELECT DISTINCT case_id FROM case_analysis
+                            SELECT DISTINCT case_number FROM case_analysis
                         )
                         ORDER BY c.case_number
                         LIMIT %s
-                        ON CONFLICT (case_id, analysis_mode) DO NOTHING
+                        ON CONFLICT (case_number) DO NOTHING
                     """, (batch_size,))
                     
                     batch_copied = cursor.rowcount
