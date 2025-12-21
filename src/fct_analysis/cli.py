@@ -21,7 +21,7 @@ from . import metrics as _metrics
 from . import export as _export
 from . import database as _database
 from . import db_schema as _db_schema
-from . import utils as _utils
+
 from . import nlp_engine as _nlp_engine
 from . import llm as _llm
 
@@ -158,15 +158,18 @@ def _compute_detailed_statistics(df: pd.DataFrame, year_filter: Optional[int] = 
     if 'type' in df_filtered.columns:
         type_counts = df_filtered['type'].value_counts().to_dict()
         stats["overall"]["by_type"] = type_counts
-    
-    # Overall statistics by status  
-    if 'status' in df_filtered.columns:
-        status_counts = df_filtered['status'].value_counts().to_dict()
+
+    # Choose status column: prefer canonical `result` (from classifier) if present
+    status_col = 'result' if 'result' in df_filtered.columns else 'status'
+
+    # Overall statistics by status
+    if status_col in df_filtered.columns:
+        status_counts = df_filtered[status_col].value_counts().to_dict()
         stats["overall"]["by_status"] = status_counts
     
-    # Cross-tabulation: type vs status
-    if 'type' in df_filtered.columns and 'status' in df_filtered.columns:
-        cross_tab = pd.crosstab(df_filtered['type'], df_filtered['status'])
+    # Cross-tabulation: type vs status (use canonical status if available)
+    if 'type' in df_filtered.columns and status_col in df_filtered.columns:
+        cross_tab = pd.crosstab(df_filtered['type'], df_filtered[status_col])
         stats["overall"]["by_type_status"] = cross_tab.to_dict()
     
     # Year distribution analysis (shows reliability of year extraction methods)
@@ -243,11 +246,11 @@ def _compute_detailed_statistics(df: pd.DataFrame, year_filter: Optional[int] = 
                         }
                 stats[f"{col}_stats"]["by_type"] = by_type
             
-            # By status
-            if 'status' in df_filtered.columns:
+            # By status (use canonical result column if available)
+            if status_col in df_filtered.columns:
                 by_status = {}
-                for status in df_filtered['status'].dropna().unique():
-                    status_data = df_filtered[df_filtered['status'] == status][col]
+                for status in df_filtered[status_col].dropna().unique():
+                    status_data = df_filtered[df_filtered[status_col] == status][col]
                     if not status_data.isna().all():
                         by_status[status] = {
                             "mean": float(status_data.mean()),
@@ -437,6 +440,10 @@ def _compute_case_durations(raw_case: dict | pd.Series, case_id: str = None, db_
                     OR LOWER(recorded_entry_summary) LIKE '%order dated%'
                     OR LOWER(recorded_entry_summary) LIKE '%discontinuance%'
                     OR LOWER(recorded_entry_summary) LIKE '%final decision%'
+                    OR LOWER(recorded_entry_summary) LIKE '%grant%'
+                    OR LOWER(recorded_entry_summary) LIKE '%leave granted%'
+                    OR LOWER(recorded_entry_summary) LIKE '%application granted%'
+                    OR LOWER(recorded_entry_summary) LIKE '%order granting%'
                 )
                 ORDER BY date_filed DESC
                 LIMIT 1
@@ -460,6 +467,30 @@ def _compute_case_durations(raw_case: dict | pd.Series, case_id: str = None, db_
     # First try to extract from raw_case docket entries, then fallback to database
     if raw_case and 'docket_entries' in raw_case and raw_case['docket_entries']:
         docket_entries = raw_case['docket_entries']
+        # If outcome_date missing, attempt to infer it from docket entries (look for grant/order keywords)
+        if not outcome_date:
+            try:
+                matched_dates = []
+                for entry in docket_entries:
+                    if not entry:
+                        continue
+                    summary = (entry.get('summary') or entry.get('recorded_entry_summary') or '').lower()
+                    entry_date = entry.get('entry_date') or entry.get('date_filed')
+                    if not entry_date:
+                        continue
+                    # look for grant/order-like phrases
+                    if any(k in summary for k in ('grant', 'granted', 'leave granted', 'order granting', 'application granted', 'result: granted', 'reasons for order')):
+                        try:
+                            dt = _to_date(entry_date)
+                            if dt is not None:
+                                matched_dates.append(dt)
+                        except Exception:
+                            continue
+                if matched_dates:
+                    # choose the most recent matching entry as the outcome date
+                    outcome_date = max(matched_dates)
+            except Exception:
+                pass
         
         # Find first DOJ/IRCC memo
         for entry in docket_entries:
@@ -683,7 +714,6 @@ def analyze(
     input_path: Optional[str] = None,
     mode: Optional[str] = None,
     output_dir: Optional[str | Path] = None,
-    resume: bool = False,
     sample_audit: Optional[int] = None,
     ollama_url: Optional[str] = None,
     input_format: Optional[str] = None,
@@ -700,7 +730,6 @@ def analyze(
         input_path: Override file path (for file-based input)
         mode: Analysis mode ('rule' or 'llm')
         output_dir: Output directory
-        resume: Resume LLM processing from checkpoint
         sample_audit: Number of LLM samples to audit
         ollama_url: Custom Ollama URL
         input_format: Data source format ('database', 'directory', 'file')
@@ -842,34 +871,6 @@ def analyze(
     if df is None:
         raise ValueError("Failed to load any case data")
 
-    # Setup resume checkpoint and audit logging
-    checkpoint_path = output_dir / Config.get_analysis_checkpoint_file()
-    processed = set()
-    resume_force = False  # Track if resumed session was using force mode
-    if resume and checkpoint_path.exists():
-        try:
-            with checkpoint_path.open("r", encoding="utf-8") as fh:
-                for line in fh:
-                    try:
-                        obj = __import__("json").loads(line)
-                        if obj and isinstance(obj, dict):
-                            if obj.get("case_number"):
-                                processed.add(obj.get("case_number"))
-                            # Check if this checkpoint was created with force mode
-                            if obj.get("force_mode") is True:
-                                resume_force = True
-                    except Exception:
-                        continue
-                        
-            # If resumed from a force session, apply force mode
-            if resume_force:
-                original_force = force
-                force = True
-                logger.info(f"🔄 Resumed from force mode session - applying force mode (was: {original_force}, now: {force})")
-                
-        except Exception:
-            processed = set()
-
     samples_written = 0
     audit_failures = Path(Config.get_analysis_audit_failures_file())
     audit_failures.parent.mkdir(parents=True, exist_ok=True)
@@ -889,6 +890,64 @@ def analyze(
         'errors': 0,
         'entities_extracted': 0
     }
+    
+    # Database status reporting
+    if db_storage and mode:
+        logger.info("📊 DATABASE STATUS")
+        logger.info("=" * 60)
+        
+        # Get total cases in database (with year filter if specified)
+        try:
+            from psycopg2 import connect, DatabaseError, OperationalError
+            from psycopg2.extras import RealDictCursor
+            with connect(**db_storage.db_config) as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                    if year:
+                        # Count total cases for the year using year field
+                        cursor.execute("""
+                            SELECT COUNT(*) as total_count 
+                            FROM cases 
+                            WHERE year = %s
+                        """, (year,))
+                        total_result = cursor.fetchone()
+                        total_db_cases = total_result['total_count'] if total_result else 0
+                        
+                        # Count analyzed cases for the year using year field
+                        cursor.execute("""
+                            SELECT COUNT(*) as analyzed_count
+                            FROM case_analysis 
+                            WHERE analysis_mode = %s AND year = %s
+                        """, (mode, year))
+                        analyzed_result = cursor.fetchone()
+                        analyzed_db_cases = analyzed_result['analyzed_count'] if analyzed_result else 0
+                    else:
+                        # Count all cases
+                        cursor.execute("SELECT COUNT(*) as total_count FROM cases")
+                        total_result = cursor.fetchone()
+                        total_db_cases = total_result['total_count'] if total_result else 0
+                        
+                        # Count all analyzed cases
+                        cursor.execute("""
+                            SELECT COUNT(*) as analyzed_count
+                            FROM case_analysis 
+                            WHERE analysis_mode = %s
+                        """, (mode,))
+                        analyzed_result = cursor.fetchone()
+                        analyzed_db_cases = analyzed_result['analyzed_count'] if analyzed_result else 0
+                    
+                    unanalyzed_db_cases = total_db_cases - analyzed_db_cases
+                    
+                    logger.info(f"📈 Total cases in database: {total_db_cases:,}")
+                    logger.info(f"✅ Already analyzed ({mode}): {analyzed_db_cases:,}")
+                    logger.info(f"⏳ To be analyzed: {unanalyzed_db_cases:,}")
+                    
+                    if year:
+                        logger.info(f"📅 Filter: Year {year}")
+                    
+        except Exception as e:
+            logger.warning(f"⚠️  Could not retrieve database statistics: {e}")
+        
+        logger.info("=" * 60)
     
     # Add progress tracking
     total_cases = len(df)
@@ -995,26 +1054,7 @@ def analyze(
                     if visa_office or judge:
                         logger.debug(f"📍 Case {case_id} entities - Visa: {visa_office}, Judge: {judge}")
                 
-                # Checkpoint results for resumability (only in LLM mode)
-                if mode == "llm" and checkpoint_path and case_id:
-                    checkpoint_data = {
-                        "case_number": case_id, 
-                        "type": case_type,
-                        "status": case_status,
-                        "visa_office": visa_office, 
-                        "judge": judge,
-                        "method": method,
-                        "confidence": confidence
-                    }
-                    
-                    # Save force mode state for proper resume behavior
-                    if force:
-                        checkpoint_data["force_mode"] = True
-                    # If resumed from force session, also save it
-                    elif resume_force:
-                        checkpoint_data["force_mode"] = True
-                    
-                    _utils.write_checkpoint(checkpoint_path, checkpoint_data)
+
                 
                 # Store results for current case
                 types.append(case_type)
@@ -1024,6 +1064,68 @@ def analyze(
 
                 # Compute durations (used for logging and DB)
                 durations = _compute_case_durations(raw_case, case_id, db_engine)
+                # If outcome_date still missing for resolved cases, try to fill from LLM output or fallback to latest docket entry
+                try:
+                    # case_status may be in res (LLM/rule result) or from earlier variable
+                    resolved_statuses = {'granted', 'dismissed', 'discontinued'}
+                    cs = (res.get('status') or case_status or '').lower() if isinstance(res, dict) else (case_status or '')
+                    od = durations.get('outcome_date')
+                    if (not od) and cs and cs.lower() in resolved_statuses:
+                        # 1) If LLM/res returned a docket-based date field, prefer it (common key: 'outcome_date' or 'docket_date')
+                        possible = None
+                        if isinstance(res, dict):
+                            possible = res.get('outcome_date') or res.get('docket_date') or res.get('decision_date')
+                        if possible:
+                            try:
+                                durations['outcome_date'] = pd.to_datetime(possible, errors='coerce')
+                            except Exception:
+                                durations['outcome_date'] = possible
+                        # 2) Fallback: scan raw_case docket_entries for the most recent date_filed/entry_date
+                        if not durations.get('outcome_date') and raw_case and raw_case.get('docket_entries'):
+                            try:
+                                latest = None
+                                for de in raw_case.get('docket_entries'):
+                                    if not de:
+                                        continue
+                                    dstr = de.get('entry_date') or de.get('date_filed')
+                                    if not dstr:
+                                        continue
+                                    try:
+                                        ddt = pd.to_datetime(dstr, errors='coerce')
+                                    except Exception:
+                                        ddt = None
+                                    if ddt is not None and (latest is None or ddt > latest):
+                                        latest = ddt
+                                if latest is not None:
+                                    durations['outcome_date'] = latest
+                            except Exception:
+                                pass
+                        # 3) Last resort: if still missing and DB available, query max(date_filed)
+                        if (not durations.get('outcome_date')) and db_engine and case_id:
+                            try:
+                                from sqlalchemy import text
+                                with db_engine.connect() as conn:
+                                    q = "SELECT MAX(date_filed) as last_date FROM docket_entries WHERE case_number = :case_id"
+                                    r = conn.execute(text(q), {"case_id": case_id}).fetchone()
+                                    if r and r.last_date:
+                                        durations['outcome_date'] = pd.to_datetime(r.last_date)
+                            except Exception:
+                                pass
+
+                    # If outcome_date was populated, recompute time_to_close and related deltas
+                    if durations.get('outcome_date') and durations.get('filing_date') is None:
+                        # ensure filing_date present for proper calculations
+                        durations['filing_date'] = raw_case.get('filing_date')
+                    try:
+                        if durations.get('outcome_date') and durations.get('filing_date'):
+                            fd = pd.to_datetime(durations.get('filing_date'), errors='coerce')
+                            odt = pd.to_datetime(durations.get('outcome_date'), errors='coerce')
+                            if fd is not None and odt is not None and pd.notna(fd) and pd.notna(odt):
+                                durations['time_to_close'] = int((odt - fd).days)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
                 
                 # Log detailed results for every case in batch
                 logger.info(_format_case_analysis_log(case_id, raw_case, res, durations))
@@ -1288,8 +1390,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     # Input options
     input_group = p.add_mutually_exclusive_group()
     input_group.add_argument("--input", "-i", help="Input file path (for file mode)")
-    input_group.add_argument("--input-format", choices=("database", "directory", "file"), 
-                           help="Data source format (overrides config)")
     
     # Analysis options
     p.add_argument("--mode", choices=("rule", "llm"), help="Analysis mode")
@@ -1302,8 +1402,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     # Output options
     p.add_argument("--output-dir", "-o", help="Output directory")
     
-    # LLM options
-    p.add_argument("--resume", action="store_true", help="Resume LLM processing using checkpoint file")
+
     p.add_argument("--sample-audit", type=int, help="Write sample LLM outputs to audit file (N samples)")
     p.add_argument("--ollama-url", help="Custom Ollama base URL")
     p.add_argument("--wait-for-ollama", action="store_true", default=True, help="Wait for Ollama to be idle before starting requests")
@@ -1335,10 +1434,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         input_path=ns.input,
         mode=ns.mode,
         output_dir=ns.output_dir,
-        resume=ns.resume,
         sample_audit=ns.sample_audit,
         ollama_url=ns.ollama_url,
-        input_format=ns.input_format,
+        input_format='database',
         year=ns.year,
         force=ns.force,
         wait_for_ollama=ns.wait_for_ollama,

@@ -42,6 +42,7 @@ class AnalysisDBManager:
             title TEXT,
             court VARCHAR(100),
             filing_date DATE,
+            year INTEGER,  -- Extracted from case_number (e.g., IMM-123-25 -> 2025)
             
             -- Analysis results
             case_type VARCHAR(50),
@@ -88,6 +89,7 @@ class AnalysisDBManager:
             "CREATE INDEX IF NOT EXISTS idx_case_analysis_visa_office ON case_analysis(visa_office)",
             "CREATE INDEX IF NOT EXISTS idx_case_analysis_analyzed_at ON case_analysis(analyzed_at)",
             "CREATE INDEX IF NOT EXISTS idx_case_analysis_filing_date ON case_analysis(filing_date)",
+            "CREATE INDEX IF NOT EXISTS idx_case_analysis_year ON case_analysis(year)",
             "CREATE INDEX IF NOT EXISTS idx_case_analysis_reply_memo_time ON case_analysis(reply_memo_time)",
             "CREATE INDEX IF NOT EXISTS idx_case_analysis_dojo_memo_date ON case_analysis(doj_memo_date)",
             "CREATE INDEX IF NOT EXISTS idx_case_analysis_reply_memo_date ON case_analysis(reply_memo_date)"
@@ -152,10 +154,10 @@ class AnalysisDBManager:
                     while copied < total_cases:
                         copy_sql = """
                         INSERT INTO case_analysis 
-                        (case_id, case_number, title, court, filing_date, 
+                        (case_id, case_number, title, court, filing_date, year,
                          original_case_id, analysis_data, analysis_mode)
                         SELECT DISTINCT
-                            c.case_number, c.case_number, c.style_of_cause, c.office, c.filing_date,
+                            c.case_number, c.case_number, c.style_of_cause, c.office, c.filing_date, c.year,
                             c.case_number, jsonb_build_object(
                                 'case_type', c.case_type,
                                 'type_of_action', c.type_of_action,
@@ -297,6 +299,11 @@ class AnalysisDBManager:
             logger.error("Cannot migrate database: connection failed")
             return False
         
+        # Add year field to cases table
+        logger.info("Adding year field to cases table...")
+        if not self._add_year_to_cases_table():
+            return False
+        
         # Check current schema
         schema_status = self.check_analysis_table()
         
@@ -335,6 +342,7 @@ class AnalysisDBManager:
                         "ALTER TABLE case_analysis ADD COLUMN IF NOT EXISTS doj_memo_date DATE",
                         "ALTER TABLE case_analysis ADD COLUMN IF NOT EXISTS reply_memo_date DATE",
                         "ALTER TABLE case_analysis ADD COLUMN IF NOT EXISTS has_hearing BOOLEAN",
+                        "ALTER TABLE case_analysis ADD COLUMN IF NOT EXISTS year INTEGER",
                     ]
                     
                     for sql in updates:
@@ -353,6 +361,38 @@ class AnalysisDBManager:
                     
         except (OperationalError, DatabaseError) as e:
             logger.error(f"Failed to update table schema: {e}")
+            return False
+    
+    def _add_year_to_cases_table(self) -> bool:
+        """Add year field to cases table and populate it from case_number."""
+        try:
+            with connect(**self.db_config) as conn:
+                with conn.cursor() as cursor:
+                    # Add year column if it doesn't exist
+                    cursor.execute("ALTER TABLE cases ADD COLUMN IF NOT EXISTS year INTEGER")
+                    logger.info("Added year column to cases table")
+                    
+                    # Create index on year field
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_cases_year ON cases(year)")
+                    logger.info("Created index on cases.year")
+                    
+                    # Populate year field from case_number
+                    # Case number format: IMM-123-25 (where 25 represents 2025)
+                    cursor.execute("""
+                        UPDATE cases 
+                        SET year = 2000 + CAST(SPLIT_PART(case_number, '-', 3) AS INTEGER)
+                        WHERE year IS NULL 
+                        AND case_number ~ '^[A-Z]+-[0-9]+-[0-9]{2}$'
+                    """)
+                    
+                    updated_rows = cursor.rowcount
+                    logger.info(f"Populated year field for {updated_rows} cases")
+                    
+                    conn.commit()
+                    return True
+                    
+        except (OperationalError, DatabaseError) as e:
+            logger.error(f"Failed to add year field to cases table: {e}")
             return False
 
 

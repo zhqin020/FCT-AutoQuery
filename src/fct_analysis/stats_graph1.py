@@ -764,7 +764,52 @@ def run_monthly_analysis(df, year=2025):
     # 对中位数耗时进行四舍五入
     df_report['median_time_to_close'] = df_report['median_time_to_close'].round(1)
     df_report.index = df_report.index.strftime('%Y-%m')
-    print(df_report[['resolution_total', 'Settled|Rate', 'Granted|Rate', 'Dismiss|Rate', 'median_time_to_close']])
+    # Build display frame
+    display_cols = ['resolution_total', 'Settled|Rate', 'Granted|Rate', 'Dismiss|Rate', 'median_time_to_close']
+    df_display = df_report[display_cols].copy()
+
+    # Compute totals row: counts summed, percentages recalculated from summed counts
+    try:
+        total_res = int(df_report['resolution_total'].sum())
+        settled_sum = int(df_report[['settled_count']].fillna(0).sum().iloc[0]) if 'settled_count' in df_report.columns else 0
+        granted_sum = int(df_report[['granted_count']].fillna(0).sum().iloc[0]) if 'granted_count' in df_report.columns else 0
+        dismiss_sum = int(df_report[['dismissed_count']].fillna(0).sum().iloc[0]) if 'dismissed_count' in df_report.columns else 0
+
+        def fmt_count_pct(cnt, total):
+            pct = (cnt / total * 100) if total > 0 else 0.0
+            return f"{int(cnt)}|{pct:.1f}%"
+
+        settled_str = fmt_count_pct(settled_sum, total_res)
+        granted_str = fmt_count_pct(granted_sum, total_res)
+        dismiss_str = fmt_count_pct(dismiss_sum, total_res)
+
+        # For median_time_to_close, compute overall median from resolved-in-period data if available
+        overall_median = np.nan
+        try:
+            if not df_resolved_in_period.empty and 'time_to_close' in df_resolved_in_period.columns:
+                overall_median = df_resolved_in_period['time_to_close'].median()
+                if pd.notna(overall_median):
+                    overall_median = round(float(overall_median), 1)
+                else:
+                    overall_median = np.nan
+        except Exception:
+            overall_median = np.nan
+
+        totals_row = {
+            'resolution_total': int(total_res),
+            'Settled|Rate': settled_str,
+            'Granted|Rate': granted_str,
+            'Dismiss|Rate': dismiss_str,
+            'median_time_to_close': overall_median
+        }
+
+        # Append totals as the last row labelled 'Total'
+        df_display.loc['Total'] = pd.Series(totals_row)
+    except Exception:
+        # Fallback: if any error, just leave df_display as-is
+        pass
+
+    print(df_display)
     
     # DOJ Memo response reporting removed per user request.
 

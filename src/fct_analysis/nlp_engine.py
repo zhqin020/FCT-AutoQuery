@@ -729,6 +729,18 @@ Return ONLY valid JSON:
             result['status'] = 'Moot'
             logger.debug(f"📊 Case {case_id}: Status = Moot")
         
+        # Priority 2: Special-case handling for 'struck' / motion-to-strike language
+        # Detect phrases like "motion is granted ... application ... is struck" and
+        # ensure the final outcome reflects that the application itself was struck.
+        # Check the full extracted text (not only status_text) for 'struck' / motion->struck patterns
+        struck_match = re.search(r"\bstruck\b", text, re.I)
+        motion_granted_then_struck = re.search(r"\bmotion\b.*\bgrant(?:ed|ing)?\b.*\bstruck\b", text, re.I)
+        application_struck = re.search(r"application\b.*\bstruck\b", text, re.I)
+        if struck_match and (motion_granted_then_struck or application_struck):
+            # Use explicit 'Struck' label to reflect docket language (preferred over generic 'Dismissed')
+            result['status'] = 'Struck'
+            logger.debug(f"📊 Case {case_id}: Status = Struck (detected motion granted -> application struck)")
+
         # Priority 2: Dismissed / Granted (Use status_text to avoid false positives from original decision)
         elif self._match_patterns(status_text, self.compiled_patterns['DISMISSED_PATTERNS']):
             result['status'] = 'Dismissed'
@@ -783,6 +795,53 @@ Return ONLY valid JSON:
         if result.get('judge'):
             logger.debug(f"⚖️ Case {case_id}: Judge = {result['judge']}")
         logger.debug(f"👂 Case {case_id}: Hearing = {result['has_hearing']}")
+
+        # Map internal status values to canonical Result categories and Chinese labels
+        def _map_to_canonical_status(status: str) -> dict:
+            s = (status or '').lower()
+            # Default mapping
+            mapping = {
+                'granted': 'Granted',
+                'allow': 'Granted',
+                'allowed': 'Granted',
+                'dismissed': 'Dismissed',
+                'dismiss': 'Dismissed',
+                'denied': 'Dismissed',
+                'discontinued': 'Settled',
+                'withdrawn': 'Settled',
+                'struck': 'Struck',
+                'moot': 'Moot'
+            }
+            # Find first matching key
+            for k, v in mapping.items():
+                if k in s:
+                    canon = v
+                    break
+            else:
+                # Fallback: if status indicates ongoing/pending, leave as Ongoing
+                canon = 'Ongoing'
+
+            # Chinese labels and descriptions per request
+            labels = {
+                'Granted': ('完胜', '法官命令移民局立刻干活。', '最好，强制出结果。'),
+                'Settled': ('私下和解', '移民局认怂，换取你撤诉。', '很好，目的达到了。'),
+                'Dismissed': ('判输', '法官觉得移民局没错。', '差，案子白打了，继续等。'),
+                'Struck': ('被撤销', '程序不对，被法官从记录里删了。', '中/差，视原因而定。'),
+                'Moot': ('已无意义', '签证已经出了，没必要告了。', '好，因为目标已达成。'),
+                'Ongoing': ('进行中', '案件仍在进行或未找到明确最终结果。', '未定，需要后续观察。')
+            }
+
+            short, desc, impact = labels.get(canon, labels['Ongoing'])
+            return {
+                'result': canon,
+                'result_alias': short,
+                'result_desc': desc,
+                'result_impact': impact
+            }
+
+        # Attach canonical result fields
+        canon_info = _map_to_canonical_status(result.get('status'))
+        result.update(canon_info)
         
         # Phase 2: Check if LLM verification is needed
         if self._is_ambiguous(text, result):
@@ -820,7 +879,15 @@ Return ONLY valid JSON:
         else:
             # High confidence rule-based result
             logger.debug(f"✅ Case {case_id}: High confidence rule-based classification")
-        
+
+        # Recompute canonical mapping in case LLM updated `status`
+        try:
+            canon_info = _map_to_canonical_status(result.get('status'))
+            result.update(canon_info)
+        except Exception:
+            # Safe fallback - do not interrupt classification
+            logger.debug(f"Could not remap canonical result for case {case_id}")
+
         return result
     
     def get_statistics(self) -> Dict:
