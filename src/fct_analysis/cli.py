@@ -1152,6 +1152,10 @@ def analyze(
                         'court': raw_case.get('office') or raw_case.get('court'),
                         'filing_date': raw_case.get('filing_date')
                     }
+                    
+                    # Add outcome entry if provided by NLP engine
+                    if res.get('outcome_entry'):
+                        analysis_result['outcome_entry'] = res['outcome_entry']
                     success = db_storage.save_analysis_result(case_id, analysis_result, mode)
                     if not success:
                         logger.warning(f"Failed to save analysis result for {case_id}")

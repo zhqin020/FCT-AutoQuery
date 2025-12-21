@@ -17,27 +17,49 @@ import pandas as pd
 
 def volume_trend(df: pd.DataFrame, output_path: str | Path) -> None:
     """Create stacked bar chart showing case volume trends over time."""
-    if "filing_date" not in df.columns or df.empty:
+    # Check if we have the required columns for both filing and outcome analysis
+    has_filing = "filing_date" in df.columns and not df.empty
+    has_outcome = "outcome_date" in df.columns and not df.empty
+    
+    if not has_filing and not has_outcome:
         # Create empty plot
         plt.figure(figsize=(10, 6))
         plt.savefig(output_path)
         plt.close()
         return
         
-    # Convert to datetime and extract year-month
-    df["year_month"] = pd.to_datetime(df["filing_date"], errors="coerce").dt.to_period("M")
-    
-    # Group by month and case type
-    monthly_counts = df.groupby(["year_month", "type"]).size().unstack(fill_value=0)
-    
-    # Create stacked bar chart
     plt.figure(figsize=(12, 6))
-    monthly_counts.plot(kind="bar", stacked=True, ax=plt.gca())
-    plt.title("Monthly Case Volume by Type")
+    
+    # Plot filing trends (new cases) - using filing_date
+    if has_filing and df['filing_date'].notna().any():
+        df_filing = df.dropna(subset=['filing_date']).copy()
+        df_filing["year_month"] = pd.to_datetime(df_filing["filing_date"], errors="coerce").dt.to_period("M")
+        filing_monthly = df_filing.groupby("year_month").size()
+        
+        # Plot filing trend as line
+        filing_monthly.plot(kind="line", marker='o', label="New Cases (Filing)", ax=plt.gca())
+    
+    # Plot outcome trends (resolved cases) - using outcome_date for resolution
+    if has_outcome:
+        # Only include resolved cases with valid outcome dates
+        resolved_statuses = ['Granted', 'Dismissed', 'Discontinued', 'Struck', 'Moot', 'Settled']
+        df_resolved = df[df['case_status'].isin(resolved_statuses)].dropna(subset=['outcome_date'])
+        
+        if not df_resolved.empty:
+            df_resolved["year_month"] = pd.to_datetime(df_resolved["outcome_date"], errors="coerce").dt.to_period("M")
+            
+            # Group by month and outcome status
+            outcome_monthly = df_resolved.groupby(["year_month", "case_status"]).size().unstack(fill_value=0)
+            
+            # Plot each outcome type as stacked area
+            outcome_monthly.plot(kind="area", stacked=True, alpha=0.7, ax=plt.gca())
+    
+    plt.title("Monthly Case Trends: New Cases vs Resolved Cases")
     plt.xlabel("Month")
     plt.ylabel("Number of Cases")
-    plt.legend(title="Case Type")
+    plt.legend(title="Case Type/Status")
     plt.xticks(rotation=45)
+    plt.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.savefig(output_path)
     plt.close()

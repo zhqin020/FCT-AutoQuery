@@ -137,7 +137,8 @@ def get_mandamus_data_for_analysis(year=2025):
         outcome_date,
         memo_response_time,
         reply_memo_date,
-        reply_to_outcome_time
+        reply_to_outcome_time,
+        outcome_entry
     FROM case_analysis 
     WHERE case_type = 'Mandamus' 
     AND (
@@ -336,15 +337,17 @@ def plot_outcome_trends(df_monthly, year=2025):
     """绘制每月结案方式趋势图"""
 
     # 堆叠图数据准备：只看已结案的部分
-    df_outcome_plot = df_monthly[['settled_count', 'dismissed_count', 'granted_count']].fillna(0)
+    df_outcome_plot = df_monthly[['settled_count', 'dismissed_count', 'granted_count', 'struck_count', 'moot_count']].fillna(0)
 
-    # 将其他方式结案合并为 "Other/Dismissed"
-    df_outcome_plot['Other/Dismissed'] = df_outcome_plot['dismissed_count'] # 假设败诉占比最多
+    # 设置各结案类型的显示名称
     df_outcome_plot['Settled'] = df_outcome_plot['settled_count']
     df_outcome_plot['Granted'] = df_outcome_plot['granted_count']
+    df_outcome_plot['Dismissed'] = df_outcome_plot['dismissed_count']
+    df_outcome_plot['Struck'] = df_outcome_plot['struck_count']
+    df_outcome_plot['Moot'] = df_outcome_plot['moot_count']
 
     fig, ax = plt.subplots(figsize=(12, 6))
-    df_outcome_plot[['Settled', 'Granted', 'Other/Dismissed']].plot(kind='bar', stacked=True, ax=ax)
+    df_outcome_plot[['Settled', 'Granted', 'Dismissed', 'Struck', 'Moot']].plot(kind='bar', stacked=True, ax=ax)
 
     title_str = f'{year}-{year+1} 年 Mandamus 案件每月结案方式分布'
     if _cjk_prop:
@@ -374,10 +377,10 @@ def plot_timeline_trends(df_monthly, year=2025):
 
     fig, ax = plt.subplots(figsize=(12, 6))
 
-    # 绘制平均结案耗时 (中位数)
-    ax.plot(df_monthly.index, df_monthly['median_time_to_close'], marker='s', linestyle='--', color='purple', label='中位数总耗时')
+    # 绘制平均 reply_to_outcome_days
+    ax.plot(df_monthly.index, df_monthly['avg_强3_to_close'], marker='s', linestyle='--', color='purple', label='平均强三到结案耗时')
 
-    title_str = f'{year}-{year+1} 年 Mandamus 案件中位数结案耗时趋势'
+    title_str = f'{year}-{year+1} 年 Mandamus 案件平均强三到结案耗时趋势'
     if _cjk_prop:
         ax.set_title(title_str, fontproperties=_cjk_prop)
         ax.set_xlabel('月份', fontproperties=_cjk_prop)
@@ -573,7 +576,7 @@ def plot_memo_reply_to_outcome_trends(df, year=2025):
 def plot_case_duration_distribution(df, year=2025):
     """绘制结案耗时分布直方图"""
     # 仅统计已结案且有耗时数据的 Mandamus 案件
-    df_resolved = df[df['case_status'].isin(['Discontinued', 'Granted', 'Dismissed'])].copy()
+    df_resolved = df[df['case_status'].isin(['Discontinued', 'Granted', 'Dismissed', 'Struck', 'Moot'])].copy()
     if df_resolved.empty or 'time_to_close' not in df_resolved.columns or df_resolved['time_to_close'].isna().all():
         return
 
@@ -614,7 +617,7 @@ def plot_case_duration_distribution(df, year=2025):
 def analyze_resolution_time_distribution(df):
     """统计不同结案时长 (age_of_case at resolution) 的案件分布"""
     # 筛选已结案的案件
-    df_resolved = df[df['case_status'].isin(['Discontinued', 'Granted', 'Dismissed'])].copy()
+    df_resolved = df[df['case_status'].isin(['Discontinued', 'Granted', 'Dismissed', 'Struck', 'Moot'])].copy()
     
     if df_resolved.empty or 'time_to_close' not in df_resolved.columns or df_resolved['time_to_close'].isna().all():
         print("\n--- 结案耗时分布统计 ---")
@@ -666,7 +669,7 @@ def run_monthly_analysis(df, year=2025):
         df_filed_monthly = pd.Series(dtype='int64', name='filing_count')
 
     # 按 outcome_date (结案日期) 统计每月结案量
-    df_resolved = df[df['case_status'].isin(['Discontinued', 'Granted', 'Dismissed'])]
+    df_resolved = df[df['case_status'].isin(['Discontinued', 'Granted', 'Dismissed', 'Struck', 'Moot'])]
     if (not df_resolved.empty) and df_resolved['outcome_date'].notna().any():
         df_resolved_monthly = df_resolved.groupby(pd.Grouper(key='outcome_date', freq='ME'))['case_number'].count().rename('resolution_count')
     else:
@@ -685,13 +688,22 @@ def run_monthly_analysis(df, year=2025):
     df_monthly['settled_count'] = _safe_group(df_resolved, 'Discontinued')
     df_monthly['granted_count'] = _safe_group(df_resolved, 'Granted')
     df_monthly['dismissed_count'] = _safe_group(df_resolved, 'Dismissed')
+    df_monthly['struck_count'] = _safe_group(df_resolved, 'Struck')
+    df_monthly['moot_count'] = _safe_group(df_resolved, 'Moot')
 
-    # 关键耗时趋势 (中位数)
-    if (not df_resolved.empty) and df_resolved['outcome_date'].notna().any() and df_resolved['time_to_close'].notna().any():
-        df_time_to_close_monthly = df_resolved.groupby(pd.Grouper(key='outcome_date', freq='ME'))['time_to_close'].median().rename('median_time_to_close')
-        df_monthly = pd.concat([df_monthly, df_time_to_close_monthly], axis=1)
+    # 关键耗时趋势 (reply_to_outcome_days 平均值，过滤负值)
+    if (not df_resolved.empty) and df_resolved['outcome_date'].notna().any() and df_resolved['reply_to_outcome_time'].notna().any():
+        # 过滤掉负值，只计算非负数的平均值
+        valid_rto = df_resolved[df_resolved['reply_to_outcome_time'] >= 0]['reply_to_outcome_time']
+        if not valid_rto.empty:
+            df_time_to_close_monthly = df_resolved.groupby(pd.Grouper(key='outcome_date', freq='ME'))['reply_to_outcome_time'].apply(
+                lambda x: x[x >= 0].mean() if len(x[x >= 0]) > 0 else None
+            ).rename('avg_强3_to_close')
+            df_monthly = pd.concat([df_monthly, df_time_to_close_monthly], axis=1)
+        else:
+            df_monthly['avg_强3_to_close'] = np.nan
     else:
-        df_monthly['median_time_to_close'] = np.nan
+        df_monthly['avg_强3_to_close'] = np.nan
     
     # Memo 响应时间趋势
     df_with_memo = df[df['memo_response_time'].notna()]
@@ -737,14 +749,25 @@ def run_monthly_analysis(df, year=2025):
     print(f"【{year}-{year+1} 年按月统计趋势分析报告】")
     print("="*50)
     print(f"\n--- 案件负荷与积压变化 ({year}-{year+1}) ---")
-    print(df_monthly[['filing_count', 'resolution_count', 'net_change']].round(0).astype(int))
+    # Display monthly data with totals row
+    workload_data = df_monthly[['filing_count', 'resolution_count', 'net_change']].copy().round(0).astype(int)
+    
+    # Add totals row
+    totals_row = pd.Series({
+        'filing_count': int(workload_data['filing_count'].sum()),
+        'resolution_count': int(workload_data['resolution_count'].sum()),
+        'net_change': int(workload_data['net_change'].sum())
+    }, name='合计')
+    
+    workload_with_totals = pd.concat([workload_data, totals_row.to_frame().T])
+    print(workload_with_totals)
 
     # 文字版分布统计 (仅限本周期内结案的案子)
     analyze_resolution_time_distribution(df_resolved_in_period)
 
     print(f"\n--- 结案方式百分比 ({year}-{year+1}) ---")
     df_report = df_monthly.copy()
-    df_report['resolution_total'] = df_report[['settled_count', 'granted_count', 'dismissed_count']].sum(axis=1).fillna(0)
+    df_report['resolution_total'] = df_report[['settled_count', 'granted_count', 'dismissed_count', 'struck_count', 'moot_count']].sum(axis=1).fillna(0)
     # convert to int for display counts
     df_report['resolution_total'] = df_report['resolution_total'].astype(int)
 
@@ -760,12 +783,17 @@ def run_monthly_analysis(df, year=2025):
     df_report['Settled|Rate'] = df_report.apply(lambda r: _count_pct_str(r, 'settled_count'), axis=1)
     df_report['Granted|Rate'] = df_report.apply(lambda r: _count_pct_str(r, 'granted_count'), axis=1)
     df_report['Dismiss|Rate'] = df_report.apply(lambda r: _count_pct_str(r, 'dismissed_count'), axis=1)
+    df_report['Struck|Rate'] = df_report.apply(lambda r: _count_pct_str(r, 'struck_count'), axis=1)
+    df_report['Moot|Rate'] = df_report.apply(lambda r: _count_pct_str(r, 'moot_count'), axis=1)
 
-    # 对中位数耗时进行四舍五入
-    df_report['median_time_to_close'] = df_report['median_time_to_close'].round(1)
-    df_report.index = df_report.index.strftime('%Y-%m')
+    # 对平均 reply_to_outcome_days 进行四舍五入
+    df_report['avg_强3_to_close'] = df_report['avg_强3_to_close'].round(1)
+    # Convert datetime index to string format (only if it's a datetime index)
+    from pandas import DatetimeIndex
+    if isinstance(df_report.index, DatetimeIndex):
+        df_report.index = df_report.index.strftime('%Y-%m')
     # Build display frame
-    display_cols = ['resolution_total', 'Settled|Rate', 'Granted|Rate', 'Dismiss|Rate', 'median_time_to_close']
+    display_cols = ['resolution_total', 'Settled|Rate', 'Granted|Rate', 'Dismiss|Rate', 'Struck|Rate', 'Moot|Rate', 'avg_强3_to_close']
     df_display = df_report[display_cols].copy()
 
     # Compute totals row: counts summed, percentages recalculated from summed counts
@@ -774,6 +802,8 @@ def run_monthly_analysis(df, year=2025):
         settled_sum = int(df_report[['settled_count']].fillna(0).sum().iloc[0]) if 'settled_count' in df_report.columns else 0
         granted_sum = int(df_report[['granted_count']].fillna(0).sum().iloc[0]) if 'granted_count' in df_report.columns else 0
         dismiss_sum = int(df_report[['dismissed_count']].fillna(0).sum().iloc[0]) if 'dismissed_count' in df_report.columns else 0
+        struck_sum = int(df_report[['struck_count']].fillna(0).sum().iloc[0]) if 'struck_count' in df_report.columns else 0
+        moot_sum = int(df_report[['moot_count']].fillna(0).sum().iloc[0]) if 'moot_count' in df_report.columns else 0
 
         def fmt_count_pct(cnt, total):
             pct = (cnt / total * 100) if total > 0 else 0.0
@@ -782,25 +812,35 @@ def run_monthly_analysis(df, year=2025):
         settled_str = fmt_count_pct(settled_sum, total_res)
         granted_str = fmt_count_pct(granted_sum, total_res)
         dismiss_str = fmt_count_pct(dismiss_sum, total_res)
+        struck_str = fmt_count_pct(struck_sum, total_res)
+        moot_str = fmt_count_pct(moot_sum, total_res)
 
-        # For median_time_to_close, compute overall median from resolved-in-period data if available
-        overall_median = np.nan
+        # For avg_强3_to_close, compute overall average from resolved-in-period data if available (过滤负值)
+        overall_avg = np.nan
         try:
-            if not df_resolved_in_period.empty and 'time_to_close' in df_resolved_in_period.columns:
-                overall_median = df_resolved_in_period['time_to_close'].median()
-                if pd.notna(overall_median):
-                    overall_median = round(float(overall_median), 1)
+            if not df_resolved_in_period.empty and 'reply_to_outcome_time' in df_resolved_in_period.columns:
+                # 过滤掉负值，只计算非负数的平均值
+                valid_times = df_resolved_in_period[df_resolved_in_period['reply_to_outcome_time'] >= 0]['reply_to_outcome_time']
+                if not valid_times.empty:
+                    overall_avg = valid_times.mean()
+                    if pd.notna(overall_avg):
+                        overall_avg = round(float(overall_avg), 1)
+                    else:
+                        overall_avg = np.nan
                 else:
-                    overall_median = np.nan
+                    overall_avg = np.nan
         except Exception:
-            overall_median = np.nan
+            overall_avg = np.nan
 
         totals_row = {
             'resolution_total': int(total_res),
             'Settled|Rate': settled_str,
             'Granted|Rate': granted_str,
             'Dismiss|Rate': dismiss_str,
-            'median_time_to_close': overall_median
+            'Struck|Rate': struck_str,
+            'Moot|Rate': moot_str,
+            #'avg_reply_to_outcome_days': overall_avg
+            'avg_强3_to_close': overall_avg
         }
 
         # Append totals as the last row labelled 'Total'
@@ -816,19 +856,19 @@ def run_monthly_analysis(df, year=2025):
     print("\n【趋势解读】")
     # 检查最近三个月的净积压变化
     recent_change = df_monthly['net_change'].tail(3).mean()
-    # 检查最近三个月的中位数结案时间是否比之前三个月有所增加
+    # 检查最近三个月的平均结案时间是否比之前三个月有所增加
     # 确保有足够的数据进行比较
     if len(df_monthly) >= 6:
-        recent_median_time = df_monthly['median_time_to_close'].tail(3).mean()
-        previous_median_time = df_monthly['median_time_to_close'].iloc[-6:-3].mean()
+        recent_avg_time = df_monthly['avg_强3_to_close'].tail(3).mean()
+        previous_avg_time = df_monthly['avg_强3_to_close'].iloc[-6:-3].mean()
     else: # 如果数据不足6个月，则无法进行有意义的趋势比较
-        recent_median_time = np.nan
-        previous_median_time = np.nan
+        recent_avg_time = np.nan
+        previous_avg_time = np.nan
 
     if recent_change > 0:
         print("-> 🚨 警告：近期净积压变化平均为正值，法院/IRCC 正在承受更大压力，未来案件处理速度可能会减慢。")
-    elif not np.isnan(recent_median_time) and not np.isnan(previous_median_time) and recent_median_time > previous_median_time:
-        print("-> ⚠️ 注意：尽管积压变化不明显，但结案所需的中位数时间仍在增加，表明效率有所下降。")
+    elif not np.isnan(recent_avg_time) and not np.isnan(previous_avg_time) and recent_avg_time > previous_avg_time:
+        print("-> ⚠️ 注意：尽管积压变化不明显，但结案所需的平均时间仍在增加，表明效率有所下降。")
     else:
         print("-> ✅ 稳定：目前案件积压趋势和结案耗时较为稳定。")
 

@@ -64,6 +64,9 @@ class AnalysisDBManager:
             reply_memo_date DATE,
             has_hearing BOOLEAN,
             
+            -- Outcome information
+            outcome_entry JSONB,  -- Store the docket entry that represents the case outcome (granted/dismissed/etc)
+            
             -- Analysis metadata
             analysis_mode VARCHAR(20) NOT NULL DEFAULT 'rule',
             analysis_version VARCHAR(20) DEFAULT '1.0',
@@ -92,7 +95,8 @@ class AnalysisDBManager:
             "CREATE INDEX IF NOT EXISTS idx_case_analysis_year ON case_analysis(year)",
             "CREATE INDEX IF NOT EXISTS idx_case_analysis_reply_memo_time ON case_analysis(reply_memo_time)",
             "CREATE INDEX IF NOT EXISTS idx_case_analysis_dojo_memo_date ON case_analysis(doj_memo_date)",
-            "CREATE INDEX IF NOT EXISTS idx_case_analysis_reply_memo_date ON case_analysis(reply_memo_date)"
+            "CREATE INDEX IF NOT EXISTS idx_case_analysis_reply_memo_date ON case_analysis(reply_memo_date)",
+            "CREATE INDEX IF NOT EXISTS idx_case_analysis_outcome_entry ON case_analysis USING GIN(outcome_entry)"
         ]
         
         try:
@@ -343,6 +347,7 @@ class AnalysisDBManager:
                         "ALTER TABLE case_analysis ADD COLUMN IF NOT EXISTS reply_memo_date DATE",
                         "ALTER TABLE case_analysis ADD COLUMN IF NOT EXISTS has_hearing BOOLEAN",
                         "ALTER TABLE case_analysis ADD COLUMN IF NOT EXISTS year INTEGER",
+                        "ALTER TABLE case_analysis ADD COLUMN IF NOT EXISTS outcome_entry JSONB",
                     ]
                     
                     for sql in updates:
@@ -421,7 +426,7 @@ class AnalysisResultStorage:
                                time_to_close, age_of_case, rule9_wait, outcome_date,
                                memo_response_time, memo_to_outcome_time, reply_memo_time,
                                reply_to_outcome_time, doj_memo_date, reply_memo_date,
-                               analysis_data, title, court, filing_date
+                               analysis_data, title, court, filing_date, outcome_entry
                         FROM case_analysis 
                         WHERE case_id = %s AND analysis_mode = %s
                     """, (case_id, mode))
@@ -468,7 +473,8 @@ class AnalysisResultStorage:
                         'title': ('title', None),
                         'court': ('court', 100),
                         'filing_date': ('filing_date', None),
-                        'has_hearing': ('has_hearing', None)
+                        'has_hearing': ('has_hearing', None),
+                        'outcome_entry': ('outcome_entry', None)
                     }
                     
                     # Build INSERT and UPDATE clauses
@@ -481,8 +487,12 @@ class AnalysisResultStorage:
                         if field_name in analysis_result and analysis_result[field_name] is not None:
                             value = analysis_result[field_name]
                             
+                            # Special handling for JSON fields
+                            if field_name == 'outcome_entry' and isinstance(value, dict):
+                                value = json.dumps(value)
+                            
                             # Truncate string values to prevent database errors
-                            if max_length and isinstance(value, str) and len(value) > max_length:
+                            elif max_length and isinstance(value, str) and len(value) > max_length:
                                 value = value[:max_length]
                                 logger.debug(f"Truncated {field_name} for case {case_id} to {max_length} characters")
                             
@@ -490,7 +500,7 @@ class AnalysisResultStorage:
                             insert_values.append(value)
                             update_fields.append(f"{db_field} = EXCLUDED.{db_field}")
                     
-                    # Store additional analysis data as JSON
+                    # Store additional analysis data as JSON (excluding fields already in field_mapping)
                     analysis_data = {k: v for k, v in analysis_result.items() 
                                    if k not in field_mapping}
                     if analysis_data:

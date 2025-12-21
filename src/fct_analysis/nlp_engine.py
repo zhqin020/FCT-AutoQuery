@@ -888,7 +888,119 @@ Return ONLY valid JSON:
             # Safe fallback - do not interrupt classification
             logger.debug(f"Could not remap canonical result for case {case_id}")
 
+        # Find and attach outcome entry if status was determined
+        case_status = result.get('status')
+        if case_status and case_status != 'Ongoing':
+            # Extract the corresponding docket entry for this outcome
+            outcome_entry = self._find_outcome_entry(case_obj, case_status)
+            if outcome_entry:
+                result['outcome_entry'] = outcome_entry
+                logger.debug(f"📋 Case {case_id}: Found outcome entry for status {case_status}")
+
         return result
+    
+    def _find_outcome_entry(self, case_obj: Any, status: str) -> Optional[Dict[str, Any]]:
+        """
+        Find the docket entry that corresponds to the case outcome/status.
+        
+        Args:
+            case_obj: Case object containing docket entries
+            status: Detected case status (granted, dismissed, etc.)
+            
+        Returns:
+            Dictionary with docket entry info or None if not found
+        """
+        docket_entries = []
+        
+        # Extract docket entries from case object
+        if isinstance(case_obj, dict):
+            if 'docket_entries' in case_obj:
+                docket_entries = case_obj['docket_entries']
+            elif 'analysis_data' in case_obj and case_obj['analysis_data']:
+                # Check if docket entries are in analysis_data
+                analysis_data = case_obj['analysis_data']
+                if isinstance(analysis_data, str):
+                    analysis_data = json.loads(analysis_data)
+                docket_entries = analysis_data.get('docket_entries', [])
+        else:
+            # Handle pandas Series or other objects
+            docket_entries = getattr(case_obj, 'docket_entries', [])
+        
+        if not docket_entries:
+            return None
+        
+        # Define keywords for each status
+        status_keywords = {
+            'granted': ['grant', 'allow', 'approve', 'favor', 'allowing', 'granted', 'allowed'],
+            'dismissed': ['dismiss', 'deny', 'refuse', 'reject', 'disallow', 'denied'],
+            'discontinued': ['discontinue', 'withdraw', 'abandon', 'discontinued'],
+            'settled': ['settle', 'settlement', 'resolved', 'settled'],
+            'struck': ['strike', 'struck', 'removed'],
+            'moot': ['moot', 'academic', 'irrelevant']
+        }
+        
+        # Get keywords for detected status
+        keywords = status_keywords.get(status.lower(), [])
+        if not keywords:
+            return None
+        
+        # Search docket entries for outcome-related content
+        # Priority: look for "Final decision" entries first
+        final_decision_entries = []
+        matching_entries = []
+        
+        for docket in docket_entries:
+            summary = docket.get('summary', '') or docket.get('recorded_entry_summary', '')
+            if not summary:
+                continue
+                
+            summary_lower = summary.lower()
+            
+            # Check for final decision marker
+            if '(final decision)' in summary_lower:
+                final_decision_entries.append(docket)
+                continue
+            
+            # Check for status keywords
+            if any(keyword in summary_lower for keyword in keywords):
+                matching_entries.append(docket)
+        
+        # Prefer final decision entries, then first matching entry
+        if final_decision_entries:
+            # Among final decision entries, find one with status keyword
+            for docket in final_decision_entries:
+                summary_lower = (docket.get('summary', '') or docket.get('recorded_entry_summary', '')).lower()
+                if any(keyword in summary_lower for keyword in keywords):
+                    return {
+                        'id': docket.get('id'),
+                        'date_filed': docket.get('date_filed'),
+                        'entry_office': docket.get('entry_office', docket.get('office')),
+                        'summary': docket.get('summary', docket.get('recorded_entry_summary')),
+                        'recorded_entry_summary': docket.get('recorded_entry_summary')
+                    }
+            
+            # If no keyword match in final decisions, use the last one
+            docket = final_decision_entries[-1]
+            return {
+                'id': docket.get('id'),
+                'date_filed': docket.get('date_filed'),
+                'entry_office': docket.get('entry_office', docket.get('office')),
+                'summary': docket.get('summary', docket.get('recorded_entry_summary')),
+                'recorded_entry_summary': docket.get('recorded_entry_summary')
+            }
+        
+        # Fall back to first matching entry
+        if matching_entries:
+            docket = matching_entries[0]
+            return {
+                'id': docket.get('id'),
+                'date_filed': docket.get('date_filed'),
+                'entry_office': docket.get('entry_office', docket.get('office')),
+                'summary': docket.get('summary', docket.get('recorded_entry_summary')),
+                'recorded_entry_summary': docket.get('recorded_entry_summary')
+            }
+        
+        return None
     
     def get_statistics(self) -> Dict:
         """Get classification statistics and performance metrics."""
