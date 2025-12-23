@@ -32,8 +32,10 @@ ollama_lock = threading.Lock()
 # -----------------------------------------------------------
 # Ollama configuration
 # -----------------------------------------------------------
-OLLAMA_MODEL = "gemma2:2b"   # Lightweight model for CPU-only environment
-OLLAMA_TIMEOUT = 60             # Maximum wait time per inference (seconds) - increased for CPU-only
+# All Ollama parameters now managed centrally in config.toml
+# These are deprecated fallback values only
+OLLAMA_MODEL = None   # Will be overridden by config
+OLLAMA_TIMEOUT = None # Will be overridden by config
 OLLAMA_MAX_RETRY = 3            # Maximum retry attempts
 
 # System Prompt: Short and efficient
@@ -106,7 +108,7 @@ def run_with_timeout(func, timeout):
 # -----------------------------------------------------------
 # Safe Ollama request for classification
 # -----------------------------------------------------------
-def safe_ollama_request(summary_text: str, model: str | None = None, wait_for_idle: bool = True, max_idle_wait: int = 120) -> dict[str, Any]:
+def safe_ollama_request(summary_text: str, model: str | None = None, wait_for_idle: bool = True, max_idle_wait: int | None = None) -> dict[str, Any]:
     """
     Safe Ollama call with timeout and retry:
     - Single-threaded (with lock)
@@ -117,7 +119,26 @@ def safe_ollama_request(summary_text: str, model: str | None = None, wait_for_id
     """
     from loguru import logger
     
-    model_to_use = model or OLLAMA_MODEL
+    # Get model from config (centralized management)
+    model_to_use = model  # Start with parameter
+    if model_to_use is None:
+        try:
+            from src.lib.config import Config
+            model_to_use = Config.get_ollama_model()
+        except Exception:
+            model_to_use = None  # Let Ollama auto-detect
+    
+    # Fallback to deprecated constant if config fails
+    if model_to_use is None and OLLAMA_MODEL:
+        model_to_use = OLLAMA_MODEL
+    
+    # Use default idle wait time if not specified
+    if max_idle_wait is None:
+        try:
+            from src.lib.config import Config
+            max_idle_wait = Config.get_ollama_timeout()
+        except Exception:
+            max_idle_wait = OLLAMA_TIMEOUT or 120  # Fallback to deprecated constant or default
     
     with ollama_lock:
         # Optional: Wait for Ollama to become idle
@@ -146,10 +167,17 @@ def safe_ollama_request(summary_text: str, model: str | None = None, wait_for_id
                     "options": {"num_predict": 200, "temperature": 0}
                 }
                 
+                # Get timeout from config (centralized management)
+                try:
+                    from src.lib.config import Config
+                    request_timeout = Config.get_ollama_timeout()
+                except Exception:
+                    request_timeout = OLLAMA_TIMEOUT or 120  # Fallback to deprecated constant or default
+                
                 response = requests.post(
                     f"{DEFAULT_OLLAMA_URL}/api/chat", 
                     json=payload, 
-                    timeout=OLLAMA_TIMEOUT
+                    timeout=request_timeout
                 )
                 response.raise_for_status()
                 data = response.json()
@@ -160,8 +188,15 @@ def safe_ollama_request(summary_text: str, model: str | None = None, wait_for_id
                     raise ValueError("Invalid response format from Ollama")
 
             # ---- Execute inference with timeout ----
+            # Get timeout from config (centralized management)
             try:
-                content, error = run_with_timeout(call, OLLAMA_TIMEOUT)
+                from src.lib.config import Config
+                inference_timeout = Config.get_ollama_timeout()
+            except Exception:
+                inference_timeout = OLLAMA_TIMEOUT or 120  # Fallback to deprecated constant or default
+            
+            try:
+                content, error = run_with_timeout(call, inference_timeout)
                 
                 if error is None and content is not None:
                     # Success - try to parse JSON
@@ -182,7 +217,7 @@ def safe_ollama_request(summary_text: str, model: str | None = None, wait_for_id
                         logger.warning(f"❗ Model output: {content}")
                         # Continue retry
                 elif isinstance(error, TimeoutError):
-                    logger.warning(f"⏰ Ollama request timed out after {OLLAMA_TIMEOUT}s")
+                    logger.warning(f"⏰ Ollama request timed out after {inference_timeout}s")
                     # Don't retry on timeout - fallback to NLP immediately
                     break
                 else:
@@ -207,7 +242,7 @@ def safe_ollama_request(summary_text: str, model: str | None = None, wait_for_id
 # -----------------------------------------------------------
 # External callable function
 # -----------------------------------------------------------
-def safe_llm_classify(summary_text: str, model: str | None = None, wait_for_idle: bool = True, max_idle_wait: int = 120) -> dict[str, Any]:
+def safe_llm_classify(summary_text: str, model: str | None = None, wait_for_idle: bool = True, max_idle_wait: int | None = None) -> dict[str, Any]:
     """Safe LLM classification for Federal Court cases."""
     return safe_ollama_request(summary_text, model, wait_for_idle=wait_for_idle, max_idle_wait=max_idle_wait)
 
@@ -220,7 +255,7 @@ def extract_entities_with_ollama(
     max_retries: int = 3,
     retry_delay: float = 1.0,
     wait_for_idle: bool = True,
-    max_idle_wait: int = 120,
+    max_idle_wait: int | None = None,
 ) -> dict[str, Any] | None:
     """Call local Ollama to extract visa office and judge from case text.
 
@@ -249,6 +284,14 @@ def extract_entities_with_ollama(
     base_url = ollama_url or DEFAULT_OLLAMA_URL
     prompt = _build_extraction_prompt(text)
 
+    # Use default idle wait time if not specified
+    if max_idle_wait is None:
+        try:
+            from src.lib.config import Config
+            max_idle_wait = Config.get_ollama_timeout()
+        except Exception:
+            max_idle_wait = OLLAMA_TIMEOUT or 120  # Fallback to deprecated constant or default
+    
     # Optional: Wait for Ollama to become idle
     if wait_for_idle:
         logger.info("⏳ Checking if Ollama is idle before entity extraction...")
