@@ -120,15 +120,11 @@ MY_CASE_MEMO_DATE = '2025-07-30' # 示例日期，请替换为实际日期
 def get_mandamus_data_for_analysis(year=2025):
     """从数据库拉取指定跨度（24个月）的 Mandamus 案件数据"""
     engine = create_engine(DB_CONNECTION_STR)
-    
-    # 按照用户需求，统计期间从 year-1-1 到 (year+1)-12-31 (共24个月)
-    start_date = f"{year}-01-01"
-    end_date = f"{year+1}-12-31"
-    
-    # 拉取 case_analysis 的核心数据
-    # 策略：拉取在统计期间内有 Filing 或 Outcome 的所有 Mandamus 案件
+    # 按用户要求：选择 case_analysis.year = YEAR 的记录（优先）
+    # 回退策略：若 year 字段不可靠，使用 case_number 后缀匹配 '-YY'
+    yy = year % 100
     query = f"""
-    SELECT 
+    SELECT
         case_number,
         filing_date,
         case_status,
@@ -139,17 +135,15 @@ def get_mandamus_data_for_analysis(year=2025):
         reply_memo_date,
         reply_to_outcome_time,
         outcome_entry
-    FROM case_analysis 
-    WHERE case_type = 'Mandamus' 
-    AND (
-        (filing_date >= '{start_date}' AND filing_date <= '{end_date}')
-        OR 
-        (outcome_date >= '{start_date}' AND outcome_date <= '{end_date}')
-    )
+    FROM case_analysis
+    WHERE case_type = 'Mandamus'
+      AND (
+          TRIM(COALESCE(year::text, '')) = '{year}'
+          OR case_number LIKE '%-{yy:02d}'
+      )
     ORDER BY filing_date ASC;
     """
-    
-    print(f"正在提取 {year} 至 {year+1} 年 Mandamus 案件核心数据 (统计期间: {start_date} 至 {end_date})...")
+    print(f"正在提取 case_analysis.year=={year} 的 Mandamus 案件（fallback: case_number suffix -{yy:02d}）...")
     try:
         with engine.connect() as connect:
             df = pd.read_sql(text(query), connect)
@@ -171,26 +165,21 @@ def get_mandamus_data_for_analysis(year=2025):
 def export_cases_to_json(year=2025):
     """提取 Granted 和 Dismissed 案件的原始信息和分析结果，并保存为 JSON。"""
     engine = create_engine(DB_CONNECTION_STR)
-    
-    # 按照用户需求，统计期间从 year-1-1 到 (year+1)-12-31
-    start_date = f"{year}-01-01"
-    end_date = f"{year+1}-12-31"
-
     for status in ['Granted', 'Dismissed']:
         filename_base = f"{status.lower()}_cases_{year}_{year+1}.json"
         filename = os.path.join(OUTPUT_DIR, filename_base)
         print(f"\n正在导出 {status} 案件到 {filename}...")
         
         # 1. 从 case_analysis 获取该状态的 Mandamus 案件 (跨度24个月)
+        yy = year % 100
         analysis_query = f"""
-        SELECT * FROM case_analysis 
-        WHERE case_type = 'Mandamus' 
-        AND case_status = '{status}'
-        AND (
-            (filing_date >= '{start_date}' AND filing_date <= '{end_date}')
-            OR 
-            (outcome_date >= '{start_date}' AND outcome_date <= '{end_date}')
-        )
+        SELECT * FROM case_analysis
+        WHERE case_type = 'Mandamus'
+          AND case_status = '{status}'
+          AND (
+              TRIM(COALESCE(year::text, '')) = '{year}'
+              OR case_number LIKE '%-{yy:02d}'
+          )
         """
         with engine.connect() as connect:
             analysis_df = pd.read_sql(text(analysis_query), connect)
@@ -874,6 +863,60 @@ def run_monthly_analysis(df, year=2025):
         print("-> ⚠️ 注意：尽管积压变化不明显，但结案所需的平均时间仍在增加，表明效率有所下降。")
     else:
         print("-> ✅ 稳定：目前案件积压趋势和结案耗时较为稳定。")
+
+    # ===== 导出报告 (Markdown + 简易 HTML)，并在合适位置嵌入生成的图片 =====
+    try:
+        md_lines = []
+        md_lines.append(f"# {year}-{year+1} 年按月统计趋势分析报告")
+        md_lines.append('\n## 案件负荷与积压变化')
+        workload_img = f'mandamus_workload_trends_{year}.png'
+        md_lines.append(f'![]({workload_img})')
+        md_lines.append('```\n' + workload_with_totals.to_string() + '\n```')
+
+        md_lines.append('\n## 结案耗时分布统计 (Mandamus)')
+        duration_img = f'mandamus_duration_distribution_{year}.png'
+        md_lines.append(f'![]({duration_img})')
+
+        md_lines.append('\n## 结案方式百分比')
+        outcome_img = f'mandamus_outcome_trends_{year}.png'
+        md_lines.append(f'![]({outcome_img})')
+        md_lines.append('```\n' + df_display.to_string() + '\n```')
+
+        md_lines.append('\n## 趋势解读')
+        if recent_change > 0:
+            md_lines.append('近期净积压为正，法院/IRCC 压力上升。')
+        elif not np.isnan(recent_avg_time) and not np.isnan(previous_avg_time) and recent_avg_time > previous_avg_time:
+            md_lines.append('近期平均结案时间较之前有所上升，需关注效率变化。')
+        else:
+            md_lines.append('当前案件积压与结案耗时总体稳定。')
+
+        md_content = '\n\n'.join(md_lines)
+        md_path = os.path.join(OUTPUT_DIR, f'mandamus_monthly_report_{year}.md')
+        with open(md_path, 'w', encoding='utf-8') as mf:
+            mf.write(md_content)
+        print(f"📄 已将 Markdown 报告保存为: {md_path}")
+
+        # 写一个简单的 HTML 文件以便离线查看（嵌入图片引用）
+        html_parts = [
+            f"<h1>{year}-{year+1} 年按月统计趋势分析报告</h1>",
+            f"<h2>案件负荷与积压变化</h2>",
+            f"<img src=\"{workload_img}\" style=\"max-width:100%\">",
+            f"<pre>{workload_with_totals.to_string()}</pre>",
+            f"<h2>结案耗时分布统计 (Mandamus)</h2>",
+            f"<img src=\"{duration_img}\" style=\"max-width:100%\">",
+            f"<h2>结案方式百分比</h2>",
+            f"<img src=\"{outcome_img}\" style=\"max-width:100%\">",
+            f"<pre>{df_display.to_string()}</pre>",
+            f"<h2>趋势解读</h2>",
+            f"<p>{md_lines[-3] if len(md_lines)>=3 else ''}</p>",
+        ]
+        html_content = '<html><body>' + '\n'.join(html_parts) + '</body></html>'
+        html_path = os.path.join(OUTPUT_DIR, f'mandamus_monthly_report_{year}.html')
+        with open(html_path, 'w', encoding='utf-8') as hf:
+            hf.write(html_content)
+        print(f"🌐 已将 HTML 报告保存为: {html_path}")
+    except Exception as e:
+        print(f"❌ 导出嵌图报告失败: {e}")
 
 
 
