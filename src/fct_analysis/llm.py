@@ -71,10 +71,23 @@ def _match_response_to_case(responses: list, case_number: str | None) -> dict | 
         # If no case number provided, return the first response
         return responses[0] if responses else None
     
-    # Strategy 1: Look for case number in the response content (if Ollama echoes it back)
+    # Strategy 1: Prefer explicit `case_number` field in the response object
     for i, response in enumerate(responses):
         if isinstance(response, dict):
-            # Check any string fields that might contain the case number
+            # Direct field match (most reliable)
+            resp_case = response.get('case_number') or response.get('caseId') or response.get('case_id')
+            if resp_case:
+                try:
+                    if str(resp_case).strip() == str(case_number).strip():
+                        if logger:
+                            logger.info(f"🎯 Matched case_number exactly in response[{i}]")
+                        return response
+                except Exception:
+                    pass
+
+    # Strategy 2: Look for case number in any string field (if model echoed it elsewhere)
+    for i, response in enumerate(responses):
+        if isinstance(response, dict):
             for key, value in response.items():
                 if isinstance(value, str) and case_number and case_number in value:
                     if logger:
@@ -106,13 +119,24 @@ OLLAMA_MAX_RETRY = 3            # Maximum retry attempts
 
 # System Prompt: Short and efficient
 SYSTEM_PROMPT = """
-You classify Canadian Federal Court docket summaries and return valid JSON only.
-Output:
-- is_mandamus
-- outcome
-- nature
-- has_hearing
-Return only JSON.
+You are an expert legal analyst specializing in Canadian Federal Court immigration
+and judicial review cases. Analyze the provided case summary and return a
+single, well-formed JSON object only. The JSON MUST include the `case_number`
+field that matches the request identifier provided in the prompt. Do not
+include any explanatory text, markdown, or surrounding code fences.
+
+Use the following field names exactly (these match the engine's canonical schema):
+- case_number: string (must exactly match the provided case identifier)
+- case_type: string (e.g. "Mandamus" or "Other")
+- status: string (one of "Dismissed", "Granted", "Discontinued", "Moot", "Ongoing")
+- visa_office: string or null
+- judge: string or null
+- has_hearing: boolean
+- confidence: string ("high", "medium", "low")
+- nature: string or null
+
+Use docket entries, nature, title, and style_of_cause to determine values.
+Return only the JSON object.
 """
 
 
@@ -227,35 +251,62 @@ def safe_ollama_request(summary_text: str, model: str | None = None, wait_for_id
             def call():
                 if requests is None:
                     raise ConnectionError("requests library is not available")
-                
+
                 # Include case number in the prompt for proper response matching
-                case_identifier = f"\n\nCASE_IDENTIFIER: {case_number}" if case_number else ""
-                
+                case_identifier = str(case_number) if case_number else ""
+
+                # Build an example JSON to show the required format (matching nlp_engine fields)
+                try:
+                    example_json = json.dumps({
+                        "case_number": case_identifier,
+                        "case_type": "Mandamus",
+                        "status": "Ongoing",
+                        "visa_office": None,
+                        "judge": None,
+                        "has_hearing": False,
+                        "confidence": "medium",
+                        "nature": None,
+                    }, ensure_ascii=False)
+                except Exception:
+                    example_json = ('{"case_number":"%s","case_type":"Mandamus","status":"Ongoing",'
+                                    '"visa_office":null,"judge":null,"has_hearing":false,"confidence":"medium","nature":null}') % case_identifier
+
+                # Build a strict user prompt that asks the model to include the
+                # exact case_number field and the canonical keys used by the
+                # NLP engine. Provide the extracted summary and an example JSON.
+                user_content = (
+                    f"Case summary:\n{summary_text}\n\n"
+                    f"Please return ONLY one JSON object with these exact keys: case_number (string), case_type (string), status (string), visa_office (string|null), judge (string|null), has_hearing (boolean), confidence (string), nature (string|null).\n"
+                    f"The case_number field MUST be the exact identifier: {case_identifier}.\n"
+                    "Example output (format reference only, return the JSON object exactly, no extra text):\n"
+                    f"{example_json}\n"
+                )
+
                 payload = {
                     "model": model_to_use,
                     "messages": [
                         {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": f"Summaries:\n{summary_text}{case_identifier}"}
+                        {"role": "user", "content": user_content}
                     ],
                     "stream": False,
                     "options": {"num_predict": 200, "temperature": 0}
                 }
-                
+
                 # Get timeout from config (centralized management)
                 try:
                     from src.lib.config import Config
                     request_timeout = Config.get_ollama_timeout()
                 except Exception:
                     request_timeout = OLLAMA_TIMEOUT or 120  # Fallback to deprecated constant or default
-                
+
                 response = requests.post(
-                    f"{DEFAULT_OLLAMA_URL}/api/chat", 
-                    json=payload, 
+                    f"{DEFAULT_OLLAMA_URL}/api/chat",
+                    json=payload,
                     timeout=request_timeout
                 )
                 response.raise_for_status()
                 data = response.json()
-                
+
                 if "message" in data and "content" in data["message"]:
                     return data["message"]["content"]
                 else:
@@ -282,6 +333,12 @@ def safe_ollama_request(summary_text: str, model: str | None = None, wait_for_id
                         if cleaned_content.endswith('```'):
                             cleaned_content = cleaned_content[:-3]  # Remove ```
                         cleaned_content = cleaned_content.strip()
+                        # Log Ollama raw response (trim to reasonable length)
+                        if logger:
+                            try:
+                                logger.debug(f"🔎 Ollama raw content (trimmed): {cleaned_content[:4000]}")
+                            except Exception:
+                                logger.debug("🔎 Ollama raw content (unable to display)")
                         
                         # Try to parse as JSON array first (accumulated responses)
                         try:

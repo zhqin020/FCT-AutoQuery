@@ -564,36 +564,43 @@ Return ONLY valid JSON:
             logger.warning(f"Unexpected LLM result format: {type(llm_result)} - {llm_result}")
             return self._create_fallback_result()
         
-        # Map is_mandamus to type
-        is_mandamus = llm_result.get('is_mandamus')
-        if isinstance(is_mandamus, bool):
-            normalized['type'] = 'Mandamus' if is_mandamus else 'Other'
-        elif isinstance(is_mandamus, str):
-            normalized['type'] = 'Mandamus' if is_mandamus.lower() in ['true', 'yes', '1'] else 'Other'
+        # Expect canonical field names from the safe LLM (no mapping required):
+        # case_type, status, visa_office, judge, has_hearing, confidence, nature
+        case_type = llm_result.get('case_type')
+        if case_type and isinstance(case_type, str) and 'mandamus' in case_type.lower():
+            normalized['type'] = 'Mandamus'
         else:
             normalized['type'] = 'Other'
-        
-        # Map outcome to status
-        outcome = str(llm_result.get('outcome', '')).lower()
-        if 'discontinu' in outcome or 'withdrawn' in outcome:
-            normalized['status'] = 'Discontinued'
-        elif 'grant' in outcome or 'allow' in outcome or 'approv' in outcome:
-            normalized['status'] = 'Granted'
-        elif 'dismiss' in outcome or 'denied' in outcome or 'deny' in outcome:
-            normalized['status'] = 'Dismissed'
-        elif 'moot' in outcome:
-            normalized['status'] = 'Moot'
-        elif 'pending' in outcome or 'ongoing' in outcome or 'no result' in outcome:
+
+        # Status should be provided exactly as one of the canonical labels;
+        # normalize defensively by lowercasing and mapping common variants.
+        status_val = llm_result.get('status')
+        if status_val is None:
             normalized['status'] = 'Ongoing'
         else:
-            normalized['status'] = 'Ongoing'
-        
-        # Map nature field
-        nature = llm_result.get('nature')
-        if nature and str(nature).lower() != 'null':
-            normalized['nature'] = str(nature)[:100]
-        
-        # Map has_hearing field
+            s = str(status_val).lower()
+            if 'discontinu' in s or 'withdrawn' in s:
+                normalized['status'] = 'Discontinued'
+            elif 'grant' in s or 'allow' in s or 'approv' in s:
+                normalized['status'] = 'Granted'
+            elif 'dismiss' in s or 'denied' in s or 'deny' in s:
+                normalized['status'] = 'Dismissed'
+            elif 'moot' in s:
+                normalized['status'] = 'Moot'
+            elif 'pending' in s or 'ongoing' in s or 'no result' in s:
+                normalized['status'] = 'Ongoing'
+            else:
+                normalized['status'] = 'Ongoing'
+
+        # Direct entity fields
+        if llm_result.get('visa_office') and str(llm_result['visa_office']).lower() != 'null':
+            visa_office = str(llm_result['visa_office'])
+            normalized['visa_office'] = visa_office[:200] if len(visa_office) > 200 else visa_office
+        if llm_result.get('judge') and str(llm_result['judge']).lower() != 'null':
+            judge = str(llm_result['judge'])
+            normalized['judge'] = judge[:200] if len(judge) > 200 else judge
+
+        # has_hearing
         has_hearing = llm_result.get('has_hearing')
         if isinstance(has_hearing, bool):
             normalized['has_hearing'] = has_hearing
@@ -601,10 +608,19 @@ Return ONLY valid JSON:
             normalized['has_hearing'] = has_hearing.lower() in ['true', 'yes', '1']
         else:
             normalized['has_hearing'] = False
-        
-        # Set confidence based on model type
-        normalized['llm_confidence'] = 'high' if normalized['type'] == 'Mandamus' else 'medium'
-        
+
+        # nature
+        nature = llm_result.get('nature')
+        if nature and str(nature).lower() != 'null':
+            normalized['nature'] = str(nature)[:100]
+
+        # Confidence
+        conf = llm_result.get('confidence') or llm_result.get('llm_confidence')
+        if conf and str(conf).lower() in ['high', 'medium', 'low']:
+            normalized['llm_confidence'] = str(conf).lower()
+        else:
+            normalized['llm_confidence'] = 'medium'
+
         return normalized
     
     def _create_fallback_result(self) -> Dict:
@@ -870,41 +886,54 @@ Return ONLY valid JSON:
         result.update(canon_info)
         
         # Phase 2: Check if LLM verification is needed
-        if self._is_ambiguous(text, result):
-            logger.info(f"🤔 Case {case_id}: Ambiguous case detected, using LLM fallback")
+        # New policy: Only use LLM fallback for cases that are classified as Mandamus.
+        ambiguous = self._is_ambiguous(text, result)
+        if ambiguous and result.get('type') == 'Mandamus':
+            logger.info(f"🤔 Case {case_id}: Ambiguous Mandamus case detected, using LLM fallback")
             logger.info(f"🔄 Case {case_id}: Switching to HYBRID METHOD (Rule + LLM)")
             llm_result = self._llm_fallback(text, case_obj)
-            
-            if llm_result:
-                # Merge LLM results, preferring LLM for ambiguous cases
-                original_type = result['type']
-                original_status = result['status']
-                
-                # Special Safety Check: Do not override "Dismissed" or "Discontinued" with "Granted" or "Ongoing" unless LLM is very confident
-                # This protects against "Leave Granted -> JR Dismissed" or "Notice of Discontinuance -> Receipt" false positives
-                if original_status in ['Dismissed', 'Discontinued'] and llm_result.get('status') in ['Granted', 'Ongoing']:
-                    if llm_result.get('llm_confidence') != 'high':
-                        logger.warning(f"⚠️ Case {case_id}: LLM suggested '{llm_result.get('status')}' but '{original_status}' rule is preferred (Confidence: {llm_result.get('llm_confidence')})")
-                        # Only update non-status fields from LLM
-                        llm_result.pop('status', None)
-                
-                result.update(llm_result)
-                result['method'] = 'hybrid'
-                result['confidence'] = llm_result.get('llm_confidence', 'medium')
-                
-                # Log changes made by LLM
-                if original_type != result['type']:
-                    logger.info(f"🔄 Case {case_id}: Type changed from {original_type} to {result['type']} by LLM")
-                if original_status != result['status']:
-                    logger.info(f"🔄 Case {case_id}: Status changed from {original_status} to {result['status']} by LLM")
-                logger.info(f"✅ Case {case_id}: HYBRID METHOD completed (Rule + LLM)")
-                logger.info(f"📈 Case {case_id}: Final result - Type: {result['type']}, Status: {result['status']}, Method: {result['method']}, Confidence: {result['confidence']}")
-            else:
-                result['confidence'] = 'low'  # Ambiguous but LLM failed
-                logger.warning(f"⚠️ Case {case_id}: LLM fallback failed, keeping rule-based with low confidence")
+        elif ambiguous and result.get('type') != 'Mandamus':
+            # If ambiguous but not a Mandamus, skip expensive LLM and keep rule-based result
+            logger.info(f"🤔 Case {case_id}: Ambiguous case detected but type is Other; skipping LLM to save CPU")
+            llm_result = {}
+            # Mark lower confidence to reflect ambiguity without LLM verification
+            result['confidence'] = 'low'
+            result['method'] = 'rule_based'
         else:
-            # High confidence rule-based result
-            logger.debug(f"✅ Case {case_id}: High confidence rule-based classification")
+            llm_result = None
+
+        # If LLM produced a result (non-empty dict), merge it
+        if llm_result:
+            # Merge LLM results, preferring LLM for ambiguous cases
+            original_type = result['type']
+            original_status = result['status']
+
+            # Special Safety Check: Do not override "Dismissed" or "Discontinued" with "Granted" or "Ongoing" unless LLM is very confident
+            # This protects against "Leave Granted -> JR Dismissed" or "Notice of Discontinuance -> Receipt" false positives
+            if original_status in ['Dismissed', 'Discontinued'] and llm_result.get('status') in ['Granted', 'Ongoing']:
+                if llm_result.get('llm_confidence') != 'high':
+                    logger.warning(f"⚠️ Case {case_id}: LLM suggested '{llm_result.get('status')}' but '{original_status}' rule is preferred (Confidence: {llm_result.get('llm_confidence')})")
+                    # Only update non-status fields from LLM
+                    llm_result.pop('status', None)
+
+            result.update(llm_result)
+            result['method'] = 'hybrid'
+            result['confidence'] = llm_result.get('llm_confidence', 'medium')
+
+            # Log changes made by LLM
+            if original_type != result['type']:
+                logger.info(f"🔄 Case {case_id}: Type changed from {original_type} to {result['type']} by LLM")
+            if original_status != result['status']:
+                logger.info(f"🔄 Case {case_id}: Status changed from {original_status} to {result['status']} by LLM")
+            logger.info(f"✅ Case {case_id}: HYBRID METHOD completed (Rule + LLM)")
+            logger.info(f"📈 Case {case_id}: Final result - Type: {result['type']}, Status: {result['status']}, Method: {result['method']}, Confidence: {result['confidence']}")
+        else:
+            # If ambiguous but we intentionally skipped LLM, `result` confidence was set to 'low' earlier.
+            # Otherwise, this is a high confidence rule-based result.
+            if ambiguous and result.get('type') != 'Mandamus':
+                logger.warning(f"⚠️ Case {case_id}: Ambiguous non-Mandamus case; kept rule-based result with low confidence")
+            else:
+                logger.debug(f"✅ Case {case_id}: High confidence rule-based classification")
 
         # Recompute canonical mapping in case LLM updated `status`
         try:
