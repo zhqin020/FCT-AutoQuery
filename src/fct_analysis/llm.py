@@ -21,6 +21,72 @@ try:
 except Exception:  # pragma: no cover - requests may be absent in some environments
     requests = None  # type: ignore
 
+# Import logger globally for all tracking functions
+try:
+    from loguru import logger
+except Exception:
+    logger = None
+
+def extract_json_objects_from_text(text: str) -> list:
+    """Extract individual JSON objects from concatenated text."""
+    objects = []
+    brace_count = 0
+    current_obj = ""
+    
+    for char in text:
+        current_obj += char
+        if char == '{':
+            brace_count += 1
+        elif char == '}':
+            brace_count -= 1
+            if brace_count == 0:
+                # Complete object found
+                try:
+                    obj = json.loads(current_obj)
+                    objects.append(obj)
+                    current_obj = ""
+                except json.JSONDecodeError:
+                    if logger:
+                        logger.debug(f"Failed to parse object: {current_obj}")
+                    current_obj = ""
+    
+    return objects if objects else [{"is_mandamus": None, "outcome": None, "nature": None, "has_hearing": None}]
+
+
+def _match_response_to_case(responses: list, case_number: str | None) -> dict | None:
+    """Match a response to a specific case number from accumulated responses.
+    
+    This function implements the response matching logic to handle Ollama's
+    accumulated response behavior where multiple case results may be returned
+    in a single array.
+    
+    Args:
+        responses: List of JSON response objects from Ollama
+        case_number: The target case number to match
+        
+    Returns:
+        The response object that matches the case number, or None if no match found
+    """
+    if not case_number:
+        # If no case number provided, return the first response
+        return responses[0] if responses else None
+    
+    # Strategy 1: Look for case number in the response content (if Ollama echoes it back)
+    for i, response in enumerate(responses):
+        if isinstance(response, dict):
+            # Check any string fields that might contain the case number
+            for key, value in response.items():
+                if isinstance(value, str) and case_number and case_number in value:
+                    if logger:
+                        logger.info(f"🎯 Found case {case_number} in response[{i}] field '{key}'")
+                    return response
+    
+    # Strategy 2: Use positional matching (assume responses are in chronological order)
+    # This is a fallback when no explicit matching is possible
+    if logger:
+        logger.info(f"📍 Using positional matching for case {case_number} (first available response)")
+    return responses[0] if responses else None
+
 
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
 
@@ -108,16 +174,21 @@ def run_with_timeout(func, timeout):
 # -----------------------------------------------------------
 # Safe Ollama request for classification
 # -----------------------------------------------------------
-def safe_ollama_request(summary_text: str, model: str | None = None, wait_for_idle: bool = True, max_idle_wait: int | None = None) -> dict[str, Any]:
+def safe_ollama_request(summary_text: str, model: str | None = None, wait_for_idle: bool = True, max_idle_wait: int | None = None, case_number: str | None = None) -> dict[str, Any]:
     """
     Safe Ollama call with timeout and retry:
     - Single-threaded (with lock)
     - Automatic timeout termination
     - Exponential backoff retry
     - Optional wait for idle state
+    - Case number for request tracking
     - Returns error to fallback to NLP analysis
     """
     from loguru import logger
+    
+    # Log case number for debugging
+    if case_number:
+        logger.debug(f"🏷️ Processing case: {case_number}")
     
     # Get model from config (centralized management)
     model_to_use = model  # Start with parameter
@@ -157,11 +228,14 @@ def safe_ollama_request(summary_text: str, model: str | None = None, wait_for_id
                 if requests is None:
                     raise ConnectionError("requests library is not available")
                 
+                # Include case number in the prompt for proper response matching
+                case_identifier = f"\n\nCASE_IDENTIFIER: {case_number}" if case_number else ""
+                
                 payload = {
                     "model": model_to_use,
                     "messages": [
                         {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": f"Summaries:\n{summary_text}"}
+                        {"role": "user", "content": f"Summaries:\n{summary_text}{case_identifier}"}
                     ],
                     "stream": False,
                     "options": {"num_predict": 200, "temperature": 0}
@@ -199,7 +273,7 @@ def safe_ollama_request(summary_text: str, model: str | None = None, wait_for_id
                 content, error = run_with_timeout(call, inference_timeout)
                 
                 if error is None and content is not None:
-                    # Success - try to parse JSON
+                    # Success - try to parse JSON with response matching
                     try:
                         # Handle markdown-wrapped JSON
                         cleaned_content = str(content).strip()
@@ -209,11 +283,35 @@ def safe_ollama_request(summary_text: str, model: str | None = None, wait_for_id
                             cleaned_content = cleaned_content[:-3]  # Remove ```
                         cleaned_content = cleaned_content.strip()
                         
-                        parsed_result = json.loads(cleaned_content)
-                        logger.info(f"✅ Successfully parsed classification: {parsed_result}")
+                        # Try to parse as JSON array first (accumulated responses)
+                        try:
+                            parsed = json.loads(cleaned_content)
+                        except json.JSONDecodeError:
+                            # If that fails, try to extract individual objects
+                            parsed = extract_json_objects_from_text(cleaned_content)
+                        
+                        # Handle array of accumulated responses with proper matching
+                        if isinstance(parsed, list):
+                            logger.info(f"🔗 Received {len(parsed)} responses from Ollama")
+                            if len(parsed) >= 1:
+                                # Try to match response to current case
+                                parsed_result = _match_response_to_case(parsed, case_number)
+                                if not parsed_result:
+                                    logger.warning(f"⚠️ No matching response found for case {case_number}, using first response")
+                                    parsed_result = parsed[0]
+                                logger.info(f"✅ Matched response for case {case_number or 'unknown'}: {parsed_result}")
+                            else:
+                                raise ValueError("Empty response array received")
+                        elif isinstance(parsed, dict):
+                            parsed_result = parsed  # Single response
+                            logger.info(f"✅ Single response parsed for case {case_number or 'unknown'}: {parsed_result}")
+                        else:
+                            raise ValueError(f"Unexpected response format: {type(parsed)}")
+                        
+                        logger.info(f"✅ Successfully parsed and matched classification: {parsed_result}")
                         return parsed_result
-                    except json.JSONDecodeError as e:
-                        logger.warning(f"❗ JSON parsing failed: {e}")
+                    except Exception as e:
+                        logger.warning(f"❗ Response parsing failed: {e}")
                         logger.warning(f"❗ Model output: {content}")
                         # Continue retry
                 elif isinstance(error, TimeoutError):
@@ -242,9 +340,9 @@ def safe_ollama_request(summary_text: str, model: str | None = None, wait_for_id
 # -----------------------------------------------------------
 # External callable function
 # -----------------------------------------------------------
-def safe_llm_classify(summary_text: str, model: str | None = None, wait_for_idle: bool = True, max_idle_wait: int | None = None) -> dict[str, Any]:
+def safe_llm_classify(summary_text: str, model: str | None = None, wait_for_idle: bool = True, max_idle_wait: int | None = None, case_number: str | None = None) -> dict[str, Any]:
     """Safe LLM classification for Federal Court cases."""
-    return safe_ollama_request(summary_text, model, wait_for_idle=wait_for_idle, max_idle_wait=max_idle_wait)
+    return safe_ollama_request(summary_text, model, wait_for_idle=wait_for_idle, max_idle_wait=max_idle_wait, case_number=case_number)
 
 
 def extract_entities_with_ollama(

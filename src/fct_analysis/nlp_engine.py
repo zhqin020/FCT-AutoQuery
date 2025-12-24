@@ -435,6 +435,13 @@ Return ONLY valid JSON:
             logger.warning("Safe LLM classification not available")
             return {}
         
+        # Extract case number for request tracking
+        case_number = None
+        if hasattr(case_obj, 'get'):
+            case_number = case_obj.get('case_number')
+        elif isinstance(case_obj, dict):
+            case_number = case_obj.get('case_number')
+        
         try:
             # Extract summary text for classification
             summary_text = text if text else self._extract_summary_text(case_obj)
@@ -455,10 +462,11 @@ Return ONLY valid JSON:
             import time
             start_time = time.time()
             
-            # Use the safe classification function
+            # Use the safe classification function with case tracking
             result = safe_llm_classify(summary_text, model=model, 
                                      wait_for_idle=self.wait_for_ollama, 
-                                     max_idle_wait=self.ollama_wait_time)
+                                     max_idle_wait=self.ollama_wait_time,
+                                     case_number=case_number)
             
             # Calculate and log processing time
             elapsed_time = time.time() - start_time
@@ -544,9 +552,17 @@ Return ONLY valid JSON:
         
         return normalized
     
-    def _normalize_safe_llm_result(self, llm_result: Dict) -> Dict:
+    def _normalize_safe_llm_result(self, llm_result) -> Dict:
         """Normalize safe LLM result to match expected format."""
         normalized = {}
+        
+        # Handle both list and dict formats from LLM
+        if isinstance(llm_result, list) and len(llm_result) > 0:
+            llm_result = llm_result[0]  # Take first result from list
+        
+        if not isinstance(llm_result, dict):
+            logger.warning(f"Unexpected LLM result format: {type(llm_result)} - {llm_result}")
+            return self._create_fallback_result()
         
         # Map is_mandamus to type
         is_mandamus = llm_result.get('is_mandamus')
@@ -590,6 +606,16 @@ Return ONLY valid JSON:
         normalized['llm_confidence'] = 'high' if normalized['type'] == 'Mandamus' else 'medium'
         
         return normalized
+    
+    def _create_fallback_result(self) -> Dict:
+        """Create a fallback result when LLM parsing fails."""
+        return {
+            'type': 'Other',
+            'status': 'Ongoing', 
+            'nature': None,
+            'has_hearing': False,
+            'llm_confidence': 'low'
+        }
     
     def _extract_summary_text(self, case_obj: Any) -> str:
         """Extract optimized summary text for LLM classification, prioritizing start and end."""

@@ -361,8 +361,15 @@ def main():
     
     args = parser.parse_args()
     
-    # Setup logging
-    setup_logging()
+    # Setup logging with file output
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = f"logs/batch_analysis.log"
+    
+    setup_logging(
+        log_level="INFO",
+        log_file=log_file
+    )
     
     # Initialize analyzer
     analyzer = BatchCaseAnalyzer(args.db_connection)

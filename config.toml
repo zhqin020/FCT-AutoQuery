@@ -32,7 +32,7 @@ output_subdir = "analysis"
 # All LLM parameters are managed here - DO NOT modify in other files
 ollama_url = "http://localhost:11434"
 # Specify your preferred model - qwen3:4b offers good performance/size balance
-ollama_model = "qwen3:4b"
+ollama_model = "gemma3:4b"
 ollama_timeout = 240  # Timeout in seconds for LLM requests
 
 # Skip already analyzed cases (smart mode) 
