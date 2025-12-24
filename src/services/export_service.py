@@ -428,6 +428,21 @@ class ExportService:
             conn = psycopg2.connect(**self.db_config)
             cursor = conn.cursor()
 
+            # Extract year from case_number (e.g., IMM-1234-25 -> 2025)
+            year = None
+            if hasattr(case, 'case_number') and case.case_number:
+                # Parse case_number format: XXX-1234-YY where YY is the last 2 digits
+                parts = case.case_number.split('-')
+                if len(parts) >= 3:
+                    try:
+                        year_suffix = parts[-1]
+                        if len(year_suffix) == 2 and year_suffix.isdigit():
+                            year_int = int(year_suffix)
+                            # Convert 2-digit year to 4-digit year (assuming 2000-2099)
+                            year = 2000 + year_int
+                    except (ValueError, IndexError):
+                        pass
+
             # Determine if this is a new case or update
             cursor.execute(
                 "SELECT 1 FROM cases WHERE case_number = %s LIMIT 1",
@@ -441,8 +456,8 @@ class ExportService:
                 INSERT INTO cases (
                     case_number, case_type, type_of_action, nature_of_proceeding,
                     filing_date, office, style_of_cause, language, scraped_at,
-                    status, last_attempt_at, retry_count, error_message
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0, NULL)
+                    status, last_attempt_at, retry_count, error_message, year
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0, NULL, %s)
                 ON CONFLICT (case_number) DO UPDATE SET
                     case_type = EXCLUDED.case_type,
                     type_of_action = EXCLUDED.type_of_action,
@@ -455,7 +470,8 @@ class ExportService:
                     status = EXCLUDED.status,
                     last_attempt_at = EXCLUDED.last_attempt_at,
                     retry_count = 0,
-                    error_message = NULL
+                    error_message = NULL,
+                    year = EXCLUDED.year
             """,
                 (
                     case.case_number,
@@ -469,6 +485,7 @@ class ExportService:
                     datetime.now(),
                     'success',  # 标记为成功采集
                     datetime.now(),  # 记录尝试时间
+                    year,
                 ),
             )
 
