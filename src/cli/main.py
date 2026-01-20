@@ -14,7 +14,7 @@ project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 sys.path.insert(0, project_root)
 
 from src.lib.config import Config
-from src.lib.logging_config import get_logger, setup_logging
+from src.lib.logging_config import startlog, setup_logging
 from src.models.case import Case
 from src.services.case_scraper_service import CaseScraperService
 from src.services.export_service import ExportService
@@ -34,17 +34,14 @@ except Exception:
 from src.cli.purge import purge_year
 from src.lib.rate_limiter import EthicalRateLimiter
 
-logger = get_logger()
+logger = startlog("scraper")
 
 
 class FederalCourtScraperCLI:
     """Command-line interface for the Federal Court Case Scraper."""
 
     def __init__(self):
-        """Initialize the CLI."""
-        # Setup logging to console and file (respect configured log level)
-        setup_logging(log_level=Config.get_log_level(), log_file="logs/scraper.log")
-
+        """Initialize the CLI.""" 
         self.config = Config()
         # Prefer non-headless in CLI runs to match interactive harness behavior
         # and avoid client-side rendering differences seen in headless mode.
@@ -756,6 +753,291 @@ class FederalCourtScraperCLI:
                 self.scraper.close()
         except Exception:
             pass
+    def batch_update(self, year: int, max_cases: Optional[int] = None, start: Optional[int] = None, max_exponent: Optional[int] = None) -> dict:
+        """
+        Update workflow for a year:
+        - Download new records if missing
+        - Skip records marked as no_data
+        - For cases with on-going analysis status, re-scrape to append docket_entries
+          and clear the case_analysis.case_status so they can be re-analyzed later
+
+        This function uses best-effort calls on the tracking service; if helper
+        methods are unavailable it will attempt safe fallbacks and log warnings.
+        """
+        logger.info(f"Starting batch update for year {year}")
+
+        # Start run tracking for update operation
+        try:
+            run_id = self.tracker.start_run(processing_mode="batch_update", parameters={"year": year})
+        except Exception:
+            run_id = None
+
+        updated = 0
+        skipped = 0
+        errors = 0
+        new_added = 0
+
+        # Fetch case_analysis rows for the year to produce counts and candidate list
+        rows = []
+        try:
+            if hasattr(self.tracker, "get_case_analysis_rows"):
+                rows = self.tracker.get_case_analysis_rows(year) or []
+            elif hasattr(self.tracker, "query"):
+                # Fallback: try to select by case_number suffix matching year
+                suffix = f"-{year % 100:02d}"
+                sql = "SELECT case_number, case_status FROM case_analysis WHERE case_number LIKE %s"
+                rows = self.tracker.query(sql, (f"%{suffix}",)) or []
+            else:
+                logger.debug("Tracker has no query/get_case_analysis_rows helper; attempting get_cases_by_analysis_status fallback")
+                if hasattr(self.tracker, "get_cases_by_analysis_status"):
+                    # gather on-going cases only
+                    ongoing = self.tracker.get_cases_by_analysis_status(year, status="on-going") or []
+                    rows = [{"case_number": c} for c in ongoing]
+        except Exception as e:
+            logger.warning(f"Failed to fetch case_analysis rows from tracker: {e}")
+
+        # Helper to detect 'Ongoing' variants robustly (e.g. ':Ongoing', 'on-going', 'Ongoing')
+        def _is_ongoing(val) -> bool:
+            if not val:
+                return False
+            try:
+                import re
+
+                norm = re.sub(r"[^a-z0-9]", "", str(val).lower())
+                return "ongo" in norm
+            except Exception:
+                return False
+
+        # Normalize rows to list of dicts with case_number and case_status
+        normalized = []
+        for r in rows:
+            if isinstance(r, dict):
+                cn = r.get("case_number") or r.get("case") or r.get("case_no")
+                cs = r.get("case_status") or r.get("status")
+            else:
+                # If row is a simple string case_number
+                cn = r
+                cs = None
+            if not cn:
+                continue
+            normalized.append({"case_number": cn, "case_status": cs})
+
+        total_candidates = len(normalized)
+
+        # If no rows found from tracker helpers, try direct DB query against `case_analysis` table
+        if total_candidates == 0:
+            try:
+                import psycopg2
+                conn = psycopg2.connect(**self.tracker.db_config)
+                cur = conn.cursor()
+                yy = int(year) % 100
+                like_pattern = f"%-{yy:02d}"
+                cur.execute("SELECT case_number, case_status FROM case_analysis WHERE case_number LIKE %s AND lower(case_status) LIKE %s", (f"%{like_pattern}", "%ongo%"))
+                db_rows = cur.fetchall()
+                for r in db_rows:
+                    if r and r[0]:
+                        normalized.append({"case_number": r[0], "case_status": r[1] if len(r) > 1 else None})
+                total_candidates = len(normalized)
+            except Exception as e:
+                logger.debug(f"Direct DB query for case_analysis failed: {e}")
+
+        # Compute initial status counts
+        status_counts = {}
+        for item in normalized:
+            st = (item.get("case_status") or "unknown")
+            status_counts[st] = status_counts.get(st, 0) + 1
+
+        logger.info(f"Batch update initial statistics for year {year}: total_case_analysis_rows={total_candidates}, status_counts={status_counts}")
+        print(f"Update mode: found {total_candidates} case_analysis entries for year {year}")
+        for st, cnt in status_counts.items():
+            print(f"  {st}: {cnt}")
+
+        if total_candidates == 0:
+            logger.info("No case_analysis entries found to update; exiting update flow")
+            try:
+                if run_id is not None:
+                    self.tracker.finish_run(run_id, 'completed')
+            except Exception:
+                pass
+            return {"updated": updated, "new_added": new_added, "skipped": skipped, "errors": errors, "initial_counts": status_counts}
+
+        # Limit candidates if requested
+        # Normalize to unique mapping keyed by case_number and extract numeric id for ordering
+        import re
+
+        unique_map = {}
+        for item in normalized:
+            cn = item.get("case_number")
+            cs = item.get("case_status")
+            # Try to extract numeric part from case number (e.g. IMM-12345-25 -> 12345)
+            numeric = 0
+            try:
+                m = re.search(r"-(\d+)-\d{2}$", cn)
+                if m:
+                    numeric = int(m.group(1))
+                else:
+                    # fallback: find first run of digits
+                    m2 = re.search(r"(\d+)", cn)
+                    if m2:
+                        numeric = int(m2.group(1))
+            except Exception:
+                numeric = 0
+
+            # Keep the first seen entry for a case_number to avoid duplicates
+            if cn not in unique_map:
+                unique_map[cn] = {"case_number": cn, "case_status": cs, "numeric_id": numeric}
+
+        # Sort by numeric id to ensure deterministic ascending processing order
+        sorted_candidates = sorted(unique_map.values(), key=lambda x: x.get("numeric_id", 0))
+
+        # Apply max_cases limit if provided
+        if max_cases:
+            candidates = sorted_candidates[:max_cases]
+        else:
+            candidates = sorted_candidates
+
+        # Track processed case_numbers in this run to avoid re-processing duplicates
+        processed_in_run = set()
+
+        # Ensure scraper available
+        if self.scraper is None:
+            self.scraper = CaseScraperService(headless=self._scraper_headless, rate_limiter=self.rate_limiter)
+
+        for idx, rec in enumerate(candidates, start=1):
+            case_number = rec.get("case_number")
+            case_status = rec.get("case_status")
+            # Skip duplicates already processed in this run (defensive)
+            if case_number in processed_in_run:
+                logger.debug(f"Skipping {case_number} because it was already processed in this run")
+                continue
+            try:
+                if self.emergency_stop:
+                    logger.error("Emergency stop active - aborting batch update")
+                    break
+
+                logger.info(f"Batch update processing ({idx}/{len(candidates)}): {case_number}")
+
+                # Skip no_data records when possible by consulting tracker status
+                try:
+                    status_info = self.tracker.get_case_status(case_number) or {}
+                    last_outcome = status_info.get("last_outcome", "")
+                    skip_reason = status_info.get("skip_reason", "")
+                    if last_outcome == "no_data" or "no_data" in skip_reason or (case_status and str(case_status).lower() == "no_data"):
+                        logger.info(f"Skipping no_data case {case_number}")
+                        skipped += 1
+                        continue
+                except Exception:
+                    # If we cannot determine, proceed but be cautious
+                    pass
+
+                # Determine DB existence when possible to distinguish 'new' vs 'update'
+                exists_in_db = False
+                try:
+                    if hasattr(self.exporter, "case_exists"):
+                        exists_in_db = self.exporter.case_exists(case_number)
+                except Exception:
+                    logger.debug("Unable to determine DB existence for %s; proceeding", case_number)
+
+                # Decide intent: download new if not exists, update if on-going (or force)
+                try:
+                    if not exists_in_db:
+                        logger.info(f"Case not in DB, will attempt to download new record: {case_number}")
+                    elif case_status and _is_ongoing(case_status):
+                        logger.info(f"Case in DB and on-going: performing update scrape for {case_number}")
+                    elif self.force:
+                        logger.info(f"Force enabled: re-scraping {case_number}")
+                    else:
+                        logger.info(f"Case {case_number} exists and is not on-going; skipping unless forced")
+                        if not self.force:
+                            skipped += 1
+                            continue
+                except Exception:
+                    pass
+
+                # Re-scrape the case which will append/update entries via existing exporter logic
+                case_obj = self.scrape_single_case(case_number)
+
+                # (Do not clear analysis status here.) Clearing happens only after a successful save below
+
+                if case_obj:
+                    # Compare docket_entries count with DB and update only if new entries present
+                    try:
+                        scraped_de_count = 0
+                        if hasattr(case_obj, "docket_entries") and case_obj.docket_entries:
+                            scraped_de_count = len(case_obj.docket_entries)
+
+                        db_de_count = 0
+                        try:
+                            import psycopg2
+                            conn = psycopg2.connect(**self.exporter.db_config)
+                            cur = conn.cursor()
+                            cur.execute("SELECT COUNT(*) FROM docket_entries WHERE case_number = %s", (case_number,))
+                            row = cur.fetchone()
+                            if row:
+                                db_de_count = int(row[0] or 0)
+                            cur.close()
+                            conn.close()
+                        except Exception as e:
+                            logger.debug(f"Failed to read docket_entries count from DB for {case_number}: {e}")
+
+                        logger.info(f"Case {case_number}: scraped_docket_entries={scraped_de_count}, db_docket_entries={db_de_count}")
+
+                        if scraped_de_count > db_de_count or (not exists_in_db):
+                            # Save to DB (will UPSERT and add new docket entries)
+                            try:
+                                status, msg = self.exporter.save_case_to_database(case_obj)
+                                if status == "new":
+                                    new_added += 1
+                                elif status == "updated":
+                                    updated += 1
+                                else:
+                                    logger.warning(f"Save returned unexpected status for {case_number}: {status} {msg}")
+
+                                # If we successfully added/updated the case, clear case_analysis.case_status so it will be re-analyzed
+                                if status in ("new", "updated") and case_status and _is_ongoing(case_status):
+                                    try:
+                                        if hasattr(self.tracker, "clear_case_analysis_status"):
+                                            self.tracker.clear_case_analysis_status(case_number)
+                                            logger.info(f"Cleared analysis status for {case_number} via tracker.clear_case_analysis_status (post-save)")
+                                        else:
+                                            # direct DB fallback
+                                            if self.tracker.db_config:
+                                                import psycopg2
+                                                with psycopg2.connect(**self.tracker.db_config) as conn:
+                                                    with conn.cursor() as cur:
+                                                        cur.execute("UPDATE case_analysis SET case_status = NULL WHERE case_number = %s", (case_number,))
+                                                logger.info(f"Cleared analysis status for {case_number} via direct DB update (post-save)")
+                                    except Exception as e:
+                                        logger.warning(f"Failed to clear case_analysis status after save for {case_number}: {e}")
+                            except Exception as e:
+                                logger.error(f"Failed to save updated case {case_number}: {e}")
+                                errors += 1
+                        else:
+                            logger.info(f"No new docket entries for {case_number}; skipping DB save")
+                    except Exception as e:
+                        logger.warning(f"Error while comparing/saving docket entries for {case_number}: {e}")
+                        errors += 1
+                else:
+                    # If scrape returned None, still count as attempted but not updated
+                    logger.info(f"Update attempt did not produce case object for {case_number}")
+
+                # Mark as processed in this run to avoid accidental reprocessing
+                processed_in_run.add(case_number)
+
+            except Exception as e:
+                logger.exception(f"Error while updating case {case_number}: {e}")
+                errors += 1
+
+        # Finish run tracking
+        try:
+            if run_id is not None:
+                self.tracker.finish_run(run_id, 'completed')
+        except Exception:
+            pass
+
+        logger.info(f"Batch update completed: updated={updated} new_added={new_added} skipped={skipped} errors={errors}")
+        print(f"Batch update completed: updated={updated} new_added={new_added} skipped={skipped} errors={errors}")
+        return {"updated": updated, "new_added": new_added, "skipped": skipped, "errors": errors, "initial_counts": status_counts}
     def scrape_batch_cases(
         self, year: int, max_cases: Optional[int] = None, start: Optional[int] = None, max_exponent: Optional[int] = None
     ) -> tuple[list, dict]:
@@ -1429,6 +1711,11 @@ Notes:
                 "Defaults are read from configuration where applicable."
             ),
         )
+        batch_parser.add_argument(
+            "--update",
+            action="store_true",
+            help="Update existing on-going cases by re-scraping and appending docket entries; skips no_data records",
+        )
         batch_parser.add_argument("year", type=int, help="Year to scrape cases for")
         batch_parser.add_argument(
             "--max-cases", type=int, help="Maximum number of cases to scrape"
@@ -1678,13 +1965,26 @@ Notes:
                 if self.emergency_stop:
                     print("Cannot start batch processing - emergency stop is active")
                     sys.exit(1)
-
-                scraped_cases, skipped_info = self.scrape_batch_cases(
-                    args.year,
-                    args.max_cases,
-                    start=getattr(args, "start", None),
-                    max_exponent=getattr(args, "max_exponent", None),
-                )
+                # If update flag provided, run update flow which targets case_analysis on-going entries
+                if getattr(args, "update", False):
+                    result = self.batch_update(
+                        args.year,
+                        args.max_cases,
+                        start=getattr(args, "start", None),
+                        max_exponent=getattr(args, "max_exponent", None),
+                    )
+                    # Print concise update summary
+                    print(f"\nBatch update complete: updated={result.get('updated',0)} new_added={result.get('new_added',0)} skipped={result.get('skipped',0)} errors={result.get('errors',0)}")
+                    logger.info(f"Batch update result: {result}")
+                    scraped_cases = []
+                    skipped_info = {"total_skipped": result.get('skipped', 0)}
+                else:
+                    scraped_cases, skipped_info = self.scrape_batch_cases(
+                        args.year,
+                        args.max_cases,
+                        start=getattr(args, "start", None),
+                        max_exponent=getattr(args, "max_exponent", None),
+                    )
                 
                 # Extract skip data for compatibility
                 if isinstance(skipped_info, dict):

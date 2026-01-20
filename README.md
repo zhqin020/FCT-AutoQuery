@@ -18,6 +18,9 @@ python -m src.cli.main batch 2025 --max-cases 50
 
 **需要详细操作指南？查看 [操作手册](docs/operations-manual.md)**
 
+# 更新正在进行的案例（仅更新 on-going 状态的 case，跳过 no_data）
+python -m src.cli.main batch 2025 --update
+
 ## 项目概述
 
 FCT-AutoQuery 是一个自动化的联邦法院案件数据采集系统，专门用于从加拿大联邦法院网站高效地采集案件信息和档案历史记录。系统采用智能探测算法和批量处理能力，能够安全、高效地处理大规模案件数据采集任务。
@@ -250,6 +253,7 @@ python export_null_filing_date_cases.py
 - `--max-cases`: 最大采集案例数
 - `--max-exponent`: 指数探测最大指数（默认：20）
 - `--safe-stop-no-records`: 安全停止阈值
+- `--update`: 更新模式——下载缺失记录、跳过 `no_data`，并对 `case_analysis` 表中 `on-going` 状态的记录进行内容更新（追加 docket_entries），同时清空 `case_analysis.case_status` 以便后续重新分析。
 
 #### 通用参数
 - `--force`: 强制重新采集
