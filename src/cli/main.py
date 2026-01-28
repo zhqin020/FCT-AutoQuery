@@ -1635,26 +1635,37 @@ class FederalCourtScraperCLI:
             epilog="""
 Examples (expanded):
   # Scrape a single case (force re-scrape)
-  python -m src.cli.main single IMM-12345-25 --force
+  python src/cli/main.py single IMM-12345-25 --force
 
   # Batch: start from numeric id 30 and scrape up to 10 cases
-  python -m src.cli.main batch 2025 --start 30 --max-cases 10
+  python src/cli/main.py batch 2025 --start 30 --max-cases 10
 
   # Batch with tuned rate and backoff (faster but polite)
-  python -m src.cli.main batch 2025 --max-cases 100 --rate-interval 0.5 --backoff-factor 1.5
+  python src/cli/main.py batch 2025 --max-cases 100 --rate-interval 0.5 --backoff-factor 1.5
 
   # Batch with custom max exponent for exponential probing
-  python -m src.cli.main batch 2025 --max-cases 50 --max-exponent 15
+  python src/cli/main.py batch 2025 --max-cases 50 --max-exponent 15
+
+  # Update mode: re-scrape on-going cases and append docket entries
+  python src/cli/main.py batch 2025 --update --max-cases 50
+
+  # Update mode with specific start point
+  python src/cli/main.py batch 2025 --update --start 1000 --max-cases 100
+
+  # Show statistics
+  python src/cli/main.py stats
+  python src/cli/main.py stats --year 2025
 
   # Purge dry-run (audit only)
-  python -m src.cli.main purge 2024 --dry-run
+  python src/cli/main.py purge 2024 --dry-run
 
-    # Purge actual run (destructive)
-    python -m src.cli.main purge 2024 --yes
+  # Purge actual run (destructive)
+  python src/cli/main.py purge 2024 --yes
 
 Notes:
   - Use `--dry-run` to validate purge actions before running destructive operations.
   - Batch mode uses exponential probing to efficiently find the upper bound of case numbers.
+  - Update mode (--update) re-scrapes on-going cases to append new docket entries; skips no_data records.
 """,
         )
 

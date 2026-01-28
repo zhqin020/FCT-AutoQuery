@@ -183,9 +183,63 @@ scripts/db.sh help
 # 激活环境
 conda activate fct
 
-# 运行主程序（具体命令根据实际项目调整）
-python src/main.py
+# 查看帮助信息
+python src/cli/main.py --help
+
+# 单个案件爬取
+python src/cli/main.py single IMM-12345-25
+
+# 强制重新爬取已存在的案件
+python src/cli/main.py single IMM-12345-25 --force
+
+# 批量爬取指定年份的案件
+python src/cli/main.py batch 2025 --max-cases 100
+
+# 从指定编号开始爬取
+python src/cli/main.py batch 2025 --start 30 --max-cases 10
+
+# 更新模式：重新爬取进行中(on-going)的案件，追加 docket entries
+python src/cli/main.py batch 2025 --update --max-cases 50
+
+# 调整爬取速率（0.5秒间隔，更快但保持礼貌）
+python src/cli/main.py batch 2025 --max-cases 100 --rate-interval 0.5 --backoff-factor 1.5
+
+# 自定义最大指数探测
+python src/cli/main.py batch 2025 --max-cases 50 --max-exponent 15
+
+# 查看爬取统计
+python src/cli/main.py stats
+
+# 清除数据（干运行，仅审计）
+python src/cli/main.py purge 2024 --dry-run
+
+# 清除数据（实际执行，危险操作）
+python src/cli/main.py purge 2024 --yes
 ```
+
+### 命令说明
+
+**子命令：**
+- `single` - 爬取单个案件
+- `batch` - 批量爬取指定年份的案件
+- `stats` - 显示爬取统计信息
+- `purge` - 清除指定年份的数据（危险操作）
+
+**全局参数：**
+- `--force` - 强制重新爬取已存在的案件
+- `--rate-interval` - 请求间隔秒数（默认：1.0）
+- `--backoff-factor` - 失败重试的指数退避系数（默认：1.0）
+- `--max-backoff-seconds` - 最大退避延迟秒数（默认：60.0）
+
+**batch 常用参数：**
+- `--update` - 更新模式，重新爬取进行中的案件并追加 docket entries（跳过 no_data 记录）
+- `--start` - 起始编号
+- `--max-cases` - 最大爬取案件数
+- `--max-exponent` - 指数探测的最大指数值
+
+**purge 参数：**
+- `--dry-run` - 干运行模式，只显示将要删除的数据
+- `--yes` - 确认执行删除操作
 
 ### 查看日志
 

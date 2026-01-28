@@ -10,36 +10,90 @@ conda activate fct
 ### 2. 测试单个案例采集
 ```bash
 # 采集一个测试案例
-python -m src.cli.main single IMM-12345-25
+python src/cli/main.py single IMM-12345-25
+
+# 强制重新采集
+python src/cli/main.py single IMM-12345-25 --force
 ```
 
 ### 3. 批量采集示例
 ```bash
 # 采集2025年的50个案例
-python -m src.cli.main batch 2025 --max-cases 50
+python src/cli/main.py batch 2025 --max-cases 50
+
+# 从指定编号开始采集
+python src/cli/main.py batch 2025 --start 30 --max-cases 20
+
+# 快速模式（0.5秒间隔）
+python src/cli/main.py batch 2025 --max-cases 100 --rate-interval 0.5
+
+# 更新模式（重新爬取进行中的案件）
+python src/cli/main.py batch 2025 --update --max-cases 50
 ```
 
 ### 4. 查看统计
 ```bash
 # 查看采集统计
-python -m src.cli.main stats
+python src/cli/main.py stats
+```
+
+### 5. 查看帮助
+```bash
+# 主帮助
+python src/cli/main.py --help
+
+# 子命令帮助
+python src/cli/main.py batch --help
 ```
 
 ---
 
 ## 📋 常用命令速查表
 
+### 爬虫命令
+
+| 命令 | 说明 | 示例 |
+|------|------|------|
+| `single` | 爬取单个案件 | `python src/cli/main.py single IMM-12345-25` |
+| `batch` | 批量爬取 | `python src/cli/main.py batch 2025 --max-cases 100` |
+| `stats` | 查看统计 | `python src/cli/main.py stats` |
+| `purge` | 清除数据 | `python src/cli/main.py purge 2024 --dry-run` |
+
+### 数据库管理
+
+| 命令 | 说明 | 示例 |
+|------|------|------|
+| `status` | 查看状态 | `scripts/db.sh status` |
+| `backup` | 备份数据库 | `scripts/db.sh backup` |
+| `restore` | 恢复数据库 | `scripts/db.sh restore backups/file.backup` |
+| `shell` | 打开数据库命令行 | `scripts/db.sh shell` |
+| `init` | 初始化数据库 | `scripts/db.sh init` |
+
+### 全局参数
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `--force` | 强制重新爬取 | False |
+| `--rate-interval` | 请求间隔（秒） | 1.0 |
+| `--backoff-factor` | 退避系数 | 1.0 |
+| `--max-backoff-seconds` | 最大退避时间 | 60.0 |
+
+---
+
+## 💡 典型使用场景
+
 | 任务 | 命令 |
 |------|------|
-| **单个案例** | `python -m src.cli.main single IMM-12345-25` |
-| **强制重采** | `python -m src.cli.main single IMM-12345-25 --force` |
-| **批量采集** | `python -m src.cli.main batch 2025 --max-cases 100` |
-| **从指定编号开始** | `python -m src.cli.main batch 2025 --start 1000 --max-cases 50` |
-| **快速采集** | `python -m src.cli.main batch 2025 --rate-interval 0.5 --max-cases 20` |
-| **查看统计** | `python -m src.cli.main stats` |
-| **年度统计** | `python -m src.cli.main stats --year 2025` |
-| **安全清理** | `python -m src.cli.main purge 2024 --dry-run` |
-| **实际清理** | `python -m src.cli.main purge 2024 --yes` |
+| **单个案例** | `python src/cli/main.py single IMM-12345-25` |
+| **强制重采** | `python src/cli/main.py single IMM-12345-25 --force` |
+| **批量采集** | `python src/cli/main.py batch 2025 --max-cases 100` |
+| **更新模式** | `python src/cli/main.py batch 2025 --update --max-cases 50` |
+| **从指定编号开始** | `python src/cli/main.py batch 2025 --start 1000 --max-cases 50` |
+| **快速采集** | `python src/cli/main.py batch 2025 --rate-interval 0.5 --max-cases 20` |
+| **查看统计** | `python src/cli/main.py stats` |
+| **年度统计** | `python src/cli/main.py stats --year 2025` |
+| **安全清理** | `python src/cli/main.py purge 2024 --dry-run` |
+| **实际清理** | `python src/cli/main.py purge 2024 --yes` |
 
 ---
 
@@ -54,17 +108,22 @@ python -m src.cli.main stats
 
 ### 快速模式命令
 ```bash
-python -m src.cli.main batch 2025 --max-cases 20 --rate-interval 0.5 --backoff-factor 1.0 --max-exponent 15
+python src/cli/main.py batch 2025 --max-cases 20 --rate-interval 0.5 --backoff-factor 1.0 --max-exponent 15
 ```
 
 ### 标准模式命令
 ```bash
-python -m src.cli.main batch 2025 --max-cases 100 --rate-interval 1.0 --backoff-factor 1.5 --max-exponent 18
+python src/cli/main.py batch 2025 --max-cases 100 --rate-interval 1.0 --backoff-factor 1.5 --max-exponent 18
 ```
 
 ### 保守模式命令
 ```bash
-python -m src.cli.main batch 2025 --max-cases 50 --rate-interval 2.0 --backoff-factor 2.0 --max-exponent 20
+python src/cli/main.py batch 2025 --max-cases 50 --rate-interval 2.0 --backoff-factor 2.0 --max-exponent 20
+```
+
+### 更新模式（重新爬取进行中的案件）
+```bash
+python src/cli/main.py batch 2025 --update --max-cases 100
 ```
 
 ---
