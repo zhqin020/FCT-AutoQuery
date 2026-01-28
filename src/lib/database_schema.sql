@@ -323,6 +323,7 @@ ALTER TABLE ONLY public.docket_entries
     ADD CONSTRAINT docket_entries_court_file_no_fkey FOREIGN KEY (case_number) REFERENCES public.cases(case_number);
 
 
+
 --
 -- PostgreSQL database dump complete
 --

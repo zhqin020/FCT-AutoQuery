@@ -29,7 +29,6 @@ Commands:
     restore <file>  Restore database from backup file
     status          Show database status and table counts
     shell           Open psql shell
-    reset-tracking  Reset case tracking table
     help            Show this help message
 
 Examples:
@@ -115,7 +114,7 @@ function db_status() {
     
     # Row counts
     echo "Row Counts:"
-    for table in cases docket_entries case_tracking scraper_runs; do
+    for table in cases docket_entries case_analysis; do
         count=$(psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -t -c \
             "SELECT COUNT(*) FROM $table;" 2>/dev/null || echo "N/A")
         printf "  %-20s %s\n" "$table:" "$count"
@@ -127,23 +126,6 @@ function db_shell() {
     echo -e "${GREEN}Opening PostgreSQL shell...${NC}"
     export PGPASSWORD="$DB_PASSWORD"
     psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME"
-}
-
-function db_reset_tracking() {
-    check_postgres
-    echo -e "${YELLOW}⚠️  This will clear all case tracking data${NC}"
-    read -p "Continue? (yes/no): " confirm
-    
-    if [ "$confirm" != "yes" ] && [ "$confirm" != "y" ]; then
-        echo "Cancelled."
-        exit 0
-    fi
-    
-    export PGPASSWORD="$DB_PASSWORD"
-    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -c \
-        "TRUNCATE TABLE case_tracking;"
-    
-    echo -e "${GREEN}✓ Case tracking table reset${NC}"
 }
 
 # Main command dispatcher
@@ -165,9 +147,6 @@ case "${1:-}" in
         ;;
     shell)
         db_shell
-        ;;
-    reset-tracking)
-        db_reset_tracking
         ;;
     help|--help|-h)
         print_usage
