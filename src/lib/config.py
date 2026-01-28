@@ -1,0 +1,470 @@
+"""Configuration management for Federal Court scraper.
+
+This module loads configuration from TOML files if present:
+- `config.private.toml` (local, not checked into VCS)
+- `config.toml` (project-level)
+
+Values are read from the loaded config first, then fall back to
+environment variables (optional), then to built-in defaults.
+"""
+
+import os
+from typing import Optional
+from pathlib import Path
+
+try:
+    import tomllib  # Python 3.11+
+except Exception:  # pragma: no cover - fallback for older envs
+    tomllib = None
+
+# Default values
+DEFAULT_RATE_LIMIT_SECONDS = 1.0
+DEFAULT_MAX_RETRIES = 3
+DEFAULT_TIMEOUT_SECONDS = 30
+
+DEFAULT_OUTPUT_DIR = "output"
+DEFAULT_JSON_FILENAME = "cases.json"
+DEFAULT_EXPORT_JSON_ONLY = True
+
+DEFAULT_HEADLESS = True
+DEFAULT_BROWSER = "chrome"
+
+DEFAULT_PER_CASE_SUBDIR = "json"
+DEFAULT_EXPORT_WRITE_RETRIES = 2
+DEFAULT_EXPORT_WRITE_BACKOFF_SECONDS = 1
+DEFAULT_MAX_DRIVER_RESTARTS = 1
+
+DEFAULT_LOG_LEVEL = "INFO"
+DEFAULT_LOG_FILE = "logs/scraper.log"
+
+DEFAULT_DB_HOST = "localhost"
+DEFAULT_DB_PORT = 5432
+DEFAULT_DB_NAME = "fct_db"
+DEFAULT_DB_USER = "fct_user"
+DEFAULT_DB_PASSWORD = "fctpass"
+
+DEFAULT_SAVE_MODAL_HTML = False
+# The old run-level NDJSON logging system has been removed in favor of
+# database-backed tracking (CaseTrackingService). To avoid confusion and
+# unexpected writes, the default is disabled. Existing deployments that
+# still set FCT_ENABLE_RUN_LOGGER to True will continue to be honored.
+
+# Memory management defaults
+DEFAULT_MEMORY_CLEANUP_INTERVAL = 50  # GC trigger interval in batch
+DEFAULT_ENABLE_MEMORY_MANAGEMENT = True
+
+# Skip tracking defaults
+DEFAULT_MAX_SKIPPED_LOG = 100  # Maximum skipped records to keep in memory
+DEFAULT_SKIP_REPORT_INTERVAL = 100  # Report skip stats every N skips
+DEFAULT_ENABLE_RUN_LOGGER = False
+DEFAULT_WRITE_AUDIT = False
+DEFAULT_DOCKET_PARSE_MAX_ERRORS = 3
+DEFAULT_SAFE_STOP_NO_RECORDS = 20
+DEFAULT_PERSIST_RAW_HTML = False
+DEFAULT_MAX_EXPONENT = 20
+DEFAULT_BACKOFF_FACTOR = 1.0
+DEFAULT_MAX_BACKOFF_SECONDS = 60.0
+DEFAULT_PROBE_DELAY_MIN = 1.0
+DEFAULT_PROBE_DELAY_MAX = 3.0
+DEFAULT_PROBE_STATE_FILE = "output/probe_state.json"
+DEFAULT_PERSIST_PROBE_STATE = False
+DEFAULT_NO_RESULTS_TTL_DAYS = 365
+DEFAULT_RETRY_COOLDOWN_SECONDS = 3600  # 1 hour cooldown between retries
+DEFAULT_RETRY_HOURS_SINCE_LAST_ATTEMPT = 24  # 24 hours before considering failed cases for retry
+
+
+def _load_toml_config() -> dict:
+    """Load config from `config.private.toml` then `config.toml` if available.
+
+    Returns a dict with merged values (private overrides project file).
+    """
+    cfg: dict = {}
+    if tomllib is None:
+        return cfg
+
+    cwd = Path.cwd()
+    for fname in ("config.private.toml", "config.toml"):
+        p = cwd / fname
+        if p.exists():
+            try:
+                with open(p, "rb") as f:
+                    data = tomllib.load(f)
+                    if isinstance(data, dict):
+                        # shallow merge
+                        for k, v in data.items():
+                            if isinstance(v, dict) and k in cfg and isinstance(cfg[k], dict):
+                                cfg[k].update(v)
+                            else:
+                                cfg[k] = v
+            except Exception:
+                # Ignore parse errors and continue
+                continue
+    return cfg
+
+
+_CONFIG = _load_toml_config()
+
+
+def _get_from_config(section: str, key: str):
+    try:
+        return _CONFIG.get(section, {}).get(key)
+    except Exception:
+        return None
+
+
+class Config:
+    """Configuration accessors.
+
+    Methods mirror the previous API but prefer values from TOML files.
+    """
+
+    @classmethod
+    def get_rate_limit_seconds(cls) -> float:
+        return float(
+            _get_from_config("app", "rate_limit_seconds")
+            or os.getenv("FCT_RATE_LIMIT_SECONDS")
+            or DEFAULT_RATE_LIMIT_SECONDS
+        )
+
+    @classmethod
+    def get_max_retries(cls) -> int:
+        return int(
+            _get_from_config("app", "max_retries")
+            or os.getenv("FCT_MAX_RETRIES")
+            or DEFAULT_MAX_RETRIES
+        )
+
+    @classmethod
+    def get_timeout_seconds(cls) -> int:
+        return int(
+            _get_from_config("app", "timeout_seconds")
+            or os.getenv("FCT_TIMEOUT_SECONDS")
+            or DEFAULT_TIMEOUT_SECONDS
+        )
+
+    @classmethod
+    def get_output_dir(cls) -> str:
+        return (
+            _get_from_config("app", "output_dir")
+            or os.getenv("FCT_OUTPUT_DIR")
+            or DEFAULT_OUTPUT_DIR
+        )
+
+    @classmethod
+    def get_per_case_subdir(cls) -> str:
+        return (
+            _get_from_config("app", "per_case_subdir")
+            or os.getenv("FCT_PER_CASE_SUBDIR")
+            or DEFAULT_PER_CASE_SUBDIR
+        )
+
+    @classmethod
+    def get_export_write_retries(cls) -> int:
+        return int(
+            _get_from_config("app", "export_write_retries")
+            or os.getenv("FCT_EXPORT_WRITE_RETRIES")
+            or DEFAULT_EXPORT_WRITE_RETRIES
+        )
+
+    @classmethod
+    def get_export_write_backoff_seconds(cls) -> int:
+        return int(
+            _get_from_config("app", "export_write_backoff_seconds")
+            or os.getenv("FCT_EXPORT_WRITE_BACKOFF_SECONDS")
+            or DEFAULT_EXPORT_WRITE_BACKOFF_SECONDS
+        )
+
+    @classmethod
+    def get_max_driver_restarts(cls) -> int:
+        return int(
+            _get_from_config("app", "max_driver_restarts")
+            or os.getenv("FCT_MAX_DRIVER_RESTARTS")
+            or DEFAULT_MAX_DRIVER_RESTARTS
+        )
+
+    @classmethod
+    def get_docket_parse_max_errors(cls) -> int:
+        return int(
+            _get_from_config("app", "docket_parse_max_errors")
+            or os.getenv("FCT_DOCKET_PARSE_MAX_ERRORS")
+            or DEFAULT_DOCKET_PARSE_MAX_ERRORS
+        )
+
+    @classmethod
+    def get_retry_cooldown_seconds(cls) -> int:
+        return int(
+            _get_from_config("app", "retry_cooldown_seconds")
+            or os.getenv("FCT_RETRY_COOLDOWN_SECONDS")
+            or DEFAULT_RETRY_COOLDOWN_SECONDS
+        )
+
+    @classmethod
+    def get_retry_hours_since_last_attempt(cls) -> int:
+        return int(
+            _get_from_config("app", "retry_hours_since_last_attempt")
+            or os.getenv("FCT_RETRY_HOURS_SINCE_LAST_ATTEMPT")
+            or DEFAULT_RETRY_HOURS_SINCE_LAST_ATTEMPT
+        )
+
+    @classmethod
+    def get_memory_cleanup_interval(cls) -> int:
+        return int(
+            _get_from_config("app", "memory_cleanup_interval")
+            or os.getenv("FCT_MEMORY_CLEANUP_INTERVAL")
+            or DEFAULT_MEMORY_CLEANUP_INTERVAL
+        )
+
+    @classmethod
+    def get_enable_memory_management(cls) -> bool:
+        value = (
+            _get_from_config("app", "enable_memory_management")
+            or os.getenv("FCT_ENABLE_MEMORY_MANAGEMENT")
+            or DEFAULT_ENABLE_MEMORY_MANAGEMENT
+        )
+        # Handle both string and boolean values
+        if isinstance(value, bool):
+            return value
+        return str(value).lower() in ("true", "1", "yes", "on")
+
+    @classmethod
+    def get_max_skipped_log(cls) -> int:
+        return int(
+            _get_from_config("app", "max_skipped_log")
+            or os.getenv("FCT_MAX_SKIPPED_LOG")
+            or DEFAULT_MAX_SKIPPED_LOG
+        )
+
+    @classmethod
+    def get_skip_report_interval(cls) -> int:
+        return int(
+            _get_from_config("app", "skip_report_interval")
+            or os.getenv("FCT_SKIP_REPORT_INTERVAL")
+            or DEFAULT_SKIP_REPORT_INTERVAL
+        )
+
+    @classmethod
+    def get_csv_filename(cls) -> str:
+        raise AttributeError("CSV filename support removed; use JSON exports only")
+
+    @classmethod
+    def get_json_filename(cls) -> str:
+        return (
+            _get_from_config("app", "json_filename")
+            or os.getenv("FCT_JSON_FILENAME")
+            or DEFAULT_JSON_FILENAME
+        )
+
+    @classmethod
+    def get_export_json_only(cls) -> bool:
+        val = _get_from_config("app", "export_json_only")
+        if val is None:
+            val = os.getenv("FCT_EXPORT_JSON_ONLY")
+        if isinstance(val, str):
+            return val.lower() == "true"
+        return bool(val) if val is not None else DEFAULT_EXPORT_JSON_ONLY
+
+    @classmethod
+    def get_headless(cls) -> bool:
+        val = _get_from_config("app", "headless")
+        if val is None:
+            val = os.getenv("FCT_HEADLESS")
+        if isinstance(val, str):
+            return val.lower() == "true"
+        return bool(val) if val is not None else DEFAULT_HEADLESS
+
+    @classmethod
+    def get_browser(cls) -> str:
+        return (
+            _get_from_config("app", "browser")
+            or os.getenv("FCT_BROWSER")
+            or DEFAULT_BROWSER
+        )
+
+    @classmethod
+    def get_log_level(cls) -> str:
+        return (
+            _get_from_config("app", "log_level")
+            or os.getenv("FCT_LOG_LEVEL")
+            or DEFAULT_LOG_LEVEL
+        )
+
+    @classmethod
+    def get_log_file(cls) -> Optional[str]:
+        return (
+            _get_from_config("app", "log_file")
+            or os.getenv("FCT_LOG_FILE")
+            or DEFAULT_LOG_FILE
+        )
+
+    @classmethod
+    def get_output_path(cls, filename: str) -> Path:
+        output_dir = Path(cls.get_output_dir())
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return output_dir / filename
+
+    @classmethod
+    def get_save_modal_html(cls) -> bool:
+        val = _get_from_config("app", "save_modal_html")
+        if val is None:
+            val = os.getenv("FCT_SAVE_MODAL_HTML")
+        if isinstance(val, str):
+            return val.lower() == "true"
+        return bool(val) if val is not None else DEFAULT_SAVE_MODAL_HTML
+
+    @classmethod
+    def get_safe_stop_no_records(cls) -> int:
+        return int(
+            _get_from_config("app", "safe_stop_no_records")
+            or os.getenv("FCT_SAFE_STOP_NO_RECORDS")
+            or DEFAULT_SAFE_STOP_NO_RECORDS
+        )
+
+    @classmethod
+    def get_persist_raw_html(cls) -> bool:
+        val = _get_from_config("app", "persist_raw_html")
+        if val is None:
+            val = os.getenv("FCT_PERSIST_RAW_HTML")
+        if isinstance(val, str):
+            return val.lower() == "true"
+        return bool(val) if val is not None else DEFAULT_PERSIST_RAW_HTML
+
+    @classmethod
+    def get_max_exponent(cls) -> int:
+        return int(
+            _get_from_config("app", "max_exponent")
+            or os.getenv("FCT_MAX_EXPONENT")
+            or DEFAULT_MAX_EXPONENT
+        )
+
+    @classmethod
+    def get_backoff_factor(cls) -> float:
+        return float(
+            _get_from_config("app", "backoff_factor")
+            or os.getenv("FCT_BACKOFF_FACTOR")
+            or DEFAULT_BACKOFF_FACTOR
+        )
+
+    @classmethod
+    def get_probe_delay_min(cls) -> float:
+        return float(
+            _get_from_config("app", "probe_delay_min")
+            or os.getenv("FCT_PROBE_DELAY_MIN")
+            or DEFAULT_PROBE_DELAY_MIN
+        )
+
+    @classmethod
+    def get_probe_delay_max(cls) -> float:
+        return float(
+            _get_from_config("app", "probe_delay_max")
+            or os.getenv("FCT_PROBE_DELAY_MAX")
+            or DEFAULT_PROBE_DELAY_MAX
+        )
+
+    @classmethod
+    def get_probe_state_file(cls) -> str:
+        return (
+            _get_from_config("app", "probe_state_file")
+            or os.getenv("FCT_PROBE_STATE_FILE")
+            or DEFAULT_PROBE_STATE_FILE
+        )
+
+    @classmethod
+    def get_persist_probe_state(cls) -> bool:
+        val = _get_from_config("app", "persist_probe_state")
+        if val is None:
+            val = os.getenv("FCT_PERSIST_PROBE_STATE")
+        if isinstance(val, str):
+            return val.lower() == "true"
+        return bool(val) if val is not None else DEFAULT_PERSIST_PROBE_STATE
+
+    @classmethod
+    def get_no_results_ttl_days(cls) -> Optional[int]:
+        val = _get_from_config("app", "no_results_ttl_days")
+        if val is None:
+            val = os.getenv("FCT_NO_RESULTS_TTL_DAYS")
+        if val is None:
+            return DEFAULT_NO_RESULTS_TTL_DAYS
+        try:
+            return int(val)
+        except Exception:
+            return DEFAULT_NO_RESULTS_TTL_DAYS
+
+    @classmethod
+    def get_max_backoff_seconds(cls) -> float:
+        return float(
+            _get_from_config("app", "max_backoff_seconds")
+            or os.getenv("FCT_MAX_BACKOFF_SECONDS")
+            or DEFAULT_MAX_BACKOFF_SECONDS
+        )
+
+    @classmethod
+    def get_enable_run_logger(cls) -> bool:
+        val = _get_from_config("app", "enable_run_logger")
+        if val is None:
+            val = os.getenv("FCT_ENABLE_RUN_LOGGER")
+        if isinstance(val, str):
+            return val.lower() == "true"
+        return bool(val) if val is not None else DEFAULT_ENABLE_RUN_LOGGER
+
+    @classmethod
+    def get_write_audit(cls) -> bool:
+        val = _get_from_config("app", "write_audit")
+        if val is None:
+            val = os.getenv("FCT_WRITE_AUDIT")
+        if isinstance(val, str):
+            return val.lower() == "true"
+        return bool(val) if val is not None else DEFAULT_WRITE_AUDIT
+
+    @classmethod
+    def get_csv_path(cls) -> Path:
+        raise AttributeError("CSV path support removed; use JSON exports only")
+
+    @classmethod
+    def get_db_host(cls) -> str:
+        return (
+            _get_from_config("database", "host")
+            or os.getenv("DB_HOST")
+            or DEFAULT_DB_HOST
+        )
+
+    @classmethod
+    def get_db_port(cls) -> int:
+        return int(
+            _get_from_config("database", "port")
+            or os.getenv("DB_PORT")
+            or DEFAULT_DB_PORT
+        )
+
+    @classmethod
+    def get_db_name(cls) -> str:
+        return (
+            _get_from_config("database", "name")
+            or os.getenv("DB_NAME")
+            or DEFAULT_DB_NAME
+        )
+
+    @classmethod
+    def get_db_user(cls) -> str:
+        return (
+            _get_from_config("database", "user")
+            or os.getenv("DB_USER")
+            or DEFAULT_DB_USER
+        )
+
+    @classmethod
+    def get_db_password(cls) -> str:
+        return (
+            _get_from_config("database", "password")
+            or os.getenv("DB_PASSWORD")
+            or DEFAULT_DB_PASSWORD
+        )
+
+    @classmethod
+    def get_db_config(cls) -> dict:
+        return {
+            "host": cls.get_db_host(),
+            "port": cls.get_db_port(),
+            "database": cls.get_db_name(),
+            "user": cls.get_db_user(),
+            "password": cls.get_db_password(),
+        }
