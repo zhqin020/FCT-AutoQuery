@@ -890,6 +890,15 @@ class FederalCourtScraperCLI:
         # Sort by numeric id to ensure deterministic ascending processing order
         sorted_candidates = sorted(unique_map.values(), key=lambda x: x.get("numeric_id", 0))
 
+        # If a start numeric id was provided, filter candidates to resume from that id
+        if start:
+            try:
+                start_int = int(start)
+                logger.info(f"Resuming update flow starting from numeric id >= {start_int}")
+                sorted_candidates = [c for c in sorted_candidates if (c.get("numeric_id") or 0) >= start_int]
+            except Exception:
+                logger.warning(f"Invalid start parameter provided to batch_update: {start}; ignoring start filter")
+
         # Apply max_cases limit if provided
         if max_cases:
             candidates = sorted_candidates[:max_cases]

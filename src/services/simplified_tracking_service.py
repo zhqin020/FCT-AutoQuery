@@ -174,39 +174,56 @@ class SimplifiedTrackingService:
             
             now = datetime.now(timezone.utc)
             
+            # Extract year from case_number (e.g., IMM-1234-25 -> 2025)
+            year = None
+            if case_number:
+                # Parse case_number format: XXX-1234-YY where YY is the last 2 digits
+                parts = case_number.split('-')
+                if len(parts) >= 3:
+                    try:
+                        year_suffix = parts[-1]
+                        if len(year_suffix) == 2 and year_suffix.isdigit():
+                            year_int = int(year_suffix)
+                            # Convert 2-digit year to 4-digit year (assuming 2000-2099)
+                            year = 2000 + year_int
+                    except (ValueError, IndexError):
+                        pass
+            
             if status == CaseStatus.SUCCESS:
                 # 成功采集，重置重试计数
                 cursor.execute("""
-                    INSERT INTO cases (case_number, status, last_attempt_at, retry_count, scraped_at)
-                    VALUES (%s, %s, %s, 0, %s)
+                    INSERT INTO cases (case_number, status, last_attempt_at, retry_count, scraped_at, year)
+                    VALUES (%s, %s, %s, 0, %s, %s)
                     ON CONFLICT (case_number) 
                     DO UPDATE SET 
                         status = EXCLUDED.status,
                         last_attempt_at = EXCLUDED.last_attempt_at,
                         retry_count = 0,
                         error_message = NULL,
-                        scraped_at = EXCLUDED.scraped_at
-                """, (case_number, status, now, now))
+                        scraped_at = EXCLUDED.scraped_at,
+                        year = EXCLUDED.year
+                """, (case_number, status, now, now, year))
                 
             elif status == CaseStatus.NO_DATA:
                 # 确认案例无数据（仅在检测到'No data available in table'时设置）
                 # Treat NO_DATA as definitive; reset retry counter and clear error_message
                 cursor.execute("""
-                    INSERT INTO cases (case_number, status, last_attempt_at, retry_count, error_message)
-                    VALUES (%s, %s, %s, 0, NULL)
+                    INSERT INTO cases (case_number, status, last_attempt_at, retry_count, error_message, year)
+                    VALUES (%s, %s, %s, 0, NULL, %s)
                     ON CONFLICT (case_number) 
                     DO UPDATE SET 
                         status = EXCLUDED.status,
                         last_attempt_at = EXCLUDED.last_attempt_at,
                         retry_count = 0,
-                        error_message = NULL
-                """, (case_number, status, now))
+                        error_message = NULL,
+                        year = EXCLUDED.year
+                """, (case_number, status, now, year))
                 
             elif status == CaseStatus.FAILED:
                 # 采集失败，增加重试计数
                 cursor.execute("""
-                    INSERT INTO cases (case_number, status, last_attempt_at, retry_count, error_message)
-                    VALUES (%s, %s, %s, 1, %s)
+                    INSERT INTO cases (case_number, status, last_attempt_at, retry_count, error_message, year)
+                    VALUES (%s, %s, %s, 1, %s, %s)
                     ON CONFLICT (case_number) 
                     DO UPDATE SET 
                         status = CASE 
@@ -216,8 +233,9 @@ class SimplifiedTrackingService:
                         END,
                         last_attempt_at = EXCLUDED.last_attempt_at,
                         retry_count = cases.retry_count + 1,
-                        error_message = EXCLUDED.error_message
-                """, (case_number, status, now, error_message))
+                        error_message = EXCLUDED.error_message,
+                        year = EXCLUDED.year
+                """, (case_number, status, now, error_message, year))
                 
             elif status == CaseStatus.ERROR:
                 # 系统错误，增加重试计数但不覆盖failed状态
@@ -235,7 +253,7 @@ class SimplifiedTrackingService:
                         last_attempt_at = EXCLUDED.last_attempt_at,
                         retry_count = cases.retry_count + 1,
                         error_message = EXCLUDED.error_message
-                """, (case_number, status, now, error_message))
+                """, (case_number, status, now, error_message, year))
             
             conn.commit()
             logger.debug(f"Marked {case_number} as {status}")
