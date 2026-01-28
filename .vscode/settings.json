@@ -1,14 +1,14 @@
 {
+    "editor.wordWrap": "on",
+    "python.terminal.activateEnvironment": true,
+    "python.defaultInterpreterPath": "~/miniconda3/envs/fct/bin/python",
+    "python.terminal.activateEnvInCurrentTerminal": true,
+    "terminal.integrated.defaultProfile.linux": "bash",
     "terminal.integrated.profiles.linux": {
-        "bash (fct)": {
-            "path": "/bin/bash",
-            "args": [
-                "-lc",
-                "conda activate fct; exec /bin/bash -i"
-            ]
+        "bash": {
+            "path": "bash",
+            "args": ["--init-file", "${workspaceFolder}/.vscode/terminal-init.sh"]
         }
     },
-    "editor.wordWrap": "on",
-    "terminal.integrated.defaultProfile.linux": "bash (fct)",
-    "python.terminal.activateEnvironment": true
+    "terminal.integrated.cwd": "${workspaceFolder}"
 }
