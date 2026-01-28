@@ -1,0 +1,9 @@
+name: fct
+channels:
+  - defaults
+dependencies:
+  - pip
+  - pytest
+  - pandas
+  - beautifulsoup4
+prefix: /home/watson/miniconda3/envs/fct
