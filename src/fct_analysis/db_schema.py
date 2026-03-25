@@ -62,6 +62,16 @@ class AnalysisDBManager:
             -- DOJ and applicant memo dates
             doj_memo_date DATE,
             reply_memo_date DATE,
+            
+            -- New high-granularity timeline dates
+            appearance_date DATE,
+            applicant_record_date DATE,
+            referral_to_judiciary_date DATE,
+            leave_grant_date DATE,
+            leave_dismissal_date DATE,
+            certified_record_date DATE,
+            hearing_date DATE,
+            
             has_hearing BOOLEAN,
             
             -- Outcome information
@@ -80,7 +90,7 @@ class AnalysisDBManager:
             -- Constraints and indexes
             CONSTRAINT case_analysis_unique UNIQUE (case_number),
             CONSTRAINT case_analysis_check 
-                CHECK (analysis_mode IN ('rule', 'llm', 'smart'))
+                CHECK (analysis_mode IN ('rule', 'llm', 'smart', 'aifree'))
         )
         """
         
@@ -96,7 +106,9 @@ class AnalysisDBManager:
             "CREATE INDEX IF NOT EXISTS idx_case_analysis_reply_memo_time ON case_analysis(reply_memo_time)",
             "CREATE INDEX IF NOT EXISTS idx_case_analysis_dojo_memo_date ON case_analysis(doj_memo_date)",
             "CREATE INDEX IF NOT EXISTS idx_case_analysis_reply_memo_date ON case_analysis(reply_memo_date)",
-            "CREATE INDEX IF NOT EXISTS idx_case_analysis_outcome_entry ON case_analysis USING GIN(outcome_entry)"
+            "CREATE INDEX IF NOT EXISTS idx_case_analysis_outcome_entry ON case_analysis USING GIN(outcome_entry)",
+            "CREATE INDEX IF NOT EXISTS idx_case_analysis_appearance_date ON case_analysis(appearance_date)",
+            "CREATE INDEX IF NOT EXISTS idx_case_analysis_hearing_date ON case_analysis(hearing_date)"
         ]
         
         try:
@@ -359,6 +371,16 @@ class AnalysisDBManager:
                         "ALTER TABLE case_analysis ADD COLUMN IF NOT EXISTS has_hearing BOOLEAN",
                         "ALTER TABLE case_analysis ADD COLUMN IF NOT EXISTS year INTEGER",
                         "ALTER TABLE case_analysis ADD COLUMN IF NOT EXISTS outcome_entry JSONB",
+                        "ALTER TABLE case_analysis ADD COLUMN IF NOT EXISTS appearance_date DATE",
+                        "ALTER TABLE case_analysis ADD COLUMN IF NOT EXISTS applicant_record_date DATE",
+                        "ALTER TABLE case_analysis ADD COLUMN IF NOT EXISTS referral_to_judiciary_date DATE",
+                        "ALTER TABLE case_analysis ADD COLUMN IF NOT EXISTS leave_grant_date DATE",
+                        "ALTER TABLE case_analysis ADD COLUMN IF NOT EXISTS leave_dismissal_date DATE",
+                        "ALTER TABLE case_analysis ADD COLUMN IF NOT EXISTS certified_record_date DATE",
+                        "ALTER TABLE case_analysis ADD COLUMN IF NOT EXISTS hearing_date DATE",
+                        # Update check constraint to include 'aifree'
+                        "ALTER TABLE case_analysis DROP CONSTRAINT IF EXISTS case_analysis_check",
+                        "ALTER TABLE case_analysis ADD CONSTRAINT case_analysis_check CHECK (analysis_mode IN ('rule', 'llm', 'smart', 'aifree'))",
                     ]
                     
                     for sql in updates:
@@ -429,6 +451,9 @@ class AnalysisDBManager:
                                time_to_close, age_of_case, rule9_wait, outcome_date,
                                memo_response_time, memo_to_outcome_time, reply_memo_time,
                                reply_to_outcome_time, doj_memo_date, reply_memo_date,
+                               appearance_date, applicant_record_date, referral_to_judiciary_date,
+                               leave_grant_date, leave_dismissal_date, certified_record_date,
+                               hearing_date,
                                analysis_data, title, court, filing_date, outcome_entry
                         FROM case_analysis
                         WHERE case_number = %s
@@ -467,6 +492,9 @@ class AnalysisResultStorage:
                                time_to_close, age_of_case, rule9_wait, outcome_date,
                                memo_response_time, memo_to_outcome_time, reply_memo_time,
                                reply_to_outcome_time, doj_memo_date, reply_memo_date,
+                               appearance_date, applicant_record_date, referral_to_judiciary_date,
+                               leave_grant_date, leave_dismissal_date, certified_record_date,
+                               hearing_date,
                                analysis_data, title, court, filing_date, outcome_entry
                         FROM case_analysis 
                         WHERE case_number = %s AND analysis_mode = %s
@@ -511,6 +539,13 @@ class AnalysisResultStorage:
                         'reply_to_outcome_time': ('reply_to_outcome_time', None),
                         'doj_memo_date': ('doj_memo_date', None),
                         'reply_memo_date': ('reply_memo_date', None),
+                        'appearance_date': ('appearance_date', None),
+                        'applicant_record_date': ('applicant_record_date', None),
+                        'referral_to_judiciary_date': ('referral_to_judiciary_date', None),
+                        'leave_grant_date': ('leave_grant_date', None),
+                        'leave_dismissal_date': ('leave_dismissal_date', None),
+                        'certified_record_date': ('certified_record_date', None),
+                        'hearing_date': ('hearing_date', None),
                         'title': ('title', None),
                         'court': ('court', 100),
                         'filing_date': ('filing_date', None),
@@ -521,7 +556,8 @@ class AnalysisResultStorage:
                     # Build INSERT and UPDATE clauses
                     insert_fields = ['case_number', 'analysis_mode', 'analysis_version']
                     insert_values = [case_id, mode, version]
-                    update_fields = ['analysis_version = EXCLUDED.analysis_version', 
+                    update_fields = ['analysis_mode = EXCLUDED.analysis_mode',
+                                    'analysis_version = EXCLUDED.analysis_version', 
                                     'analyzed_at = CURRENT_TIMESTAMP']
 
                     # Compute year to store in analysis table if possible.
@@ -628,6 +664,9 @@ class AnalysisResultStorage:
                                time_to_close, age_of_case, rule9_wait, outcome_date,
                                memo_response_time, memo_to_outcome_time, reply_memo_time,
                                reply_to_outcome_time, doj_memo_date, reply_memo_date,
+                               appearance_date, applicant_record_date, referral_to_judiciary_date,
+                               leave_grant_date, leave_dismissal_date, certified_record_date,
+                               hearing_date,
                                analysis_data, title, court, filing_date, outcome_entry
                         FROM case_analysis
                         WHERE case_number = %s

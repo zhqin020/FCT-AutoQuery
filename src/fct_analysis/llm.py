@@ -15,6 +15,7 @@ import subprocess
 import time
 import threading
 from typing import Any, Dict, Optional
+from .ai_constants import AI_JSON_SCHEMA, AI_SYSTEM_PROMPT
 
 try:
     import requests
@@ -117,27 +118,8 @@ OLLAMA_MODEL = None   # Will be overridden by config
 OLLAMA_TIMEOUT = None # Will be overridden by config
 OLLAMA_MAX_RETRY = 3            # Maximum retry attempts
 
-# System Prompt: Short and efficient
-SYSTEM_PROMPT = """
-You are an expert legal analyst specializing in Canadian Federal Court immigration
-and judicial review cases. Analyze the provided case summary and return a
-single, well-formed JSON object only. The JSON MUST include the `case_number`
-field that matches the request identifier provided in the prompt. Do not
-include any explanatory text, markdown, or surrounding code fences.
-
-Use the following field names exactly (these match the engine's canonical schema):
-- case_number: string (must exactly match the provided case identifier)
-- case_type: string (e.g. "Mandamus" or "Other")
-- status: string (one of "Dismissed", "Granted", "Discontinued", "Moot", "Ongoing")
-- visa_office: string or null
-- judge: string or null
-- has_hearing: boolean
-- confidence: string ("high", "medium", "low")
-- nature: string or null
-
-Use docket entries, nature, title, and style_of_cause to determine values.
-Return only the JSON object.
-"""
+# System Prompt: unified with aifree
+SYSTEM_PROMPT = AI_SYSTEM_PROMPT.replace("<ret_json_template>", AI_JSON_SCHEMA)
 
 
 # -----------------------------------------------------------

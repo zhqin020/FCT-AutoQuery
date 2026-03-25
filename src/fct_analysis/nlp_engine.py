@@ -22,6 +22,9 @@ except ImportError:
     Config = None
 
 
+from .ai_constants import AI_JSON_SCHEMA, AI_SYSTEM_PROMPT
+
+
 # Enhanced regex patterns for better accuracy
 class PatternLibrary:
     """Comprehensive pattern library for legal document classification."""
@@ -151,6 +154,110 @@ class PatternLibrary:
         r'by\s+((?:[A-Z][a-z]+)(?:\s+(?!Language|Matter|Court|Order|Decision|dated|at\b)[A-Z][a-z]+)*)\s+A\.?J\.?\b',
         r'((?:[A-Z][a-z]+)(?:\s+(?!Language|Matter|Court|Order|Decision|dated|at\b)[A-Z][a-z]+)*)\s+J\.?\b',
     ]
+
+
+def normalize_ai_result(ai_result: Dict) -> Dict:
+    """
+    Unified normalization logic for AI extraction results (LLM or Aifree).
+    Transforms raw AI JSON into the canonical format used by the engine and database.
+    """
+    if not isinstance(ai_result, dict):
+        return {}
+    
+    normalized = {}
+    
+    # 1. Type Mapping
+    case_type = ai_result.get('case_type') or ai_result.get('type')
+    if case_type and isinstance(case_type, str):
+        ct_lower = case_type.lower()
+        if 'mandamus' in ct_lower:
+            normalized['type'] = 'Mandamus'
+        elif 'judicial' in ct_lower or 'jr' == ct_lower:
+            normalized['type'] = 'Judicial Review'
+        else:
+            normalized['type'] = 'Other'
+    else:
+        normalized['type'] = 'Other'
+
+    # 2. Status Mapping
+    # Logic: Prefer judgment_result if available (Aifree style), otherwise check case_status or status
+    judgment = str(ai_result.get('judgment_result') or ai_result.get('case_status') or ai_result.get('status') or '').lower()
+    mapped_status = "Ongoing"
+    
+    if "discontinu" in judgment or "withdrawn" in judgment:
+        mapped_status = "Discontinued"
+    elif "grant" in judgment or "allow" in judgment or "approv" in judgment:
+        # Check if it's leave_granted or full grant
+        if "leave" in judgment:
+            mapped_status = "Ongoing" # Leave granted usually means JR is next
+        else:
+            mapped_status = "Granted"
+    elif "dismiss" in judgment or "denied" in judgment or "deny" in judgment:
+        mapped_status = "Dismissed"
+    elif "moot" in judgment:
+        mapped_status = "Moot"
+    elif "pending" in judgment or "ongoing" in judgment or "no result" in judgment:
+        mapped_status = "Ongoing"
+    
+    normalized['status'] = mapped_status
+
+    # 3. Entities
+    for key in ['visa_office', 'judge', 'nature']:
+        val = ai_result.get(key)
+        if val and str(val).lower() != 'null':
+            normalized[key] = str(val)[:200]
+            
+    # 4. Hearing
+    hearing = ai_result.get('hearing') if ai_result.get('hearing') is not None else ai_result.get('has_hearing')
+    if isinstance(hearing, bool):
+        normalized['has_hearing'] = hearing
+    elif isinstance(hearing, str):
+        normalized['has_hearing'] = hearing.lower() in ['true', 'yes', '1']
+    else:
+        normalized['has_hearing'] = False
+
+    # 5. Confidence
+    conf = ai_result.get('confidence') or ai_result.get('llm_confidence')
+    if conf and str(conf).lower() in ['high', 'medium', 'low']:
+        normalized['llm_confidence'] = str(conf).lower()
+    else:
+        normalized['llm_confidence'] = 'medium'
+
+    # 6. Timeline Mapping (Handles nested and flat)
+    timeline = ai_result.get('timeline') or {}
+    timeline_mapping = {
+        'appearance_date': 'appearance_date',
+        'applicant_record': 'applicant_record_date',
+        'doj_memo': 'doj_memo_date',
+        'doj_record': 'doj_memo_date',
+        'reply_memo': 'reply_memo_date',
+        'referral_to_judiciary': 'referral_to_judiciary_date',
+        'leave_grant_date': 'leave_grant_date',
+        'leave_dismissal_date': 'leave_dismissal_date',
+        'certified_record': 'certified_record_date',
+        'hearing_date': 'hearing_date',
+        'judgment_date': 'outcome_date'
+    }
+    
+    # Try nested timeline first
+    if isinstance(timeline, dict):
+        for field, norm in timeline_mapping.items():
+            if field in timeline and timeline[field] and str(timeline[field]).lower() != 'null':
+                normalized[norm] = str(timeline[field])
+                
+    # Fallback to flat fields if not already set in normalized
+    for field, norm in timeline_mapping.items():
+        if normalized.get(norm) is None:
+            val = ai_result.get(field) or ai_result.get(norm)
+            if val and str(val).lower() != 'null':
+                normalized[norm] = str(val)
+
+    # Filing date is special
+    filing_date = (timeline.get('filing_date') if isinstance(timeline, dict) else None) or ai_result.get('filing_date')
+    if filing_date and str(filing_date).lower() != 'null':
+        normalized['filing_date'] = str(filing_date)
+
+    return normalized
 
 
 class EnhancedNLPEngine:
@@ -549,79 +656,12 @@ Return ONLY valid JSON:
         
         # Confidence
         normalized['llm_confidence'] = llm_result.get('confidence', 'medium')
-        
-        return normalized
     
     def _normalize_safe_llm_result(self, llm_result) -> Dict:
-        """Normalize safe LLM result to match expected format."""
-        normalized = {}
-        
-        # Handle both list and dict formats from LLM
-        if isinstance(llm_result, list) and len(llm_result) > 0:
-            llm_result = llm_result[0]  # Take first result from list
-        
-        if not isinstance(llm_result, dict):
-            logger.warning(f"Unexpected LLM result format: {type(llm_result)} - {llm_result}")
-            return self._create_fallback_result()
-        
-        # Expect canonical field names from the safe LLM (no mapping required):
-        # case_type, status, visa_office, judge, has_hearing, confidence, nature
-        case_type = llm_result.get('case_type')
-        if case_type and isinstance(case_type, str) and 'mandamus' in case_type.lower():
-            normalized['type'] = 'Mandamus'
-        else:
-            normalized['type'] = 'Other'
+        """Normalize safe LLM result using the unified normalization logic."""
+        return normalize_ai_result(llm_result)
 
-        # Status should be provided exactly as one of the canonical labels;
-        # normalize defensively by lowercasing and mapping common variants.
-        status_val = llm_result.get('status')
-        if status_val is None:
-            normalized['status'] = 'Ongoing'
-        else:
-            s = str(status_val).lower()
-            if 'discontinu' in s or 'withdrawn' in s:
-                normalized['status'] = 'Discontinued'
-            elif 'grant' in s or 'allow' in s or 'approv' in s:
-                normalized['status'] = 'Granted'
-            elif 'dismiss' in s or 'denied' in s or 'deny' in s:
-                normalized['status'] = 'Dismissed'
-            elif 'moot' in s:
-                normalized['status'] = 'Moot'
-            elif 'pending' in s or 'ongoing' in s or 'no result' in s:
-                normalized['status'] = 'Ongoing'
-            else:
-                normalized['status'] = 'Ongoing'
 
-        # Direct entity fields
-        if llm_result.get('visa_office') and str(llm_result['visa_office']).lower() != 'null':
-            visa_office = str(llm_result['visa_office'])
-            normalized['visa_office'] = visa_office[:200] if len(visa_office) > 200 else visa_office
-        if llm_result.get('judge') and str(llm_result['judge']).lower() != 'null':
-            judge = str(llm_result['judge'])
-            normalized['judge'] = judge[:200] if len(judge) > 200 else judge
-
-        # has_hearing
-        has_hearing = llm_result.get('has_hearing')
-        if isinstance(has_hearing, bool):
-            normalized['has_hearing'] = has_hearing
-        elif isinstance(has_hearing, str):
-            normalized['has_hearing'] = has_hearing.lower() in ['true', 'yes', '1']
-        else:
-            normalized['has_hearing'] = False
-
-        # nature
-        nature = llm_result.get('nature')
-        if nature and str(nature).lower() != 'null':
-            normalized['nature'] = str(nature)[:100]
-
-        # Confidence
-        conf = llm_result.get('confidence') or llm_result.get('llm_confidence')
-        if conf and str(conf).lower() in ['high', 'medium', 'low']:
-            normalized['llm_confidence'] = str(conf).lower()
-        else:
-            normalized['llm_confidence'] = 'medium'
-
-        return normalized
     
     def _create_fallback_result(self) -> Dict:
         """Create a fallback result when LLM parsing fails."""
@@ -763,6 +803,30 @@ Return ONLY valid JSON:
             voters.append(line)
         status_text = '\n'.join(voters)
         
+        # NEW: Prefer the very last docket entry for final procedural outcomes
+        try:
+            last_summary = None
+            if isinstance(case_obj, dict):
+                de = (case_obj.get('docket_entries') or [])
+                if de:
+                    last = de[-1]
+                    last_summary = (last.get('summary') or last.get('recorded_entry_summary') or '')
+            else:
+                # handle objects with attribute access
+                de = getattr(case_obj, 'docket_entries', []) or []
+                if de:
+                    last = de[-1]
+                    last_summary = getattr(last, 'summary', None) or getattr(last, 'recorded_entry_summary', None) or ''
+
+            if last_summary:
+                ls = last_summary.lower()
+                if any(kw in ls for kw in ['notice of discontinuance', 'discontinuance', 'discontinued', 'withdrawn']):
+                    result['status'] = 'Discontinued'
+                    logger.debug(f"📌 Case {case_id}: Last docket entry indicates discontinuance -> Status = Discontinued")
+        except Exception:
+            # Non-fatal - continue with regular rule-based checks
+            pass
+
         # Priority 1: Discontinued / Moot (Use text_clean to avoid lawyer noise)
         if self._match_patterns(text_clean, self.compiled_patterns['DISCONTINUED_PATTERNS']):
             result['status'] = 'Discontinued'
@@ -778,6 +842,8 @@ Return ONLY valid JSON:
         struck_match = re.search(r"\bstruck\b", text, re.I)
         motion_granted_then_struck = re.search(r"\bmotion\b.*\bgrant(?:ed|ing)?\b.*\bstruck\b", text, re.I)
         application_struck = re.search(r"application\b.*\bstruck\b", text, re.I)
+
+        # Priority 2: Special-case handling for 'struck' / motion-to-strike language
         if struck_match and (motion_granted_then_struck or application_struck):
             # Use explicit 'Struck' label to reflect docket language (preferred over generic 'Dismissed')
             result['status'] = 'Struck'
@@ -798,17 +864,25 @@ Return ONLY valid JSON:
             else:
                 result['status'] = 'Granted'
                 logger.debug(f"📊 Case {case_id}: Status = Granted")
-        
+
         # Priority 3: Pending / Ongoing
-        elif self._match_patterns(text, self.compiled_patterns['PENDING_PATTERNS']):
-            result['status'] = 'Ongoing'
-            logger.debug(f"📊 Case {case_id}: Status = Ongoing (pending patterns)")
+        if self._match_patterns(text, self.compiled_patterns['PENDING_PATTERNS']):
+            # Only set Ongoing if no higher-priority status has been determined
+            if result.get('status') not in ['Discontinued', 'Moot', 'Struck', 'Dismissed', 'Granted']:
+                result['status'] = 'Ongoing'
+                logger.debug(f"📊 Case {case_id}: Status = Ongoing (pending patterns)")
         else:
-            result['status'] = 'Ongoing'
-            logger.debug(f"📊 Case {case_id}: Status = Ongoing (default)")
+            # Ensure we don't override previously-determined resolved statuses
+            if result.get('status') not in ['Discontinued', 'Moot', 'Struck', 'Dismissed', 'Granted']:
+                result['status'] = 'Ongoing'
+                logger.debug(f"📊 Case {case_id}: Status = Ongoing (default)")
         
-        # Entity Extraction
+        # 1. Rule-based extraction (Fast & High Precision)
         visa_office = self._extract_visa_office(text)
+        
+        # Fallback to direct office field if available
+        if not visa_office and hasattr(case_obj, 'get'):
+            visa_office = case_obj.get('office') or case_obj.get('visa_office')
         judge = self._extract_judge(text)
         
         # Post-processing: If case is discontinued or ongoing, the judge detected is usually procedural

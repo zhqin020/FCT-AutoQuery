@@ -155,12 +155,30 @@ class BatchCaseAnalyzer:
                 import os
                 os.environ['DB_CONNECTION_STR'] = self.db_connection_str
                 logger.info(f"🤖 {case_number}: Starting LLM analysis...")
-                result = _nlp_engine.classify_case_enhanced(
-                    case_data, 
-                    use_llm_fallback=True, 
-                    wait_for_ollama=True, 
-                    ollama_wait_time=180
-                )
+                # If llm_only flag is set on the analyzer, bypass rule-based checks
+                if getattr(self, 'llm_only', False):
+                    try:
+                        engine = _nlp_engine.get_nlp_engine(use_llm_fallback=True, wait_for_ollama=True, ollama_wait_time=180)
+                        logger.info(f"🤖 {case_number}: Forcing LLM-only analysis (bypassing rule-based)")
+                        summary_text = engine._extract_text(case_data)
+                        llm_result = engine._llm_fallback(summary_text, case_data)
+                        if not llm_result:
+                            logger.error(f"LLM-only analysis failed for {case_number}")
+                            return None
+                        # llm_result is already normalized by the engine
+                        result = llm_result
+                        result['method'] = 'llm_only'
+                        result['confidence'] = llm_result.get('llm_confidence', 'medium')
+                    except Exception as e:
+                        logger.error(f"Error during LLM-only analysis for {case_number}: {e}")
+                        return None
+                else:
+                    result = _nlp_engine.classify_case_enhanced(
+                        case_data, 
+                        use_llm_fallback=True, 
+                        wait_for_ollama=True, 
+                        ollama_wait_time=180
+                    )
             else:
                 logger.info(f"⚖️ {case_number}: Starting rule-based analysis...")
                 result = _rules.classify_case_rule(case_data)
@@ -324,7 +342,16 @@ class BatchCaseAnalyzer:
         if not output_filename:
             output_filename = "batch_analysis_results.json"
         
-        output_path = os.path.join(self.output_dir, output_filename)
+        # If the caller provided a path (contains a separator) or an absolute
+        # path, respect it. Otherwise write into the analyzer's configured
+        # `output_dir` to preserve existing behaviour.
+        if os.path.isabs(output_filename) or (os.path.sep in str(output_filename)):
+            output_path = Path(output_filename)
+            # If the path is relative, interpret it relative to the project root
+            if not output_path.is_absolute():
+                output_path = Path(project_root) / output_path
+        else:
+            output_path = Path(self.output_dir) / output_filename
         
         # Generate final output structure
         output_data = {}
@@ -340,12 +367,15 @@ class BatchCaseAnalyzer:
         # Serialize all date objects in the output data
         output_data = serialize_dates(output_data)
         
+        # Ensure parent directory exists
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
         # Save to file
-        with open(output_path, 'w', encoding='utf-8') as f:
+        with output_path.open('w', encoding='utf-8') as f:
             json.dump(output_data, f, ensure_ascii=False, indent=2)
-        
+
         logger.info(f"Results saved to: {output_path}")
-        return output_path
+        return str(output_path)
 
 
 def main():
@@ -356,6 +386,7 @@ def main():
     parser.add_argument('input_file', help='Text file containing comma-separated case numbers')
     parser.add_argument('--mode', choices=['llm', 'rule'], default='llm', 
                        help='Analysis mode (default: llm)')
+    parser.add_argument('--llm-only', action='store_true', help='Force LLM-only analysis (bypass rule-based checks)')
     parser.add_argument('--output', help='Output filename (optional)')
     parser.add_argument('--db-connection', help='Database connection string (optional)')
     
@@ -370,9 +401,17 @@ def main():
         log_level="INFO",
         log_file=log_file
     )
+    # Log the full startup command-line for debugging/audit purposes
+    try:
+        logger.info(f"Startup command-line: {' '.join(sys.argv)}")
+    except Exception:
+        # Ensure logging doesn't crash startup if something unexpected occurs
+        logger.info("Startup command-line: (failed to format sys.argv)")
     
     # Initialize analyzer
     analyzer = BatchCaseAnalyzer(args.db_connection)
+    # Propagate llm-only flag to analyzer instance
+    analyzer.llm_only = bool(getattr(args, 'llm_only', False))
     
     # Read case numbers
     try:

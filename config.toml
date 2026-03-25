@@ -41,5 +41,5 @@ skip_analyzed = true
 update_mode = "smart"
 
 # Logging configuration for analysis
-log_level = "INFO"
+log_level = "DEBUG"
 log_file = "logs/fct-analyze.log"

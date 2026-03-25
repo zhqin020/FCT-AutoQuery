@@ -13,18 +13,43 @@ from typing import Optional
 import pandas as pd
 from tqdm import tqdm
 
+# Add source root and aifree-api to path
+_src_root = str(Path(__file__).parents[2])
+if _src_root not in sys.path:
+    sys.path.append(_src_root)
+sys.path.append(str(Path(__file__).parents[2] / "aifree-api"))
+
 from lib.config import Config
-from lib.logging_config import setup_logging
-from . import parser as _parser
-from . import rules as _rules
-from . import metrics as _metrics
-from . import export as _export
-from . import database as _database
-from . import db_schema as _db_schema
 
-from . import nlp_engine as _nlp_engine
-from . import llm as _llm
+try:
+    from . import parser as _parser
+    from . import rules as _rules
+    from . import metrics as _metrics
+    from . import export as _export
+    from . import database as _database
+    from . import db_schema as _db_schema
+    from . import nlp_engine as _nlp_engine
+    from . import llm as _llm
+    from .ai_constants import AI_JSON_SCHEMA, AI_SYSTEM_PROMPT
+    from .nlp_engine import normalize_ai_result
+except (ImportError, ValueError):
+    # Fallback to absolute imports when run as a script
+    from fct_analysis import parser as _parser
+    from fct_analysis import rules as _rules
+    from fct_analysis import metrics as _metrics
+    from fct_analysis import export as _export
+    from fct_analysis import database as _database
+    from fct_analysis import db_schema as _db_schema
+    from fct_analysis import nlp_engine as _nlp_engine
+    from fct_analysis import llm as _llm
+    from fct_analysis.ai_constants import AI_JSON_SCHEMA, AI_SYSTEM_PROMPT
+    from fct_analysis.nlp_engine import normalize_ai_result
 
+from lib.logging_mp import startlog
+import logging
+
+
+from loguru import logger
 
 def _extract_year_from_case_number(case_number: str) -> Optional[int]:
     """Extract year from case number like IMM-1-21 (for 2021).
@@ -57,7 +82,7 @@ def check_ollama_status(ollama_url: Optional[str] = None) -> int:
     Returns:
         Exit code (0 for success, 1 for failure)
     """
-    from loguru import logger
+    
     
     logger.info("🔍 Checking Ollama service status...")
     logger.info("=" * 50)
@@ -105,8 +130,7 @@ def check_ollama_status(ollama_url: Optional[str] = None) -> int:
 
 
 def _compute_detailed_statistics(df: pd.DataFrame, year_filter: Optional[int] = None) -> dict:
-    """Compute detailed statistics by case type and status."""
-    from loguru import logger
+    """Compute detailed statistics by case type and status.""" 
     
     # Filter by year if specified
     df_filtered = df.copy()
@@ -280,8 +304,7 @@ def _compute_detailed_statistics(df: pd.DataFrame, year_filter: Optional[int] = 
 
 def _log_final_results(output_dir: Path, details_path: Path, summary_path: Path, 
                       stats_path: Path, detailed_stats: dict) -> None:
-    """Log final results including generated files and key statistics."""
-    from loguru import logger
+    """Log final results including generated files and key statistics.""" 
     
     logger.info("=" * 60)
     logger.info("ANALYSIS COMPLETED - FINAL RESULTS")
@@ -710,6 +733,85 @@ def _format_case_analysis_log(case_id: str, case_data: dict, res: dict, duration
     return "\n" + "\n".join(lines)
 
 
+def _aifree_analyze_case(
+    case_data: dict,
+    client: Any,
+    timeout_seconds: int = 300,
+    poll_interval_seconds: int = 2
+) -> dict:
+    """Analyze a single case using the aifree API."""
+    import json
+    import time 
+    from client_common import ApiClient
+
+    case_id = case_data.get("case_number") or case_data.get("case_id")
+    
+    # Prepare payload with unified template
+    ret_json_template = AI_JSON_SCHEMA
+    prompt_templ = AI_SYSTEM_PROMPT
+
+    # Convert case_data to JSON string for the API
+    document_text = json.dumps(case_data, default=str)
+
+    request_payload = ApiClient.make_chat_request_payload_v2(
+        prompt_template=prompt_templ,
+        ret_json_template=ret_json_template,
+        document_text=document_text,
+        msg_id_prefix=f"aifree-{case_id}"
+    )
+
+    try:
+        created = client.post("/api/tasks", json=request_payload)
+        task_id = created["id"]
+        logger.debug(f"Task created for case {case_id}: {task_id}, request_payload: {request_payload}")
+
+        terminal_statuses = {"COMPLETED", "FAILED", "CRITICAL"}
+        deadline = time.monotonic() + timeout_seconds
+        
+        while True:
+            row = client.get(f"/api/tasks/{task_id}")
+            status = row.get("status")
+            if status in terminal_statuses:
+                if status == "COMPLETED":
+                    extracted = row.get("extracted_json")
+                    logger.debug(f"Extracted JSON for case {case_id}: {extracted}")
+                    if isinstance(extracted, str):
+                        try:
+                            extracted = json.loads(extracted)
+                        except json.JSONDecodeError:
+                            logger.error(f"Failed to parse extracted_json for case {case_id}")
+                            break
+                    
+                    if not isinstance(extracted, dict):
+                        logger.error(f"extracted_json is not a dict for case {case_id}")
+                        break
+
+                    # Use unified normalization logic
+                    normalized = normalize_ai_result(extracted)
+                    normalized["method"] = "aifree"
+                    return normalized
+                else:
+                    logger.error(f"Task {task_id} failed with status: {status}. Error: {row.get('error_message')}")
+                    break
+            
+            if time.monotonic() >= deadline:
+                logger.error(f"Task {task_id} timed out after {timeout_seconds}s")
+                break
+                
+            time.sleep(poll_interval_seconds)
+    except Exception as e:
+        logger.error(f"Error in aifree analysis for case {case_id}: {e}")
+
+    # Fallback/Error result
+    return {
+        "type": "Other",
+        "status": "Ongoing",
+        "method": "aifree_error",
+        "confidence": "low"
+    }
+
+
+
 def analyze(
     input_path: Optional[str] = None,
     mode: Optional[str] = None,
@@ -743,8 +845,17 @@ def analyze(
     mode = mode or Config.get_analysis_mode()
     sample_audit = sample_audit if sample_audit is not None else Config.get_analysis_sample_audit()
     ollama_url = ollama_url or Config.get_ollama_url()
-    # Only database input is supported
-    input_format = "database"
+    # Determine input format
+    if input_path:
+        input_path_obj = Path(input_path)
+        if input_path_obj.suffix.lower() == '.json':
+            input_format = "json"
+        elif input_path_obj.suffix.lower() == '.csv':
+            input_format = "csv"
+        else:
+            input_format = "csv" # Default for files
+    else:
+        input_format = "database"
     force = force if force is not None else False  # Default to not force
     
     # Setup output directory
@@ -755,18 +866,7 @@ def analyze(
     
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Setup logging with file output using config
-    log_file = Config.get_analysis_log_file()
-    log_dir = Path(log_file).parent
-    log_dir.mkdir(parents=True, exist_ok=True)
-    
-    setup_logging(
-        log_level=Config.get_analysis_log_level(),
-        log_file=log_file,
-        log_base=Config.get_analysis_log_base(),
-        max_index=Config.get_analysis_log_max_index()
-    )
-    from loguru import logger
+
 
     # Validate force mode requirements
     if force and year is None:
@@ -774,8 +874,17 @@ def analyze(
         logger.info("💡 Usage: python -m fct_analysis.cli --mode llm --force --year 2025")
         return 1
 
+    print(f"DEBUG: Entering analyze with mode={mode}")
     logger.info(f"Starting FCT analysis with mode: {mode}")
-    logger.info(f"Input format: {input_format}")
+    
+    # Initialize aifree client if needed
+    aifree_client = None
+    if mode == "aifree":
+        from client_common import ApiClient
+        aifree_client = ApiClient() # Uses API_BASE_URL env or default
+        logger.info(f"Initialized aifree ApiClient with base_url: {aifree_client.base_url}")
+
+    log_file = Config.get_analysis_log_file()
     logger.info(f"Log file: {log_file}")
     
     # Initialize database managers if using database
@@ -953,6 +1062,13 @@ def analyze(
 
     # Batch processing for database input to avoid frequent single-row reads
     collected_cases = []
+    df = None
+    if input_format == "json" and input_path:
+        df = _parser.parse_cases(input_path)
+    elif input_format == "csv" and input_path:
+        import pandas as pd
+        df = pd.read_csv(input_path)
+
     if input_format == "database":
         # Determine total cases if available from earlier DB status block
         try:
@@ -990,6 +1106,7 @@ def analyze(
                     break
 
                 df_batch = _parser._parse_cases_list(cases)
+                print("DEBUG: Processing batch of cases")
                 for idx, row in df_batch.iterrows():
                     dict_row = row.to_dict() if hasattr(row, 'to_dict') else dict(row)
                     collected_cases.append(dict_row)
@@ -1000,8 +1117,6 @@ def analyze(
                     existing_analysis = None
                     if not force and db_storage and case_id:
                         existing_analysis = db_storage.is_analyzed(case_id, mode)
-                        if not existing_analysis:
-                            existing_analysis = db_storage.is_analyzed_any(case_id)
 
                         if existing_analysis:
                             types.append(existing_analysis.get('case_type'))
@@ -1060,6 +1175,17 @@ def analyze(
                             confidence = "low"
                             res["method"] = method
                             res["confidence"] = confidence
+                    elif mode == "aifree":
+                        logger.info("🚀 [AIFREE] Using remote API analysis interface...")
+                        logger.debug(f"🔍 Processing case {case_id} with aifree analysis")
+                        res = _aifree_analyze_case(raw_case, aifree_client)
+                        case_type = res.get("type")
+                        case_status = res.get("status")
+                        visa_office = res.get("visa_office")
+                        judge = res.get("judge")
+                        method = res.get("method", "aifree")
+                        confidence = res.get("confidence", "high")
+                        logger.info(f"📊 Case {case_id}: {case_type} | {case_status} | Method: {method} | Confidence: {confidence}")
                     else:
                         logger.debug(f"🔍 Processing case {case_id} with rule-based analysis")
                         res = _rules.classify_case_rule(raw_case)
@@ -1157,11 +1283,43 @@ def analyze(
                             'court': raw_case.get('office') or raw_case.get('court'),
                             'filing_date': raw_case.get('filing_date')
                         }
+                        
+                        # Merge additional fields from analysis response (e.g., aifree timeline fields)
+                        new_timeline_fields = [
+                            'appearance_date', 'applicant_record_date', 'referral_to_judiciary_date',
+                            'leave_grant_date', 'leave_dismissal_date', 'certified_record_date',
+                            'hearing_date'
+                        ]
+                        for f in new_timeline_fields:
+                            if f in res and res[f] is not None:
+                                analysis_result[f] = res[f]
+                                
+                        # Also prefer aifree's dates if they were missing in durations
+                        for f in ['doj_memo_date', 'reply_memo_date', 'outcome_date', 'filing_date']:
+                            if analysis_result.get(f) is None and res.get(f) is not None:
+                                analysis_result[f] = res[f]
+
                         if res.get('outcome_entry'):
                             analysis_result['outcome_entry'] = res['outcome_entry']
                         success = db_storage.save_analysis_result(case_id, analysis_result, mode)
                         if not success:
                             logger.warning(f"Failed to save analysis result for {case_id}")
+                    
+                    # Write to NDJSON checkpoint for non-db sources
+                    try:
+                        with open(checkpoint_path, "a", encoding="utf-8") as fcf:
+                            checkpoint_row = {
+                                "case_number": case_id,
+                                "type": case_type,
+                                "status": case_status,
+                                "visa_office": visa_office,
+                                "judge": judge,
+                                "method": method,
+                                "confidence": confidence
+                            }
+                            fcf.write(json.dumps(checkpoint_row, ensure_ascii=False) + "\n")
+                    except Exception as e:
+                        logger.warning(f"Failed to write checkpoint for {case_id}: {e}")
 
                     pbar.update(1)
                     current_count = len(types)
@@ -1189,6 +1347,7 @@ def analyze(
     else:
         # Non-database sources (existing behavior)
         total_cases = len(df)
+        checkpoint_path = output_dir / "0005_checkpoint.ndjson"
         with tqdm(total=total_cases, desc="Analyzing cases", unit="case") as pbar:
             for idx, row in df.iterrows():
                 case_id = row.get("case_number") or row.get("caseNumber") or row.get("case_id")
@@ -1382,6 +1541,23 @@ def analyze(
                     success = db_storage.save_analysis_result(case_id, analysis_result, mode)
                     if not success:
                         logger.warning(f"Failed to save analysis result for {case_id}")
+
+                # Write to NDJSON checkpoint for non-db sources
+                try:
+                    with open(checkpoint_path, "a", encoding="utf-8") as fcf:
+                        checkpoint_row = {
+                            "case_number": case_id,
+                            "type": case_type,
+                            "status": case_status,
+                            "visa_office": visa_office,
+                            "judge": judge,
+                            "method": method,
+                            "confidence": confidence
+                        }
+                        import json
+                        fcf.write(json.dumps(checkpoint_row, ensure_ascii=False) + "\n")
+                except Exception as e:
+                    logger.warning(f"Failed to write checkpoint for {case_id}: {e}")
                 
                 # Update progress bar and log progress
                 pbar.update(1)
@@ -1491,8 +1667,7 @@ def _analyze_single_case(
     wait_for_ollama: bool = True,
     ollama_wait_time: int = 120
 ) -> int:
-    """Analyze a single case and print detailed results."""
-    from loguru import logger
+    """Analyze a single case and print detailed results.""" 
     import json
     
     logger.info(f"\n🔍 Analyzing single case: {case_id}")
@@ -1563,6 +1738,10 @@ def _analyze_single_case(
                 wait_for_ollama=wait_for_ollama, 
                 ollama_wait_time=ollama_wait_time
             )
+        elif mode == "aifree":
+            from client_common import ApiClient
+            aifree_client = ApiClient()
+            res = _aifree_analyze_case(case_data, aifree_client)
         else:
             res = _rules.classify_case_rule(case_data)
 
@@ -1603,8 +1782,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     import signal
     
     # Setup graceful shutdown
-    def signal_handler(signum, frame):
-        from loguru import logger
+    def signal_handler(signum, frame): 
         logger.info(f"🛑 Received signal {signum}, shutting down gracefully...")
         raise SystemExit(0)
     
@@ -1618,7 +1796,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     # Database is the only supported input source now; remove file/directory options
     
     # Analysis options
-    p.add_argument("--mode", choices=("rule", "llm"), help="Analysis mode")
+    p.add_argument("--mode", choices=("rule", "llm", "aifree"), help="Analysis mode")
     p.add_argument("--year", type=int, help="Filter by year (for database/directory input)")
     p.add_argument("--force", action="store_true", 
                    help="Force analysis of all cases (ignore existing analysis)")
@@ -1678,4 +1856,23 @@ def main(argv: Optional[list[str]] = None) -> int:
 
 
 if __name__ == "__main__":
+        
+    # Setup logging with file output using config
+    log_file = Config.get_analysis_log_file()
+    log_dir = Path(log_file).parent
+    log_dir.mkdir(parents=True, exist_ok=True)
+    
+    logger_config_str = f"""{{
+    "logging": {{
+        "level": "DEBUG",
+        "log_file": "{log_file}",
+        "output": "file, console",
+        "log_base": "fct-",
+        "max_size": "1024*1024*10",
+        "max_index": 9
+    }}
+    }}"""
+
+    logger = startlog(name="fct_analysis", cfg_json_str=logger_config_str)
+
     raise SystemExit(main())
